@@ -1,0 +1,50 @@
+[
+  {
+    "id": "demo-task-001",
+    "title": "Finalize the export workflow",
+    "date": "2026-08-06",
+    "projectId": "manual:spectra-studio",
+    "projectTitle": "Spectra Studio",
+    "sessionId": "demo-thread-001",
+    "conversationTitle": "Export workflow polish",
+    "status": "doing",
+    "note": "Verify output quality and finish the release checklist.",
+    "createdAt": "2026-08-06T09:10:00",
+    "updatedAt": "2026-08-06T11:25:00"
+  },
+  {
+    "id": "demo-task-002",
+    "title": "Review benchmark results",
+    "date": "2026-08-06",
+    "projectId": "manual:signal-modeling",
+    "projectTitle": "Signal Modeling Lab",
+    "sessionId": "demo-thread-002",
+    "conversationTitle": "Benchmark comparison",
+    "status": "planned",
+    "note": "Summarize the strongest model and the remaining risks.",
+    "createdAt": "2026-08-06T09:20:00",
+    "updatedAt": "2026-08-06T09:20:00"
+  },
+  {
+    "id": "demo-task-003",
+    "title": "Prepare the revised figure set",
+    "date": "2026-08-06",
+    "projectId": "manual:paper-figures",
+    "projectTitle": "Publication Figures",
+    "status": "planned",
+    "note": "Apply the final typography and spacing pass.",
+    "createdAt": "2026-08-06T09:30:00",
+    "updatedAt": "2026-08-06T09:30:00"
+  },
+  {
+    "id": "demo-task-004",
+    "title": "Document the release workflow",
+    "date": "2026-08-06",
+    "projectId": "manual:automation-tools",
+    "projectTitle": "Automation Toolkit",
+    "status": "done",
+    "note": "Add setup, verification, and rollback steps.",
+    "createdAt": "2026-08-06T08:45:00",
+    "updatedAt": "2026-08-06T10:40:00"
+  }
+]

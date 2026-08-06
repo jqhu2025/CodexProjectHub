@@ -1,0 +1,52 @@
+[
+  {
+    "id": "spectra-studio",
+    "category": "Development",
+    "name": "Spectra Studio",
+    "path": "C:\\Projects\\SpectraStudio",
+    "manualProject": true,
+    "status": "active",
+    "color": "#2474FF",
+    "nextStep": "Polish the export workflow"
+  },
+  {
+    "id": "desktop-analytics",
+    "category": "Development",
+    "name": "Desktop Analytics",
+    "path": "C:\\Projects\\DesktopAnalytics",
+    "manualProject": true,
+    "status": "active",
+    "color": "#00A6C8",
+    "nextStep": "Validate the new dashboard layout"
+  },
+  {
+    "id": "signal-modeling",
+    "category": "Research Lab",
+    "name": "Signal Modeling Lab",
+    "path": "C:\\Projects\\SignalModeling",
+    "manualProject": true,
+    "status": "active",
+    "color": "#7C3AED",
+    "nextStep": "Compare the latest benchmark results"
+  },
+  {
+    "id": "paper-figures",
+    "category": "Research Lab",
+    "name": "Publication Figures",
+    "path": "C:\\Projects\\PublicationFigures",
+    "manualProject": true,
+    "status": "active",
+    "color": "#10A361",
+    "nextStep": "Review the revised figure set"
+  },
+  {
+    "id": "automation-tools",
+    "category": "Operations",
+    "name": "Automation Toolkit",
+    "path": "C:\\Projects\\AutomationToolkit",
+    "manualProject": true,
+    "status": "active",
+    "color": "#F59E0B",
+    "nextStep": "Document the release workflow"
+  }
+]

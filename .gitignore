@@ -1,0 +1,26 @@
+# Python runtime files
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Local Codex Project Hub data (may contain paths and conversation IDs)
+data/*.json
+!data/*.example.json
+
+# Local design/audit artifacts
+.audit/
+.demo-render/
+design-qa.md
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp

@@ -1,0 +1,16 @@
+{
+  "hiddenProjectIds": [],
+  "categoryOrders": {
+    "Development": [
+      "manual:spectra-studio",
+      "manual:desktop-analytics"
+    ],
+    "Research Lab": [
+      "manual:signal-modeling",
+      "manual:paper-figures"
+    ],
+    "Operations": [
+      "manual:automation-tools"
+    ]
+  }
+}
