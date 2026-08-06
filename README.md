@@ -1,131 +1,61 @@
 # Codex Project Hub
 
-A local-first desktop workspace for organizing Codex projects, conversations, and daily work without replacing Codex itself.
+A local Windows desktop companion for organizing Codex projects, conversations, and daily tasks.
 
-Codex Project Hub gives you a visual control layer for project classification and task planning. It reads local Codex metadata to show which conversations are active, then sends you back to the corresponding Codex conversation for the actual interaction and execution.
+Codex remains the main interface for conversation and execution. This application provides project classification, task planning, status monitoring, and direct links back to the corresponding Codex conversation.
 
-> **Platform:** Windows 10/11
->
-> **UI:** PyQt5 desktop application
->
-> **Network model:** local application; no web server and no listening port
+## Screenshots
 
-## Preview
+### Daily tasks
 
-The screenshots below were rendered from the real application with isolated fictional demo data. They do not contain personal projects, file paths, account identifiers, or real Codex conversation IDs.
+![Daily task workspace](docs/images/daily-workspace.png)
 
-### Daily workspace
+### Projects and conversations
 
-![Daily workspace with planned, active, and completed tasks](docs/images/daily-workspace.png)
+![Projects and linked Codex conversations](docs/images/project-list.png)
 
-### Projects and linked Codex conversations
-
-![Project list with categories, linked conversations, and live status](docs/images/project-list.png)
-
-## Why this project exists
-
-Codex is the primary place for conversations and execution, but a growing set of folders and conversations can become difficult to scan as a portfolio. Codex Project Hub adds a lightweight organizational layer while preserving Codex as the final interaction surface.
-
-The application focuses on four questions:
-
-1. What projects do I currently have?
-2. Which category does each project belong to?
-3. What should I work on today?
-4. Which Codex conversation is running, ready, or already completed?
+All screenshots use fictional sample data. They do not contain real project paths, account information, or Codex conversation IDs.
 
 ## Features
 
-### Project organization
+### Project management
 
-- Three-level workflow: **category → project → Codex conversation**.
-- Create, edit, hide, or remove project records without deleting folders from disk.
-- Create, rename, delete, and reorder project categories.
-- Move projects between categories at any time.
-- Reorder projects inside a category.
-- Search by project name, category, path, or next action.
-- View all projects in a compact category-based overview.
-- Expand an individual project only when conversation details are needed.
+- Organize work as **category → project → Codex conversation**.
+- Create, edit, remove, and reorder projects.
+- Create, rename, delete, and reorder categories.
+- Move projects between categories.
+- Search projects by name, category, path, or next action.
+- Expand a project to view its linked Codex conversations.
 
-### Codex conversation awareness
+Removing a project from the application does not delete its folder or Codex conversations.
 
-- Reads active, non-archived Codex conversations from the local Codex state.
-- Matches conversations to projects using Codex project metadata and working-directory paths.
-- Displays the durable Codex conversation title instead of deriving a name from arbitrary message text.
-- Uses three clear project/conversation states:
+### Daily tasks
 
-| State | Meaning |
-| --- | --- |
-| **Running** | Codex is currently processing work for the conversation. |
-| **Completed** | The latest Codex run has stopped or completed. |
-| **Linked** | The conversation is associated with the project but is not currently executing. |
+- Create tasks for any date.
+- Associate a task with a category, project, and optional Codex conversation.
+- Use three task states: **Planned**, **In Progress**, and **Completed**.
+- Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
+- Keep a daily activity record.
+- Carry unfinished in-progress tasks to the next day while preserving previous records.
 
-- Opens a linked conversation through the `codex://threads/<id>` desktop deep link.
-- Never writes to the Codex conversation database or modifies conversation content.
+### Codex integration
 
-### Daily task planning
+- Read active, non-archived conversations from the local Codex state.
+- Match conversations to projects using Codex metadata and working-directory paths.
+- Display the saved Codex conversation title and current run state.
+- Open a conversation with the `codex://threads/<id>` desktop deep link.
+- Show running, completed, and linked states.
+- Read Codex quota usage and reset time.
+- Estimate current-day tokens from local session logs when the official daily bucket is delayed.
 
-- Create tasks manually or plan them while working with Codex.
-- Assign a task through the full hierarchy: category, project, and conversation.
-- Organize the day into **Planned**, **In Progress**, and **Completed** columns.
-- Automatically move a linked planned task to **In Progress** when Codex starts processing its conversation.
-- Keep a daily activity record of planned, started, and completed work.
-- Carry unfinished in-progress work to the next day while preserving the original day's record.
-- Browse a different date without losing today's board.
-- Edit, move, complete, or delete tasks directly from the board.
-
-### Usage telemetry
-
-- Shows the current Codex quota window, used percentage, remaining percentage, and reset time.
-- Reads the official daily token bucket when it is available.
-- Falls back to a local real-time token estimate when the official daily bucket is delayed.
-- Marks estimated values with `*` and explains the source in a tooltip.
-
-Local token estimates are derived from cumulative `token_count` events in Codex session logs. They are intended as a live operational indicator, not a billing statement.
-
-### Desktop experience
-
-- Native PyQt5 window with no browser shell.
-- Light, high-contrast technical visual system.
-- Responsive project cards and task columns.
-- Fluent-style icons and keyboard-focus states.
-- Periodic background refresh without blocking the main interface.
-
-## Privacy and data boundaries
-
-Codex Project Hub is designed to keep project-management data on the local machine.
-
-It may read:
-
-- local Codex project metadata;
-- the local Codex thread index;
-- local session logs needed to determine run state and estimate tokens;
-- the project folders explicitly registered in the application.
-
-It does **not**:
-
-- upload project or conversation data;
-- start a web server;
-- listen on a network port;
-- modify Codex threads or message content;
-- delete project folders when a project is removed from the hub.
-
-The following runtime files are deliberately excluded from Git because they may contain absolute paths, task notes, or Codex conversation IDs:
-
-```text
-data/projects.json
-data/categories.json
-data/today_tasks.json
-data/project_layout.json
-```
-
-Only fictional `*.example.json` files are included in the repository.
+The application only reads Codex metadata and session activity. It does not modify Codex conversations or databases.
 
 ## Requirements
 
 - Windows 10 or Windows 11
 - Python 3.10 or newer
-- Codex Desktop for conversation synchronization and deep links
 - PyQt5 5.15
+- Codex Desktop for conversation synchronization and deep links
 
 ## Installation
 
@@ -141,23 +71,17 @@ python -m pip install -r requirements.txt
 
 ## Run
 
-Double-click:
-
-```text
-启动项目中心.cmd
-```
-
-Or launch it from PowerShell:
+Double-click `启动项目中心.cmd`, or run:
 
 ```powershell
 python app_qt.pyw
 ```
 
-The launcher looks for `pythonw.exe` first so the desktop window can run without an additional console window.
+The Windows launcher uses `pythonw.exe` when available so the application can run without an additional console window.
 
-## Try the fictional sample data
+## Sample data
 
-The repository starts without personal project data. To populate it with the same fictional content used for the screenshots:
+The repository does not include personal runtime data. To load the fictional data used in the screenshots:
 
 ```powershell
 Copy-Item data\categories.example.json data\categories.json
@@ -166,58 +90,53 @@ Copy-Item data\project_layout.example.json data\project_layout.json
 Copy-Item data\today_tasks.example.json data\today_tasks.json
 ```
 
-The sample Windows paths do not need to exist for the project map and task board to render. Opening a folder naturally requires a valid local path.
+The sample project paths do not need to exist unless you use the **Open Folder** action.
 
-## How synchronization works
+## Task and conversation states
 
-1. The application reads the Codex Desktop project list and active thread index from the local Codex directory.
-2. It builds a project catalog from Codex projects plus manually registered folders.
-3. It associates each non-archived conversation with a project using Codex metadata and normalized working-directory paths.
-4. It inspects recent local session events to determine whether a conversation is running, completed, or simply linked.
-5. It refreshes the interface in the background and updates linked daily tasks when a run begins.
-6. When you choose **Open Codex**, the application launches the corresponding `codex://threads/<id>` deep link.
-
-Codex remains the source of truth for conversations. The hub stores only its own classification, ordering, and planning metadata.
-
-## Local data files
-
-| File | Purpose |
+| State | Description |
 | --- | --- |
-| `data/projects.json` | Project names, folders, categories, state, and next-action metadata. |
-| `data/categories.json` | Editable category names and display order. |
-| `data/today_tasks.json` | Daily tasks, status history, and optional project/conversation references. |
+| Running | Codex is currently processing the linked conversation. |
+| Completed | The latest Codex run has stopped or completed. |
+| Linked | The conversation belongs to the project but is not currently running. |
+
+## Local data and privacy
+
+Runtime data is stored in the `data` directory:
+
+| File | Contents |
+| --- | --- |
+| `data/projects.json` | Project names, categories, local paths, and status. |
+| `data/categories.json` | Custom category names and order. |
+| `data/today_tasks.json` | Daily tasks and optional conversation references. |
 | `data/project_layout.json` | Project order and hidden-project settings. |
 
-Files are written atomically through a temporary file and replacement step to reduce the risk of partial JSON writes.
+These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 
-## Repository layout
+The application does not start a web server, listen on a network port, or upload local project data.
+
+## Project structure
 
 ```text
 CodexProjectHub/
-├─ app_qt.pyw                 # Main PyQt5 application
-├─ assets/                    # Visual assets used by the interface
-├─ data/                      # Local runtime data and fictional examples
-├─ docs/images/               # Sanitized README screenshots
-├─ requirements.txt           # Python dependency declaration
-└─ 启动项目中心.cmd             # Windows launcher
+├─ app_qt.pyw
+├─ assets/
+├─ data/
+├─ docs/images/
+├─ requirements.txt
+└─ 启动项目中心.cmd
 ```
 
-## Verification
+## Development
 
-Run a syntax check before committing changes:
+Check the Python source before committing changes:
 
 ```powershell
 python -m py_compile app_qt.pyw
 ```
 
-## Current limitations
-
-- The application targets Windows and Codex Desktop's current local storage layout.
-- Codex metadata formats may change between desktop releases.
-- The official daily usage bucket can arrive later than real-time session activity.
-- Token estimates from local logs can differ from official accounting.
-- Deep-link navigation requires the Codex Desktop protocol handler to be registered.
+The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to local metadata readers.
 
 ## License
 
-No open-source license has been selected yet. The repository remains all-rights-reserved unless a license file is added.
+No open-source license has been selected. The repository is all-rights-reserved unless a license file is added.
