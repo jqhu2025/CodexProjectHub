@@ -40,7 +40,8 @@ Removing a project from the application does not delete its folder or Codex conv
 
 ### Codex integration
 
-- Read active, non-archived conversations from the local Codex state.
+- Read active, non-archived user conversations from the local Codex state.
+- Exclude Codex subagent and guardian threads from the project list.
 - Match conversations to projects using Codex metadata and working-directory paths.
 - Display the saved Codex conversation title and current run state.
 - Open a conversation with the `codex://threads/<id>` desktop deep link.
@@ -78,6 +79,13 @@ python app_qt.pyw
 ```
 
 The Windows launcher uses `pythonw.exe` when available so the application can run without an additional console window.
+
+If Codex is installed in a custom location, set `CODEX_EXECUTABLE` before launching:
+
+```powershell
+$env:CODEX_EXECUTABLE = "C:\path\to\codex.exe"
+python app_qt.pyw
+```
 
 ## Sample data
 
@@ -121,8 +129,11 @@ The application does not start a web server, listen on a network port, or upload
 CodexProjectHub/
 ├─ app_qt.pyw
 ├─ assets/
+├─ codex_hub/
+│  └─ runtime.py
 ├─ data/
 ├─ docs/images/
+├─ tests/
 ├─ requirements.txt
 └─ 启动项目中心.cmd
 ```
@@ -133,9 +144,12 @@ Check the Python source before committing changes:
 
 ```powershell
 python -m py_compile app_qt.pyw
+python -m unittest discover -s tests -v
 ```
 
-The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to local metadata readers.
+Codex session discovery and state classification are isolated in `codex_hub/runtime.py`. Unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory.
+
+The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 
 ## License
 

@@ -21,6 +21,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
+
 ROOT = Path(__file__).resolve().parent
 PROJECTS_FILE = ROOT / "data" / "projects.json"
 CATEGORIES_FILE = ROOT / "data" / "categories.json"
@@ -297,12 +299,13 @@ def sidebar_thread_project_map(projects):
 def codex_thread_project_map(projects, index):
     """Mirror Codex's sidebar, with a path-based fallback for projects omitted there."""
     result = sidebar_thread_project_map(projects)
-    projects_with_sidebar_threads = set(result.values())
     for thread_id, metadata in index.items():
-        project = matched_project(projects, metadata.get("cwd"))
-        if not project or project.get("id") in projects_with_sidebar_threads:
+        if thread_id in result:
             continue
-        result.setdefault(thread_id, project["id"])
+        project = matched_project(projects, metadata.get("cwd"))
+        if not project:
+            continue
+        result[thread_id] = project["id"]
     return result
 
 
@@ -312,25 +315,17 @@ def codex_thread_index():
         databases = sorted(CODEX_HOME.glob("state_*.sqlite"), key=lambda item: item.stat().st_mtime, reverse=True)
         if not databases:
             return {}
-        database = databases[0].as_posix()
-        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=0.2)
-        try:
-            rows = connection.execute(
-                """
-                SELECT id, cwd,
-                       COALESCE(NULLIF(name, ''), NULLIF(title, ''), ''),
-                       COALESCE(recency_at_ms, updated_at_ms, updated_at * 1000, created_at_ms, created_at * 1000, 0),
-                       COALESCE(NULLIF(preview, ''), NULLIF(first_user_message, ''), '')
-                FROM threads
-                WHERE COALESCE(archived, 0) = 0
-                """
-            ).fetchall()
-        finally:
-            connection.close()
+        rows = read_user_thread_rows(databases[0])
         display_names = codex_display_names()
         return {
-            thread_id: {"cwd": cwd or "", "title": display_names.get(thread_id) or title or "", "updatedMs": updated_ms or 0, "preview": preview or ""}
-            for thread_id, cwd, title, updated_ms, preview in rows
+            thread_id: {
+                "cwd": cwd or "",
+                "title": display_names.get(thread_id) or title or "",
+                "updatedMs": updated_ms or 0,
+                "preview": preview or "",
+                "rolloutPath": rollout_path or "",
+            }
+            for thread_id, cwd, title, updated_ms, preview, rollout_path in rows
         }
     except (OSError, sqlite3.Error):
         return {}
@@ -355,8 +350,17 @@ def session_cwd(path):
     return ""
 
 
+_SESSION_TAIL_CACHE = {}
+
+
 def tail_records(path, max_bytes=128 * 1024):
     try:
+        stat = path.stat()
+        cache_key = str(path)
+        cached = _SESSION_TAIL_CACHE.get(cache_key)
+        signature = (stat.st_mtime_ns, stat.st_size, max_bytes)
+        if cached and cached[0] == signature:
+            return cached[1]
         with path.open("rb") as file:
             file.seek(0, os.SEEK_END)
             size = file.tell()
@@ -370,6 +374,10 @@ def tail_records(path, max_bytes=128 * 1024):
                 records.append(json.loads(line))
             except json.JSONDecodeError:
                 pass
+        _SESSION_TAIL_CACHE[cache_key] = (signature, records)
+        if len(_SESSION_TAIL_CACHE) > 512:
+            oldest = next(iter(_SESSION_TAIL_CACHE))
+            _SESSION_TAIL_CACHE.pop(oldest, None)
         return records
     except OSError:
         return []
@@ -404,14 +412,8 @@ def indexed_codex_sessions(projects, index, thread_projects):
 
 
 def recent_codex_sessions(projects, index=None, thread_projects=None):
-    """Infer actual in-flight local Codex turns from recently changing session logs."""
-    if not CODEX_SESSIONS.exists():
-        return []
+    """Read only indexed user session logs; never scan the full sessions tree."""
     now = datetime.now(timezone.utc)
-    # A local tool call can legitimately stay silent for a long time. Keep the
-    # same four-hour horizon used by codex_state instead of dropping it after
-    # only 30 minutes.
-    cutoff = now - timedelta(hours=4)
     index = index or codex_thread_index()
     thread_projects = thread_projects or {}
     allowed_ids = set(thread_projects) if thread_projects else None
@@ -420,58 +422,33 @@ def recent_codex_sessions(projects, index=None, thread_projects=None):
         if item.get("id"): project_by_reference[item["id"]] = item
         if item.get("codexProjectId"): project_by_reference[item["codexProjectId"]] = item
     sessions = []
-    try:
-        files = list(CODEX_SESSIONS.rglob("rollout-*.jsonl"))
-    except OSError:
-        return []
-    for file in files:
+    for session_id, metadata in index.items():
+        if allowed_ids is not None and session_id not in allowed_ids:
+            continue
+        file = Path(metadata.get("rolloutPath") or "")
+        if not file.is_file():
+            continue
         try:
             modified = datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
         except OSError:
             continue
-        if modified < cutoff:
-            continue
-        session_id = session_id_from_path(file)
-        if allowed_ids is not None and session_id not in allowed_ids:
-            continue
-        metadata = index.get(session_id, {})
         cwd = metadata.get("cwd") or session_cwd(file)
         project = project_by_reference.get(thread_projects.get(session_id)) or matched_project(projects, cwd)
         if not project:
             continue
         records = tail_records(file)
-        terminal_at = -1
-        last_user_at = -1
-        last_started_at = -1
-        has_activity = False
-        last_prompt = ""
-        for position, record in enumerate(records):
-            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
-            event_type = payload.get("type") if record.get("type") == "event_msg" else ""
-            if event_type in {"task_complete", "task_aborted", "task_interrupted"}:
-                terminal_at = position
-            if event_type == "task_started":
-                last_started_at = position
-            if record.get("type") in {"event_msg", "response_item", "turn_context"}:
-                has_activity = True
-            if event_type == "user_message":
-                last_user_at = position
-                if isinstance(payload.get("message"), str):
-                    last_prompt = payload["message"].replace("\n", " ").strip()
-        if not has_activity:
+        analysis = analyze_session_records(records, modified, now)
+        if not analysis["hasActivity"]:
             continue
-        # Metrics may be appended after task_complete. Only a newer user turn
-        # reopens the session; token_count and bookkeeping records do not.
-        session_state = "working" if terminal_at < 0 or max(last_user_at, last_started_at) > terminal_at else "completed"
         title = metadata.get("title") or f"Codex 对话 {session_id[-6:]}"
         sessions.append({
             "at": modified.isoformat(),
             "event": "CodexLocalSession",
-            "state": session_state,
+            "state": analysis["state"],
             "projectId": project["id"],
             "sessionId": session_id,
             "conversationLabel": title,
-            "summary": (last_prompt or "Codex 正在处理此项目")[:180],
+            "summary": (analysis["lastPrompt"] or metadata.get("preview") or "Codex 对话已关联")[:180],
             "source": "local-session",
         })
     return sorted(sessions, key=lambda item: item.get("at", ""), reverse=True)
@@ -506,15 +483,7 @@ class SessionScanner(QThread):
 
 
 def find_codex_binary():
-    base = Path(os.environ.get("LOCALAPPDATA", "")) / "OpenAI" / "Codex" / "bin"
-    try:
-        candidates = sorted(base.glob("*/codex.exe"), key=lambda path: path.stat().st_mtime, reverse=True)
-    except OSError:
-        candidates = []
-    direct = base / "codex.exe"
-    if direct.exists():
-        candidates.append(direct)
-    return str(candidates[0]) if candidates else ""
+    return locate_codex_binary()
 
 
 _LOCAL_TOKEN_CACHE = {"date": None, "files": {}}
@@ -705,18 +674,10 @@ def event_time(activity):
 
 
 def codex_state(activity):
-    if not activity:
-        return "linked", "已关联", "#5f6368"
-    point = event_time(activity)
-    age = datetime.now(timezone.utc) - point if point else timedelta.max
-    state = activity.get("state")
-    if state == "working" and age < timedelta(hours=4):
+    state = activity_state(activity)
+    if state == "running":
         return "running", "运行中", "#16803c"
-    if state in {"waiting", "completed"}:
-        return "completed", "已完成", "#2563eb"
-    if activity.get("event") == "UserPromptSubmit" and age < timedelta(minutes=45):
-        return "running", "运行中", "#16803c"
-    if activity.get("event") == "Stop":
+    if state == "completed":
         return "completed", "已完成", "#2563eb"
     return "linked", "已关联", "#5f6368"
 
@@ -1525,7 +1486,7 @@ class MainWindow(QMainWindow):
         self.home_scroll_reset_done = False
         self.setWindowTitle("Codex 项目中心")
         self.resize(1360, 840); self.setMinimumSize(1120, 700); self.setStyleSheet(STYLE)
-        self.build_ui(); self.refresh(); self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.refresh(silent=True)); self.timer.start(5000)
+        self.build_ui(); self.refresh(); self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.refresh(silent=True)); self.timer.start(15000)
         self.usage_timer = QTimer(self); self.usage_timer.timeout.connect(self.start_usage_scan); self.usage_timer.start(120000); self.start_usage_scan()
 
     def build_ui(self):
@@ -1747,7 +1708,7 @@ class MainWindow(QMainWindow):
         if self.session_scanner is not None:
             return
         now = datetime.now(timezone.utc)
-        if self.last_scan_at and now - self.last_scan_at < timedelta(seconds=8):
+        if self.last_scan_at and now - self.last_scan_at < timedelta(seconds=12):
             return
         self.last_scan_at = now
         scanner = SessionScanner(self.projects)
@@ -1780,14 +1741,11 @@ class MainWindow(QMainWindow):
             elif item.layout():
                 self._clear_layout(item.layout())
         running = []
-        waiting = []
         for project in self.projects:
             for session in project.get("conversations", []):
                 state = codex_state(session)[0]
                 if state == "running":
                     running.append((project, session))
-                elif state == "waiting":
-                    waiting.append((project, session))
         active = bool(running)
         panel_border = "#9fdabc" if active else "#d8e3f0"
         panel_bg = "#f1fbf6" if active else "#f8fbff"
@@ -1798,14 +1756,14 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 14px; font-weight: 600; color: #243247; border: none;")
         header.addWidget(title)
         header.addStretch()
-        badge = QLabel(f"{len(running)} 运行中  ·  {len(waiting)} 等待指令")
+        badge = QLabel(f"{len(running)} 运行中")
         badge_color = "#087443" if active else "#64748b"
         badge_bg = "#dff7e9" if active else "#edf2f7"
         badge.setStyleSheet(f"color: {badge_color}; background: {badge_bg}; border: none; border-radius: 9px; padding: 4px 9px; font-size: 11px; font-weight: 600;")
         header.addWidget(badge)
         header_widget = QWidget(); header_widget.setLayout(header); header_widget.setStyleSheet("background: transparent;")
         self.live_layout.addWidget(header_widget)
-        visible_sessions = running + waiting
+        visible_sessions = running
         if not visible_sessions:
             message = "正在读取本机 Codex 对话状态…" if not self.scan_ready else "当前没有正在执行的 Codex 对话；项目仍可继续保持“项目进行中”状态。"
             empty = QLabel(message)
