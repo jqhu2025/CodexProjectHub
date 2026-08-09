@@ -1,4 +1,5 @@
 import json
+import mmap
 import os
 import queue
 import re
@@ -683,12 +684,20 @@ class UsageScanner(QThread):
 class DailySummaryWorker(QThread):
     generated = pyqtSignal(object)
 
-    def __init__(self, payload, parent=None, visible=False):
+    def __init__(self, payload, projects=None, parent=None, visible=False):
         super().__init__(parent)
         self.payload = payload
+        self.projects = [
+            {
+                key: project.get(key)
+                for key in ("id", "codexProjectId", "name", "path", "rootPaths")
+            }
+            for project in (projects or [])
+        ]
         self.visible = visible
 
     def run(self):
+        self.payload["codexActivities"] = codex_activities_for_date(self.projects, self.payload["date"])
         thread_id = daily_summary_thread_id()
         if not thread_id:
             self.generated.emit({"error": "尚未配置固定的 Codex 每日总结任务"})
@@ -845,13 +854,133 @@ def build_daily_summary_payload(tasks, projects, target_date):
     return {"date": target_date, "tasks": selected_tasks, "codexActivities": activities}
 
 
+def _reverse_jsonl_lines(path):
+    """Yield JSONL lines newest-first without loading a rollout into memory."""
+    with path.open("rb") as file:
+        if not path.stat().st_size:
+            return
+        with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            end = len(data)
+            while end > 0:
+                newline = data.rfind(b"\n", 0, end)
+                start = newline + 1
+                line = data[start:end].strip()
+                end = newline if newline >= 0 else 0
+                if line:
+                    yield line
+
+
+def _activity_excerpt(value, limit=180):
+    text = " ".join(str(value or "").split())
+    if not text or text.startswith(("<environment_context>", "<model_switch>", "<permissions", "<codex_delegation>")):
+        return ""
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def codex_activities_for_date(projects, target_date, index=None, thread_projects=None):
+    """Read actual per-day activity from indexed user rollouts, not card timestamps."""
+    index = codex_thread_index() if index is None else index
+    thread_projects = codex_thread_project_map(projects, index) if thread_projects is None else thread_projects
+    projects_by_id = {}
+    for project in projects:
+        if project.get("id"):
+            projects_by_id[str(project["id"])] = project
+        if project.get("codexProjectId"):
+            projects_by_id[str(project["codexProjectId"])] = project
+
+    try:
+        local_timezone = datetime.now().astimezone().tzinfo
+        day_start = datetime.fromisoformat(target_date).replace(tzinfo=local_timezone)
+    except ValueError:
+        return []
+    day_end = day_start + timedelta(days=1)
+    excluded_thread = daily_summary_thread_id()
+    activities = []
+
+    for thread_id, metadata in index.items():
+        if thread_id == excluded_thread:
+            continue
+        path = Path(metadata.get("rolloutPath") or "")
+        if not path.is_file():
+            continue
+        try:
+            if datetime.fromtimestamp(path.stat().st_mtime, local_timezone) < day_start:
+                continue
+        except OSError:
+            continue
+
+        user_turns = 0
+        highlights = []
+        latest_result = ""
+        first_at = ""
+        last_at = ""
+        try:
+            for raw_line in _reverse_jsonl_lines(path):
+                try:
+                    record = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                timestamp = str(record.get("timestamp") or "")
+                if not timestamp:
+                    continue
+                try:
+                    point = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    if point.tzinfo is None:
+                        point = point.replace(tzinfo=timezone.utc)
+                    point = point.astimezone(local_timezone)
+                except ValueError:
+                    continue
+                if point >= day_end:
+                    continue
+                if point < day_start:
+                    break
+
+                payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+                if record.get("type") != "event_msg":
+                    continue
+                event_type = payload.get("type")
+                if event_type not in {"user_message", "agent_message"}:
+                    continue
+                first_at = point.isoformat()
+                if not last_at:
+                    last_at = point.isoformat()
+                if event_type == "user_message":
+                    user_turns += 1
+                    excerpt = _activity_excerpt(payload.get("message"))
+                    if excerpt and len(highlights) < 5:
+                        highlights.append(excerpt)
+                elif not latest_result:
+                    latest_result = _activity_excerpt(payload.get("message"), 260)
+        except OSError:
+            continue
+
+        if not user_turns and not latest_result:
+            continue
+        project = projects_by_id.get(str(thread_projects.get(thread_id) or "")) or matched_project(projects, metadata.get("cwd"))
+        fallback_name = Path(str(metadata.get("cwd") or "").replace("\\\\?\\", "")).name
+        activities.append({
+            "project": str((project or {}).get("name") or fallback_name or "未归类 Codex"),
+            "conversation": str(metadata.get("title") or f"Codex 对话 {thread_id[-6:]}"),
+            "userTurns": user_turns,
+            "firstAt": first_at,
+            "lastAt": last_at,
+            "recentRequests": highlights,
+            "latestResult": latest_result,
+        })
+
+    activities.sort(key=lambda item: item.get("lastAt", ""), reverse=True)
+    return activities[:30]
+
+
 def daily_summary_prompt(payload, visible=False):
     source = json.dumps(payload, ensure_ascii=False, indent=2)
     task_count = len(payload.get("tasks") or [])
     activity_count = len(payload.get("codexActivities") or [])
+    turn_count = sum(int(item.get("userTurns") or 0) for item in payload.get("codexActivities") or [])
+    work_item_count = task_count + activity_count
     rules = (
         "你是固定的每日工作总结助手。请只根据下面提供的昨日记录总结，不要虚构完成情况。\n"
-        f"本次共读取 {task_count} 项昨日任务和 {activity_count} 条 Codex 活动，必须综合全部记录后再总结。\n"
+        f"本次共覆盖 {work_item_count} 个工作项：{task_count} 项昨日计划任务、{activity_count} 个实际活跃的 Codex 对话（{turn_count} 次用户提问）。必须综合全部记录后再总结。\n"
         "要求：overview 用自然、简洁的 2-3 句话说明昨天主要做了什么和当前结果，不超过 180 个汉字；"
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
@@ -861,9 +990,9 @@ def daily_summary_prompt(payload, visible=False):
     schema = '{"overview":"...","completed":["..."],"inProgress":["..."],"nextFocus":["..."]}'
     if visible:
         output = (
-            f"先注明“本次读取：{task_count} 项任务 · {activity_count} 条 Codex 活动”，再用“工作概览 / 完成成果 / 仍在推进 / 下一步进化建议”四个简短部分输出便于阅读的中文总结。"
-            "最后单独一行输出 CODEX_HUB_JSON:，其后紧跟用于软件写回的 JSON 对象，结构必须是："
-            f"{schema}。不要在该 JSON 行后添加内容。\n\n"
+            f"先注明“本次覆盖：{work_item_count} 个工作项 · {task_count} 项计划任务 · {activity_count} 个 Codex 对话 · {turn_count} 次提问”，再用“工作概览 / 完成成果 / 仍在推进 / 下一步进化建议”四个简短部分输出便于阅读的中文总结。"
+            "最后单独一行输出一个 Markdown HTML 注释，注释内部先写 CODEX_HUB_JSON:，再紧跟用于软件写回的 JSON 对象，结构必须是："
+            f"{schema}。格式示例：<!-- CODEX_HUB_JSON: {schema} -->。不要在该注释后添加内容。\n\n"
         )
     else:
         output = f"仅返回 JSON 对象，不要 Markdown 代码围栏，结构必须是：{schema}。\n\n"
@@ -895,6 +1024,7 @@ def parse_daily_summary_response(raw, payload, thread_id):
         "sourceCounts": {
             "tasks": len(payload.get("tasks") or []),
             "codexActivities": len(payload.get("codexActivities") or []),
+            "codexTurns": sum(int(item.get("userTurns") or 0) for item in payload.get("codexActivities") or []),
         },
     })
     return data
@@ -1848,7 +1978,9 @@ class DailySummaryDialog(QDialog):
         source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
         task_count = int(source_counts.get("tasks") or 0)
         activity_count = int(source_counts.get("codexActivities") or 0)
-        subtitle = QLabel(f"{summary.get('date', '')} · 已读取 {task_count} 项任务、{activity_count} 条 Codex 活动")
+        turn_count = int(source_counts.get("codexTurns") or 0)
+        work_item_count = task_count + activity_count
+        subtitle = QLabel(f"{summary.get('date', '')} · 覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{turn_count} 次提问")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
         generated = QLabel("已写回工作台"); generated.setAlignment(Qt.AlignCenter); generated.setFixedHeight(28)
         generated.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; padding: 2px 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(generated)
@@ -2512,6 +2644,8 @@ class MainWindow(QMainWindow):
         source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
         task_count = int(source_counts.get("tasks") or 0)
         activity_count = int(source_counts.get("codexActivities") or 0)
+        turn_count = int(source_counts.get("codexTurns") or 0)
+        work_item_count = task_count + activity_count
         generated_at = str(summary.get("generatedAt") or "")
         updated_text = ""
         try:
@@ -2519,7 +2653,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
         self.daily_summary_meta.setText(
-            f"已读取 {task_count} 项任务、{activity_count} 条 Codex 活动 · 完成 {counts[0]} · 进行中 {counts[1]} · 进化建议 {counts[2]}{updated_text}"
+            f"覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{turn_count} 次提问 · 完成 {counts[0]} · 进行中 {counts[1]} · 建议 {counts[2]}{updated_text}"
         )
 
     def start_daily_summary(self, force=False):
@@ -2534,7 +2668,7 @@ class MainWindow(QMainWindow):
         self.summary_attempt_date = target_date
         self.daily_summary_error = ""
         payload = build_daily_summary_payload(self.today_tasks, self.projects, target_date)
-        worker = DailySummaryWorker(payload, self, visible=force)
+        worker = DailySummaryWorker(payload, self.projects, self, visible=force)
         worker.generated.connect(self.on_daily_summary_generated)
         worker.finished.connect(lambda: self.finish_daily_summary(worker))
         self.daily_summary_worker = worker

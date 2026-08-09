@@ -1,5 +1,9 @@
 import importlib.util
+import json
+import os
+import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -116,8 +120,8 @@ class DailySummaryTests(unittest.TestCase):
         self.assertIn("下一步进化建议", prompt)
 
     def test_visible_prompt_is_readable_and_has_writeback_marker(self):
-        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{}]}, visible=True)
-        self.assertIn("本次读取：2 项任务 · 1 条 Codex 活动", prompt)
+        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{"userTurns": 3}]}, visible=True)
+        self.assertIn("本次覆盖：3 个工作项 · 2 项计划任务 · 1 个 Codex 对话 · 3 次提问", prompt)
         self.assertIn("工作概览 / 完成成果 / 仍在推进 / 下一步进化建议", prompt)
         self.assertIn("CODEX_HUB_JSON:", prompt)
 
@@ -135,6 +139,27 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(result["overview"], "已完成检查。")
         self.assertEqual(result["nextFocus"], ["项目：增加回归验证"])
         self.assertEqual(result["sourceCounts"]["tasks"], 1)
+
+    def test_codex_activity_scan_uses_real_record_timestamps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            rollout = Path(folder) / "rollout-test-thread.jsonl"
+            records = [
+                {"timestamp": "2026-08-07T15:55:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "too early"}},
+                {"timestamp": "2026-08-08T02:00:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Compare denoising variants"}},
+                {"timestamp": "2026-08-08T02:10:00Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "Validation plan prepared"}},
+                {"timestamp": "2026-08-08T16:10:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "next local day"}},
+            ]
+            rollout.write_text("\n".join(json.dumps(item) for item in records) + "\n", encoding="utf-8")
+            timestamp = datetime.fromisoformat("2026-08-09T01:00:00").timestamp()
+            os.utime(rollout, (timestamp, timestamp))
+            projects = [{"id": "p1", "name": "Denoising", "path": "C:\\work"}]
+            index = {"thread-1": {"title": "Experiment", "cwd": "C:\\work", "rolloutPath": str(rollout)}}
+            with patch.object(APP, "daily_summary_thread_id", return_value="summary-thread"):
+                result = APP.codex_activities_for_date(projects, "2026-08-08", index=index, thread_projects={"thread-1": "p1"})
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["conversation"], "Experiment")
+            self.assertEqual(result[0]["userTurns"], 1)
+            self.assertEqual(result[0]["recentRequests"], ["Compare denoising variants"])
 
     def test_summary_thread_can_be_configured_without_committing_an_id(self):
         with patch.dict(APP.os.environ, {"CODEX_HUB_SUMMARY_THREAD_ID": "summary-thread"}):
