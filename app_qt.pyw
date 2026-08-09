@@ -846,13 +846,24 @@ def daily_summary_prompt(payload):
     source = json.dumps(payload, ensure_ascii=False, indent=2)
     return (
         "你是固定的每日工作总结助手。请只根据下面提供的昨日记录总结，不要虚构完成情况。\n"
-        "要求：overview 用 2-4 句话具体说明昨天主要做了什么；completed 列出已完成成果；"
-        "inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
-        "如果某一类没有证据，返回空数组。每条尽量包含项目名和实际动作，避免‘推进项目’这类空话。\n"
+        "要求：overview 用自然、简洁的 2-3 句话说明昨天主要做了什么和当前结果，不超过 180 个汉字；"
+        "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
+        "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
+        "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
         "仅返回 JSON 对象，不要 Markdown 代码围栏，结构必须是："
         '{"overview":"...","completed":["..."],"inProgress":["..."],"nextFocus":["..."]}。\n\n'
         "昨日记录：\n" + source
     )
+
+
+def compact_summary_text(text, limit=150):
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    sentence_end = max(value.rfind("。", 0, limit), value.rfind("；", 0, limit))
+    if sentence_end >= max(8, limit // 3):
+        return value[:sentence_end + 1]
+    return value[: max(1, limit - 1)].rstrip("，,；;。 ") + "…"
 
 
 def relative_time(activity):
@@ -1721,6 +1732,66 @@ class TaskHistoryDialog(QDialog):
         self.accept()
 
 
+class DailySummaryDialog(QDialog):
+    def __init__(self, parent, summary):
+        super().__init__(parent)
+        self.window = parent
+        self.summary = summary
+        self.setWindowTitle("昨日工作总结")
+        self.setObjectName("dailySummaryDialog")
+        self.setMinimumSize(780, 560)
+        self.resize(840, 620)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(40, 40); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("昨日工作总结"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel(f"{summary.get('date', '')} · 由固定 Codex 任务生成")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        generated = QLabel("已写回工作台"); generated.setAlignment(Qt.AlignCenter); generated.setFixedHeight(28)
+        generated.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; padding: 2px 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(generated)
+        root.addLayout(heading)
+
+        overview = QFrame(); overview.setObjectName("summaryOverview")
+        overview.setStyleSheet("QFrame#summaryOverview { background: #f6f9ff; border: 1px solid #d7e3f6; border-left: 4px solid #2563eb; border-radius: 11px; }")
+        overview_layout = QVBoxLayout(overview); overview_layout.setContentsMargins(15, 12, 15, 13); overview_layout.setSpacing(5)
+        overview_title = QLabel("工作概览"); overview_title.setStyleSheet("color: #1d4ed8; font-size: 12px; font-weight: 700;"); overview_layout.addWidget(overview_title)
+        overview_text = QLabel(summary.get("overview") or "昨天没有足够的记录可总结。")
+        overview_text.setWordWrap(True); overview_text.setStyleSheet("color: #34445c; font-size: 13px;"); overview_layout.addWidget(overview_text); root.addWidget(overview)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget(); content.setStyleSheet("background: transparent;"); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 6, 0); content_layout.setSpacing(10)
+        sections = (("完成成果", "completed", "#16803c", "#f3fbf7"), ("仍在推进", "inProgress", "#2563eb", "#f4f7ff"), ("今天优先", "nextFocus", "#7c3aed", "#faf7ff"))
+        for title_text, key, color, background in sections:
+            card = QFrame(); card.setObjectName("summarySection"); card.setStyleSheet(f"QFrame#summarySection {{ background: {background}; border: 1px solid #dfe6ef; border-radius: 10px; }}")
+            card_layout = QVBoxLayout(card); card_layout.setContentsMargins(15, 11, 15, 13); card_layout.setSpacing(7)
+            section_title = QLabel(title_text); section_title.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 700;"); card_layout.addWidget(section_title)
+            items = [str(item).strip() for item in summary.get(key) or [] if str(item).strip()]
+            if not items:
+                empty = QLabel("没有明确记录"); empty.setStyleSheet("color: #748094; font-size: 12px;"); card_layout.addWidget(empty)
+            else:
+                for number, item in enumerate(items, 1):
+                    row = QHBoxLayout(); row.setSpacing(9)
+                    index = QLabel(str(number)); index.setAlignment(Qt.AlignCenter); index.setFixedSize(24, 24)
+                    index.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid #dbe3ee; border-radius: 7px; font-size: 11px; font-weight: 700;"); row.addWidget(index)
+                    text = QLabel(item); text.setWordWrap(True); text.setStyleSheet("color: #42526a; font-size: 12px;"); row.addWidget(text, 1); card_layout.addLayout(row)
+            content_layout.addWidget(card)
+        content_layout.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        open_thread = QPushButton("打开总结对话"); open_thread.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_thread.setIconSize(QSize(14, 14)); open_thread.clicked.connect(parent.open_daily_summary_thread); actions.addWidget(open_thread)
+        regenerate = QPushButton("重新生成"); regenerate.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); regenerate.setIconSize(QSize(13, 13)); regenerate.clicked.connect(self.regenerate); actions.addWidget(regenerate)
+        actions.addStretch(); close = QPushButton("关闭"); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+
+    def regenerate(self):
+        self.accept()
+        self.window.start_daily_summary(force=True)
+
+
 class ProjectWorkbenchDialog(QDialog):
     def __init__(self, parent, project):
         super().__init__(parent)
@@ -1911,6 +1982,7 @@ class MainWindow(QMainWindow):
         self.today_tasks = load_json(TASKS_FILE, [])
         self.daily_summaries = load_json(DAILY_SUMMARIES_FILE, [])
         self.daily_summary_worker = None
+        self.daily_summary_error = ""
         self.summary_attempt_date = None
         self.usage_data, self.usage_scanner = {}, None
         self.section = "home"
@@ -2053,23 +2125,27 @@ class MainWindow(QMainWindow):
         date = QLabel(date_text); date.setStyleSheet("color: #66758a; font-size: 13px; font-weight: 500;"); heading_text.addWidget(date); heading.addLayout(heading_text); heading.addStretch()
         new_task = QPushButton("新建任务"); new_task.setIcon(fluent_icon("\uE710", color="#ffffff", size=16)); new_task.setIconSize(QSize(16, 16)); new_task.setObjectName("primary"); new_task.setFixedHeight(42); new_task.clicked.connect(self.new_today_task); heading.addWidget(new_task); layout.addLayout(heading)
 
-        self.daily_summary_panel = QFrame(); self.daily_summary_panel.setObjectName("dailySummaryPanel")
-        self.daily_summary_panel.setStyleSheet("QFrame#dailySummaryPanel { background: #ffffff; border: 1px solid #d8e1eb; border-left: 4px solid #2563eb; border-radius: 12px; }")
-        summary_layout = QVBoxLayout(self.daily_summary_panel); summary_layout.setContentsMargins(16, 13, 16, 14); summary_layout.setSpacing(9)
+        self.daily_summary_panel = ClickableFrame(); self.daily_summary_panel.setObjectName("dailySummaryPanel")
+        self.daily_summary_panel.setAccessibleName("打开昨日工作总结")
+        self.daily_summary_panel.setToolTip("点击查看昨日工作的完整总结")
+        self.daily_summary_panel.setStyleSheet("QFrame#dailySummaryPanel { background: #ffffff; border: 1px solid #d8e1eb; border-left: 4px solid #2563eb; border-radius: 12px; } QFrame#dailySummaryPanel:hover, QFrame#dailySummaryPanel:focus { background: #fbfdff; border-color: #a9bfdf; border-left-color: #1d4ed8; }")
+        self.daily_summary_panel.clicked.connect(self.show_daily_summary_dialog)
+        summary_layout = QVBoxLayout(self.daily_summary_panel); summary_layout.setContentsMargins(16, 12, 16, 12); summary_layout.setSpacing(6)
         summary_head = QHBoxLayout(); summary_head.setSpacing(9)
-        summary_icon = QLabel(); summary_icon.setFixedSize(28, 28); summary_icon.setAlignment(Qt.AlignCenter); summary_icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); summary_icon.setStyleSheet("background: #eaf1ff; border-radius: 8px;"); summary_head.addWidget(summary_icon)
+        summary_icon = QLabel(); summary_icon.setAttribute(Qt.WA_TransparentForMouseEvents); summary_icon.setFixedSize(28, 28); summary_icon.setAlignment(Qt.AlignCenter); summary_icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); summary_icon.setStyleSheet("background: #eaf1ff; border-radius: 8px;"); summary_head.addWidget(summary_icon)
         summary_title_box = QVBoxLayout(); summary_title_box.setSpacing(0)
-        summary_title = QLabel("昨日工作回顾"); summary_title.setStyleSheet("color: #253247; font-size: 15px; font-weight: 700;"); summary_title_box.addWidget(summary_title)
-        self.daily_summary_date_label = QLabel(); self.daily_summary_date_label.setStyleSheet("color: #748094; font-size: 10px;"); summary_title_box.addWidget(self.daily_summary_date_label); summary_head.addLayout(summary_title_box)
+        summary_title = QLabel("昨日回顾"); summary_title.setAttribute(Qt.WA_TransparentForMouseEvents); summary_title.setStyleSheet("color: #253247; font-size: 15px; font-weight: 700;"); summary_title_box.addWidget(summary_title)
+        self.daily_summary_date_label = QLabel(); self.daily_summary_date_label.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_date_label.setStyleSheet("color: #748094; font-size: 10px;"); summary_title_box.addWidget(self.daily_summary_date_label); summary_head.addLayout(summary_title_box)
         summary_head.addStretch()
         self.daily_summary_state = QLabel("等待总结"); self.daily_summary_state.setAlignment(Qt.AlignCenter); self.daily_summary_state.setFixedHeight(26)
         self.daily_summary_state.setStyleSheet("color: #526071; background: #eef2f6; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"); summary_head.addWidget(self.daily_summary_state)
-        open_summary_thread = QPushButton("查看对话"); open_summary_thread.setFixedHeight(32); open_summary_thread.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_summary_thread.setIconSize(QSize(14, 14)); open_summary_thread.setToolTip("打开固定的 Codex 总结任务"); open_summary_thread.setAccessibleName("打开 Codex 每日总结任务"); open_summary_thread.clicked.connect(self.open_daily_summary_thread); summary_head.addWidget(open_summary_thread)
-        regenerate = QPushButton("重新总结"); regenerate.setFixedHeight(32); regenerate.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); regenerate.setIconSize(QSize(13, 13)); regenerate.clicked.connect(lambda: self.start_daily_summary(force=True)); summary_head.addWidget(regenerate)
+        open_summary_thread = QPushButton("总结对话"); open_summary_thread.setFixedHeight(32); open_summary_thread.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_summary_thread.setIconSize(QSize(14, 14)); open_summary_thread.setToolTip("打开固定的 Codex 总结任务"); open_summary_thread.setAccessibleName("打开 Codex 每日总结任务"); open_summary_thread.clicked.connect(self.open_daily_summary_thread); summary_head.addWidget(open_summary_thread)
+        self.daily_summary_regenerate_button = QPushButton("重新生成"); self.daily_summary_regenerate_button.setFixedHeight(32); self.daily_summary_regenerate_button.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); self.daily_summary_regenerate_button.setIconSize(QSize(13, 13)); self.daily_summary_regenerate_button.clicked.connect(lambda: self.start_daily_summary(force=True)); summary_head.addWidget(self.daily_summary_regenerate_button)
         summary_layout.addLayout(summary_head)
         self.daily_summary_overview = QLabel("软件将在每天首次打开时，用固定 Codex 任务总结前一天的工作记录。")
-        self.daily_summary_overview.setWordWrap(True); self.daily_summary_overview.setStyleSheet("color: #42526a; font-size: 13px; line-height: 1.45;"); summary_layout.addWidget(self.daily_summary_overview)
-        self.daily_summary_details = QHBoxLayout(); self.daily_summary_details.setSpacing(9); summary_layout.addLayout(self.daily_summary_details)
+        self.daily_summary_overview.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_overview.setWordWrap(True); self.daily_summary_overview.setMaximumHeight(42); self.daily_summary_overview.setStyleSheet("color: #42526a; font-size: 13px; line-height: 1.35;"); summary_layout.addWidget(self.daily_summary_overview)
+        self.daily_summary_meta = QLabel("点击查看完整回顾")
+        self.daily_summary_meta.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_meta.setStyleSheet("color: #718096; font-size: 11px;"); summary_layout.addWidget(self.daily_summary_meta)
         layout.addWidget(self.daily_summary_panel)
 
         board_head = QHBoxLayout(); board_head.setSpacing(9)
@@ -2284,35 +2360,66 @@ class MainWindow(QMainWindow):
         return next((item for item in self.daily_summaries if item.get("date") == target_date), None)
 
     def render_daily_summary(self):
-        if not hasattr(self, "daily_summary_details"):
+        if not hasattr(self, "daily_summary_meta"):
             return
         target_date = self.daily_summary_target_date()
-        thread_label = "自动写回自 Codex" if daily_summary_thread_id() else "尚未配置总结任务"
+        thread_label = "固定 Codex 总结" if daily_summary_thread_id() else "尚未配置总结任务"
         self.daily_summary_date_label.setText(f"{target_date} · {thread_label}")
-        self._clear_layout(self.daily_summary_details)
         summary = self.daily_summary_for_date(target_date)
-        if not summary:
-            running = self.daily_summary_worker is not None
-            self.daily_summary_state.setText("Codex 总结中" if running else "等待自动总结")
+        running = self.daily_summary_worker is not None
+        if hasattr(self, "daily_summary_regenerate_button"):
+            self.daily_summary_regenerate_button.setEnabled(not running)
+
+        if running:
+            self.daily_summary_state.setText("Codex 重新总结中" if summary else "Codex 总结中")
             self.daily_summary_state.setStyleSheet(
                 "color: #1d4ed8; background: #eaf1ff; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"
-                if running else
-                "color: #526071; background: #eef2f6; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"
             )
-            self.daily_summary_overview.setText("正在整理昨天的任务与 Codex 活动，请继续使用软件；完成后会自动写回这里。" if running else "每天首次打开软件时，会自动调用固定 Codex 任务总结昨天做了什么。")
+            self.daily_summary_overview.setText(
+                compact_summary_text((summary or {}).get("overview"), 145)
+                if summary else
+                "正在整理昨天的任务和 Codex 活动，完成后会自动写回工作台。"
+            )
+            self.daily_summary_meta.setText("正在调用固定总结对话 · 完成后自动更新")
             return
-        self.daily_summary_state.setText("已由 Codex 总结")
+
+        if self.daily_summary_error:
+            self.daily_summary_state.setText("总结失败，可重试")
+            self.daily_summary_state.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;")
+            self.daily_summary_overview.setText(
+                compact_summary_text((summary or {}).get("overview"), 145)
+                if summary else
+                "固定 Codex 总结任务暂时没有返回结果。"
+            )
+            self.daily_summary_meta.setText("上次生成失败 · 点击“重新生成”重试")
+            self.daily_summary_panel.setToolTip(self.daily_summary_error)
+            return
+
+        self.daily_summary_panel.setToolTip("点击查看昨日工作的完整总结")
+        if not summary:
+            self.daily_summary_state.setText("等待自动总结")
+            self.daily_summary_state.setStyleSheet("color: #526071; background: #eef2f6; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;")
+            self.daily_summary_overview.setText("每天首次打开软件时，会自动调用固定 Codex 任务总结昨天做了什么。")
+            self.daily_summary_meta.setText("尚无昨日总结 · 可点击“重新生成”")
+            return
+
+        self.daily_summary_state.setText("已生成")
         self.daily_summary_state.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;")
-        self.daily_summary_overview.setText(summary.get("overview") or "昨天没有足够的工作记录可总结。")
-        groups = (("完成成果", "completed", "#16803c", "#f2fbf6"), ("仍在推进", "inProgress", "#2563eb", "#f3f7ff"), ("今天建议", "nextFocus", "#7c3aed", "#faf7ff"))
-        for title, key, color, background in groups:
-            card = QFrame(); card.setObjectName("summaryDetailCard"); card.setStyleSheet(f"QFrame#summaryDetailCard {{ background: {background}; border: 1px solid #e0e7ef; border-radius: 9px; }}")
-            card_layout = QVBoxLayout(card); card_layout.setContentsMargins(11, 8, 11, 9); card_layout.setSpacing(4)
-            label = QLabel(title); label.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: 700;"); card_layout.addWidget(label)
-            items = [str(item).strip() for item in summary.get(key) or [] if str(item).strip()]
-            detail = QLabel("\n".join(f"• {item}" for item in items[:3]) if items else "暂无明确记录")
-            detail.setWordWrap(True); detail.setStyleSheet("color: #526071; font-size: 11px;"); card_layout.addWidget(detail); card_layout.addStretch()
-            self.daily_summary_details.addWidget(card, 1)
+        self.daily_summary_overview.setText(compact_summary_text(summary.get("overview") or "昨天没有足够的工作记录可总结。", 145))
+        counts = (
+            len(summary.get("completed") or []),
+            len(summary.get("inProgress") or []),
+            len(summary.get("nextFocus") or []),
+        )
+        generated_at = str(summary.get("generatedAt") or "")
+        updated_text = ""
+        try:
+            updated_text = f" · 更新于 {datetime.fromisoformat(generated_at).strftime('%H:%M')}"
+        except ValueError:
+            pass
+        self.daily_summary_meta.setText(
+            f"完成 {counts[0]} · 进行中 {counts[1]} · 今日优先 {counts[2]}{updated_text} · 点击查看完整回顾"
+        )
 
     def start_daily_summary(self, force=False):
         target_date = self.daily_summary_target_date()
@@ -2324,34 +2431,44 @@ class MainWindow(QMainWindow):
         if not force and self.summary_attempt_date == target_date:
             return
         self.summary_attempt_date = target_date
+        self.daily_summary_error = ""
         payload = build_daily_summary_payload(self.today_tasks, self.projects, target_date)
         worker = DailySummaryWorker(payload, self)
         worker.generated.connect(self.on_daily_summary_generated)
         worker.finished.connect(lambda: self.finish_daily_summary(worker))
         self.daily_summary_worker = worker
         self.render_daily_summary()
-        self.statusBar().showMessage("已交给固定 Codex 任务生成昨日总结", 3500)
+        self.statusBar().showMessage("已发送到固定 Codex 总结对话，正在生成……", 5000)
         worker.start()
 
     def finish_daily_summary(self, worker):
         if self.daily_summary_worker is worker:
             self.daily_summary_worker = None
+        self.render_daily_summary()
         worker.deleteLater()
 
     def on_daily_summary_generated(self, result):
         if result.get("error"):
-            self.daily_summary_state.setText("总结失败，可重试")
-            self.daily_summary_state.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;")
-            self.daily_summary_overview.setText(f"固定 Codex 任务暂时没有返回总结：{result.get('error')}")
+            self.daily_summary_error = str(result.get("error") or "未知错误")
             self.statusBar().showMessage("昨日总结生成失败，可点击“重新总结”重试", 5000)
             return
+        self.daily_summary_error = ""
         self.daily_summaries = [item for item in self.daily_summaries if item.get("date") != result.get("date")]
         self.daily_summaries.append(result)
         self.daily_summaries.sort(key=lambda item: item.get("date", ""), reverse=True)
         self.daily_summaries = self.daily_summaries[:120]
         save_json(DAILY_SUMMARIES_FILE, self.daily_summaries)
-        self.render_daily_summary()
         self.statusBar().showMessage("Codex 已完成昨日总结并写回工作台", 4500)
+
+    def show_daily_summary_dialog(self):
+        summary = self.daily_summary_for_date()
+        if summary:
+            DailySummaryDialog(self, summary).exec_()
+            return
+        if self.daily_summary_worker is not None:
+            self.statusBar().showMessage("Codex 正在生成昨日总结，完成后可点击查看", 3000)
+            return
+        self.start_daily_summary(force=True)
 
     def open_daily_summary_thread(self):
         thread_id = daily_summary_thread_id()

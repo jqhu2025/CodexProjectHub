@@ -118,6 +118,16 @@ class DailySummaryTests(unittest.TestCase):
         with patch.dict(APP.os.environ, {"CODEX_HUB_SUMMARY_THREAD_ID": "summary-thread"}):
             self.assertEqual(APP.daily_summary_thread_id(), "summary-thread")
 
+    def test_compact_summary_prefers_a_complete_sentence(self):
+        text = "昨天完成了数据核验。随后继续调整训练参数并记录结果，今天准备补充对照实验。"
+        compact = APP.compact_summary_text(text, 20)
+        self.assertEqual(compact, "昨天完成了数据核验。")
+
+    def test_compact_summary_uses_ellipsis_without_sentence_boundary(self):
+        compact = APP.compact_summary_text("一段没有句号但明显超过限制的工作总结内容", 12)
+        self.assertTrue(compact.endswith("…"))
+        self.assertLessEqual(len(compact), 12)
+
 
 if __name__ == "__main__":
     unittest.main()

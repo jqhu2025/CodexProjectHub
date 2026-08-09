@@ -10,6 +10,10 @@ Codex remains the main interface for conversation and execution. This applicatio
 
 ![Daily task workspace](docs/images/daily-workspace.png)
 
+### Daily review
+
+![Codex-generated daily review dialog](docs/images/daily-summary-dialog.png)
+
 ### Projects and conversations
 
 ![Projects and linked Codex conversations](docs/images/project-list.png)
@@ -52,7 +56,8 @@ Removing a project from the application does not delete its folder or Codex conv
 - Keep a daily activity record.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
-- Write the structured review back to the home workspace as completed work, work in progress, and suggested next focus.
+- Keep the home review compact and open the full completed / in-progress / next-focus breakdown on click.
+- Show immediate progress and failure feedback when a review is regenerated, then write the structured result back into the workspace.
 
 ### Codex integration
 
