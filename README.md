@@ -14,6 +14,10 @@ Codex remains the main interface for conversation and execution. This applicatio
 
 ![Projects and linked Codex conversations](docs/images/project-list.png)
 
+### Running conversations
+
+![Running Codex conversation manager](docs/images/running-conversations.png)
+
 All screenshots use fictional sample data. They do not contain real project paths, account information, or Codex conversation IDs.
 
 ## Features
@@ -24,8 +28,10 @@ All screenshots use fictional sample data. They do not contain real project path
 - Create, edit, remove, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
-- Search projects by name, category, path, or next action.
+- Search projects by name, category, path, next action, conversation title, or conversation summary.
+- Filter projects by running, completed, linked, or unlinked state.
 - Expand a project to view its linked Codex conversations.
+- Continue a project by copying its handoff context and opening the running or most recent Codex conversation.
 
 Removing a project from the application does not delete its folder or Codex conversations.
 
@@ -34,6 +40,7 @@ Removing a project from the application does not delete its folder or Codex conv
 - Create tasks for any date.
 - Associate a task with a category, project, and optional Codex conversation.
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
+- Create a task directly in any board column with that state preselected.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
@@ -44,6 +51,7 @@ Removing a project from the application does not delete its folder or Codex conv
 - Exclude Codex subagent and guardian threads from the project list.
 - Match conversations to projects using Codex metadata and working-directory paths.
 - Display the saved Codex conversation title and current run state.
+- Click the global workspace status to inspect every running conversation and open it in Codex.
 - Open a conversation with the `codex://threads/<id>` desktop deep link.
 - Show running, completed, and linked states.
 - Read Codex quota usage and reset time.
