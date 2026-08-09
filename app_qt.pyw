@@ -39,38 +39,38 @@ TASK_STATUS = {"planned": "计划", "doing": "进行中", "done": "已完成"}
 TASK_COLORS = {"planned": "#7c3aed", "doing": "#2563eb", "done": "#16803c"}
 
 STYLE = """
-QMainWindow, QWidget { background: #f8fbff; color: #142446; font-family: 'Noto Sans SC', 'Microsoft YaHei UI', 'Segoe UI Variable Text'; font-size: 14px; }
+QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
 QLabel { background: transparent; }
 QScrollArea { border: none; background: transparent; }
-QScrollBar:vertical { background: transparent; width: 9px; margin: 2px; }
-QScrollBar::handle:vertical { background: #b9cce8; border-radius: 4px; min-height: 34px; }
-QScrollBar::handle:vertical:hover { background: #78a4e7; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+QScrollBar::handle:vertical { background: #c3cfdd; border-radius: 4px; min-height: 36px; }
+QScrollBar::handle:vertical:hover { background: #91a6be; }
 QScrollBar:horizontal { background: transparent; height: 9px; margin: 2px; }
-QScrollBar::handle:horizontal { background: #b9cce8; border-radius: 4px; min-width: 34px; }
-QLineEdit, QTextEdit, QComboBox, QDateEdit { background: rgba(255,255,255,245); border: 1px solid #bcd2ef; border-radius: 8px; padding: 7px 11px; color: #142446; selection-background-color: #d7e8ff; }
-QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QDateEdit:hover { border-color: #82aef0; }
-QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus { border: 1px solid #2474ff; background: #ffffff; }
+QScrollBar::handle:horizontal { background: #c3cfdd; border-radius: 4px; min-width: 34px; }
+QLineEdit, QTextEdit, QComboBox, QDateEdit { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; padding: 8px 12px; color: #172033; selection-background-color: #dce9ff; font-size: 13px; }
+QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QDateEdit:hover { border-color: #a7bbd3; }
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus { border: 1px solid #2563eb; background: #ffffff; }
 QComboBox::drop-down { border: none; width: 26px; }
-QComboBox QAbstractItemView { background: #ffffff; color: #142446; border: 1px solid #a9c4e8; selection-background-color: #e5f0ff; }
-QPushButton { border: 1px solid #bcd0ea; border-radius: 8px; padding: 7px 12px; background: rgba(255,255,255,245); color: #254064; font-weight: 500; }
-QPushButton:hover { background: #edf5ff; border-color: #6fa4ef; color: #1453b8; }
-QPushButton:pressed { background: #dceaff; }
+QComboBox QAbstractItemView { background: #ffffff; color: #172033; border: 1px solid #d5dee9; selection-background-color: #e8f0ff; }
+QPushButton { border: 1px solid #d3dde8; border-radius: 9px; padding: 8px 13px; background: #ffffff; color: #34445c; font-size: 13px; font-weight: 550; }
+QPushButton:hover { background: #f3f7fd; border-color: #9fb6d0; color: #174ea6; }
+QPushButton:pressed { background: #e8f0fb; }
 QPushButton:focus, QToolButton:focus { border: 1px solid #2474ff; }
-QPushButton#primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #175be8, stop:0.55 #2474ff, stop:1 #00a7e8); color: #ffffff; border: 1px solid #2b7cff; border-radius: 8px; font-weight: 650; padding: 9px 17px; }
-QPushButton#primary:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0f4ed3, stop:1 #008bd1); border-color: #00b8ff; }
-QPushButton#nav { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 7px; color: #3b567d; padding: 11px 12px; font-size: 14px; }
-QPushButton#nav:hover { background: rgba(222,237,255,210); border-color: #c6dcf8; color: #1453b8; }
-QPushButton#nav[active='true'] { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #deebff, stop:1 #eef7ff); color: #075ee8; font-weight: 650; border: 1px solid #a7c8fa; border-left: 4px solid #176cff; padding-left: 9px; }
-QPushButton#categoryNav { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 7px; color: #4d6383; padding: 7px 9px 7px 17px; font-size: 13px; }
-QPushButton#categoryNav:hover { background: #edf5ff; border-color: #d1e2f7; color: #175bbd; }
-QPushButton#categoryNav[active='true'] { background: #e5f0ff; border-color: #b8d1f5; color: #075ee8; font-weight: 650; }
-QToolButton { color: #365373; }
-QToolButton:hover { background: #e5f0ff; }
-QMenu { background: #fbfdff; color: #203b5e; border: 1px solid #bcd2ef; border-radius: 8px; padding: 5px; }
+QPushButton#primary { background: #2563eb; color: #ffffff; border: 1px solid #2563eb; border-radius: 9px; font-weight: 650; padding: 9px 17px; }
+QPushButton#primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+QPushButton#nav { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 9px; color: #42526a; padding: 11px 12px; font-size: 14px; }
+QPushButton#nav:hover { background: #eef3f9; color: #1d4ed8; }
+QPushButton#nav[active='true'] { background: #e9f0ff; color: #1d4ed8; font-weight: 650; border: 1px solid #c8d8f4; border-left: 3px solid #2563eb; padding-left: 10px; }
+QPushButton#categoryNav { text-align: left; background: transparent; border: 1px solid transparent; border-radius: 8px; color: #53647a; padding: 8px 10px 8px 15px; font-size: 13px; }
+QPushButton#categoryNav:hover { background: #f0f4f9; color: #1d4ed8; }
+QPushButton#categoryNav[active='true'] { background: #e9f0ff; border-color: #cbdaf1; color: #1d4ed8; font-weight: 650; }
+QToolButton { color: #42526a; border-radius: 8px; }
+QToolButton:hover { background: #edf2f8; }
+QMenu { background: #ffffff; color: #26364c; border: 1px solid #d5dee9; border-radius: 9px; padding: 5px; }
 QMenu::item { min-width: 124px; padding: 9px 13px; border-radius: 6px; }
-QMenu::item:selected { background: #e3efff; color: #075ee8; }
-QDialog { background: #f9fbff; }
-QStatusBar { background: #f3f8ff; color: #527092; border-top: 1px solid #bfd3ec; font-size: 12px; }
+QMenu::item:selected { background: #e8f0ff; color: #1d4ed8; }
+QDialog { background: #f7f9fc; }
+QStatusBar { background: #fafbfd; color: #607087; border-top: 1px solid #dbe3ee; font-size: 12px; }
 """
 
 
@@ -785,8 +785,24 @@ class ElidedLabel(QLabel):
 
     def resizeEvent(self, event):
         shown = self.fontMetrics().elidedText(self.full_text, Qt.ElideRight, max(0, event.size().width()))
-        self.setText(shown)
+        self._applying_elision = True
+        try:
+            super().setText(shown)
+        finally:
+            self._applying_elision = False
         super().resizeEvent(event)
+
+    def setText(self, text):
+        if not getattr(self, "_applying_elision", False):
+            self.full_text = str(text)
+        display_text = self.full_text
+        if self.width() > 0:
+            display_text = self.fontMetrics().elidedText(self.full_text, Qt.ElideRight, self.width())
+        self._applying_elision = True
+        try:
+            super().setText(display_text)
+        finally:
+            self._applying_elision = False
 
 
 class ConversationRow(QFrame):
@@ -795,24 +811,26 @@ class ConversationRow(QFrame):
         self.conversation = conversation
         self.window = window
         self.setObjectName("conversationRow")
-        self.setFixedHeight(46)
+        self.setFixedHeight(50)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setToolTip("在 Codex 中打开此对话")
         self.setAccessibleName(f"Codex 对话：{conversation_name(conversation)}")
         _state, label, color = codex_state(conversation)
-        row_bg = "#edfbf4" if _state == "running" else "#f8fbff"
-        hover_bg = "#dcf7e9" if _state == "running" else "#e7f2ff"
-        divider = "#a8dfc3" if _state == "running" else "#c8daf0"
+        row_bg = "#edf9f3" if _state == "running" else "#ffffff"
+        hover_bg = "#e4f6ed" if _state == "running" else "#f1f5fa"
+        divider = "#a9ddc2" if _state == "running" else "#dce4ed"
         self.setStyleSheet(
-            f"QFrame#conversationRow {{ background: {row_bg}; border: none; border-top: 1px solid {divider}; }}"
+            f"QFrame#conversationRow {{ background: {row_bg}; border: 1px solid {divider}; border-radius: 9px; }}"
             f"QFrame#conversationRow:hover {{ background: {hover_bg}; }}"
             "QFrame#conversationRow:focus { border: 1px solid #2474ff; }"
         )
-        layout = QHBoxLayout(self); layout.setContentsMargins(46, 0, 14, 0); layout.setSpacing(12)
+        layout = QHBoxLayout(self); layout.setContentsMargins(14, 0, 13, 0); layout.setSpacing(12)
+        thread_icon = QLabel(); thread_icon.setAttribute(Qt.WA_TransparentForMouseEvents); thread_icon.setFixedSize(26, 26); thread_icon.setAlignment(Qt.AlignCenter)
+        thread_icon.setPixmap(fluent_icon("\uE8BD", color="#64748b", size=14).pixmap(QSize(14, 14))); thread_icon.setStyleSheet("background: #f1f5f9; border: none; border-radius: 7px;"); layout.addWidget(thread_icon)
         title = ElidedLabel(conversation_name(conversation)); title.setToolTip(conversation.get("summary") or conversation_name(conversation))
         title.setAttribute(Qt.WA_TransparentForMouseEvents)
-        title.setStyleSheet("color: #1f426d; font-size: 13px; font-weight: 550; border: none;"); layout.addWidget(title, 1)
+        title.setStyleSheet("color: #26364c; font-size: 13px; font-weight: 600; border: none;"); layout.addWidget(title, 1)
         time_label = QLabel(relative_time(conversation)); time_label.setAttribute(Qt.WA_TransparentForMouseEvents); time_label.setFixedWidth(88); time_label.setStyleSheet("color: #748094; font-size: 11px; border: none;"); layout.addWidget(time_label)
         state_label = QLabel(f"● {label}"); state_label.setAttribute(Qt.WA_TransparentForMouseEvents); state_label.setFixedWidth(96); state_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 600; border: none;"); layout.addWidget(state_label)
         open_hint = QLabel(); open_hint.setAttribute(Qt.WA_TransparentForMouseEvents); open_hint.setFixedSize(16, 16); open_hint.setPixmap(fluent_icon("\uE76C", color="#718096", size=13).pixmap(QSize(13, 13))); open_hint.setAlignment(Qt.AlignCenter); layout.addWidget(open_hint)
@@ -915,14 +933,14 @@ class ProjectMapRow(QFrame):
         super().__init__()
         self.handler = handler
         self.setObjectName("projectMapRow")
-        self.setFixedHeight(42)
+        self.setFixedHeight(44)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setToolTip("复制项目上下文，回到 Codex 继续；不显示具体对话")
         self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{state_text}")
         self.setStyleSheet(
-            "QFrame#projectMapRow { background: rgba(248,251,255,230); border: 1px solid transparent; border-radius: 8px; }"
-            "QFrame#projectMapRow:hover { background: #e8f2ff; border-color: #b4d0f4; }"
+            "QFrame#projectMapRow { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 9px; }"
+            "QFrame#projectMapRow:hover { background: #f5f8fc; border-color: #b8c8dc; }"
             "QFrame#projectMapRow:focus { border: 1px solid #2474ff; background: #e5f0ff; }"
         )
         layout = QHBoxLayout(self)
@@ -934,7 +952,7 @@ class ProjectMapRow(QFrame):
         layout.addWidget(dot)
         name = ElidedLabel(project.get("name") or "未命名项目")
         name.setToolTip(project.get("name") or "未命名项目")
-        name.setStyleSheet("color: #19375f; border: none; font-family: 'Microsoft YaHei UI'; font-size: 12px; font-weight: 600;")
+        name.setStyleSheet("color: #26364c; border: none; font-size: 13px; font-weight: 600;")
         layout.addWidget(name, 1)
         state = QLabel(state_text)
         state.setAlignment(Qt.AlignCenter)
@@ -959,8 +977,8 @@ class ProjectMapRow(QFrame):
 
 
 class ProjectMindMap(QGraphicsView):
-    CATEGORY_COLORS = ["#176cff", "#7c3aed", "#00a5c8", "#10a361", "#f59e0b"]
-    CATEGORY_BACKGROUNDS = ["#e5f0ff", "#f1eaff", "#e5f8fc", "#e5f8ef", "#fff5df"]
+    CATEGORY_COLORS = ["#2563eb"]
+    CATEGORY_BACKGROUNDS = ["#edf3ff"]
 
     def __init__(self, window):
         super().__init__()
@@ -1014,7 +1032,7 @@ class ProjectMindMap(QGraphicsView):
         card_width = int((canvas_width - side_margin * 2 - column_gap * (columns - 1)) / columns)
 
         overview = QFrame()
-        overview.setFixedSize(canvas_width - side_margin * 2, 54)
+        overview.setFixedSize(canvas_width - side_margin * 2, 58)
         overview.setObjectName("mapOverview")
         overview.setStyleSheet(
             "QFrame#mapOverview { background: transparent; border: none; }"
@@ -1023,12 +1041,12 @@ class ProjectMindMap(QGraphicsView):
         overview_layout = QHBoxLayout(overview)
         overview_layout.setContentsMargins(4, 0, 4, 0)
         overview_layout.setSpacing(10)
-        accent = QLabel(); accent.setFixedSize(4, 28); accent.setStyleSheet("background: #2563eb; border-radius: 2px;")
+        accent = QLabel(); accent.setFixedSize(4, 30); accent.setStyleSheet("background: #2563eb; border-radius: 2px;")
         overview_layout.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
-        title = QLabel("项目总览"); title.setStyleSheet("color: #111827; font-size: 18px; font-weight: 600;")
+        title = QLabel("项目总览"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
         subtitle = QLabel("按分类查看全部项目")
-        subtitle.setStyleSheet("color: #718096; font-size: 11px;")
+        subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
         overview_layout.addLayout(title_box)
         overview_layout.addStretch(1)
@@ -1038,12 +1056,12 @@ class ProjectMindMap(QGraphicsView):
         overview_proxy = self.map_scene.addWidget(overview)
         overview_proxy.setPos(side_margin, 8)
 
-        column_heights = [76] * columns
+        column_heights = [82] * columns
         for category_index, category in enumerate(order):
             items = groups[category]
             color = self.CATEGORY_COLORS[category_index % len(self.CATEGORY_COLORS)]
             tint = self.CATEGORY_BACKGROUNDS[category_index % len(self.CATEGORY_BACKGROUNDS)]
-            card_height = 64 + len(items) * 48
+            card_height = 66 + len(items) * 50
             column = min(range(columns), key=lambda index: column_heights[index])
             card_x = side_margin + column * (card_width + column_gap)
             card_y = column_heights[column]
@@ -1052,7 +1070,7 @@ class ProjectMindMap(QGraphicsView):
             card.setObjectName("mapCategoryCard")
             card.setFixedSize(card_width, card_height)
             card.setStyleSheet(
-                f"QFrame#mapCategoryCard {{ background: rgba(252,254,255,240); border: 1px solid #b7cfee; border-top: 3px solid {color}; border-radius: 11px; }}"
+                "QFrame#mapCategoryCard { background: #ffffff; border: 1px solid #d9e2ec; border-radius: 12px; }"
             )
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(10, 10, 10, 10)
@@ -1060,11 +1078,11 @@ class ProjectMindMap(QGraphicsView):
             category_button = QPushButton(category)
             category_button.setCursor(Qt.PointingHandCursor)
             category_button.setToolTip(f"进入“{category}”分类管理项目")
-            category_button.setFixedHeight(38)
+            category_button.setFixedHeight(40)
             category_button.setStyleSheet(
                 f"QPushButton {{ text-align: left; padding: 0 12px; color: {color}; background: {tint}; "
-                f"border: none; border-radius: 8px; font-family: 'Microsoft YaHei UI'; font-size: 14px; font-weight: 650; }}"
-                f"QPushButton:hover {{ background: #e2ecff; }}"
+                "border: none; border-radius: 9px; font-size: 14px; font-weight: 700; }"
+                "QPushButton:hover { background: #dfe9fb; }"
             )
             category_button.clicked.connect(lambda _checked=False, value=category: self.window.select_category(value))
             header = QHBoxLayout(); header.setContentsMargins(0, 0, 0, 0); header.setSpacing(8)
@@ -1108,18 +1126,18 @@ class ProjectGroup(QFrame):
         self.project, self.window = project, window
         self.conversations = project.get("conversations") or []
         self.setObjectName("projectGroup")
-        self.setStyleSheet("QFrame#projectGroup { background: #fbfdff; border: 1px solid #a9c6ea; border-left: 3px solid #2474ff; border-radius: 10px; }")
+        self.setStyleSheet("QFrame#projectGroup { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 11px; }")
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        header = QFrame(); header.setObjectName("projectHeader"); header.setFixedHeight(58); header.setStyleSheet("QFrame#projectHeader { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f8fbff, stop:1 #eef6ff); border: none; border-radius: 9px; }")
-        layout = QHBoxLayout(header); layout.setContentsMargins(10, 0, 10, 0); layout.setSpacing(10)
+        header = QFrame(); header.setObjectName("projectHeader"); header.setFixedHeight(64); header.setStyleSheet("QFrame#projectHeader { background: #ffffff; border: none; border-radius: 10px; }")
+        layout = QHBoxLayout(header); layout.setContentsMargins(12, 0, 12, 0); layout.setSpacing(10)
         layout.addWidget(ProjectDragHandle(project["id"]))
         self.toggle_button = QToolButton(); self.toggle_button.setFixedSize(32, 32); self.toggle_button.setAutoRaise(True); self.toggle_button.setToolTip("展开或收起 Codex 对话")
         self.toggle_button.setAccessibleName(f"展开或收起 {project['name']} 的 Codex 对话")
         self.toggle_button.setStyleSheet("QToolButton { border: none; border-radius: 7px; } QToolButton:hover, QToolButton:focus { background: #edf3fb; }")
         self.toggle_button.setEnabled(bool(self.conversations)); self.toggle_button.clicked.connect(self.toggle_details); layout.addWidget(self.toggle_button)
-        name = ElidedLabel(project["name"]); name.setToolTip(project["name"]); name.setStyleSheet("font-size: 13px; font-weight: 650; color: #17365f; border: none;"); layout.addWidget(name, 1)
-        category_select = QComboBox(); category_select.setFixedSize(132, 32); category_select.addItems(window.categories[1:]); category_select.setCurrentText(project.get("category", "未分类")); category_select.setToolTip("调整项目分类"); category_select.setAccessibleName(f"{project['name']} 的项目分类")
-        category_select.setStyleSheet("QComboBox { background: #f3f6fa; border: none; border-radius: 7px; padding: 4px 9px; color: #526071; font-size: 11px; } QComboBox:hover, QComboBox:focus { background: #eaf1fa; } QComboBox::drop-down { border: none; width: 22px; }")
+        name = ElidedLabel(project["name"]); name.setToolTip(project["name"]); name.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); layout.addWidget(name, 1)
+        category_select = QComboBox(); category_select.setFixedSize(138, 34); category_select.addItems(window.categories[1:]); category_select.setCurrentText(project.get("category", "未分类")); category_select.setToolTip("调整项目分类"); category_select.setAccessibleName(f"{project['name']} 的项目分类")
+        category_select.setStyleSheet("QComboBox { background: #f3f6fa; border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; color: #526071; font-size: 12px; } QComboBox:hover, QComboBox:focus { background: #eef3f8; border-color: #cbd7e5; } QComboBox::drop-down { border: none; width: 22px; }")
         category_select.activated[str].connect(lambda category: window.change_project_category(project, category)); layout.addWidget(category_select)
         running = [item for item in self.conversations if codex_state(item)[0] == "running"]
         completed = [item for item in self.conversations if codex_state(item)[0] == "completed"]
@@ -1129,11 +1147,11 @@ class ProjectGroup(QFrame):
             status_text, status_color = "● 已完成", "#2563eb"
         else:
             status_text, status_color = "● 已关联", "#5f6368"
-        count = QLabel(f"{len(self.conversations)} 对话"); count.setFixedWidth(62); count.setAlignment(Qt.AlignRight | Qt.AlignVCenter); count.setStyleSheet("color: #7a8798; font-size: 11px; border: none;"); layout.addWidget(count)
-        status = QLabel(status_text); status.setFixedWidth(76); status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter); status.setStyleSheet(f"color: {status_color}; font-size: 11px; font-weight: 600; border: none;"); layout.addWidget(status)
-        continue_button = QPushButton("继续项目"); continue_button.setFixedSize(88, 32); continue_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); continue_button.setIconSize(QSize(14, 14)); continue_button.setToolTip("复制项目上下文，回到 Codex 继续")
+        count = QLabel(f"{len(self.conversations)} 个对话"); count.setFixedWidth(72); count.setAlignment(Qt.AlignRight | Qt.AlignVCenter); count.setStyleSheet("color: #748094; font-size: 11px; border: none;"); layout.addWidget(count)
+        status = QLabel(status_text); status.setFixedWidth(78); status.setAlignment(Qt.AlignCenter); status.setStyleSheet(f"color: {status_color}; background: {'#e8f7ef' if running else '#eef2f6'}; border-radius: 9px; padding: 4px 7px; font-size: 11px; font-weight: 650;"); layout.addWidget(status)
+        continue_button = QPushButton("继续项目"); continue_button.setFixedSize(94, 34); continue_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); continue_button.setIconSize(QSize(14, 14)); continue_button.setToolTip("复制项目上下文，回到 Codex 继续")
         continue_button.setAccessibleName(f"继续项目 {project['name']}")
-        continue_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf4ff; border: none; border-radius: 7px; padding: 4px 9px; font-size: 11px; font-weight: 600; } QPushButton:hover, QPushButton:focus { background: #dfeaff; }")
+        continue_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 4px 9px; font-size: 12px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
         continue_button.clicked.connect(lambda: window.copy_context(project)); layout.addWidget(continue_button)
         more = QToolButton(); more.setFixedSize(32, 32); more.setIcon(fluent_icon("\uE712", size=15)); more.setIconSize(QSize(15, 15)); more.setToolTip("更多项目操作")
         more.setAccessibleName(f"{project['name']} 的更多操作")
@@ -1146,8 +1164,8 @@ class ProjectGroup(QFrame):
         edit_action = project_menu.addAction(fluent_icon("\uE70F", size=14), "编辑项目"); edit_action.triggered.connect(lambda: window.edit_project(project))
         delete_action = project_menu.addAction(fluent_icon("\uE74D", color="#b42318", size=14), "从项目中心移除"); delete_action.triggered.connect(lambda: window.delete_project(project))
         more.setMenu(project_menu); more.setPopupMode(QToolButton.InstantPopup); layout.addWidget(more); root.addWidget(header)
-        self.details = QFrame(); self.details.setObjectName("conversationDetails"); self.details.setStyleSheet("QFrame#conversationDetails { background: #f5f9ff; border: none; border-radius: 0 0 10px 10px; }")
-        detail_layout = QVBoxLayout(self.details); detail_layout.setContentsMargins(0, 0, 0, 0); detail_layout.setSpacing(0)
+        self.details = QFrame(); self.details.setObjectName("conversationDetails"); self.details.setStyleSheet("QFrame#conversationDetails { background: #f7f9fc; border: none; border-top: 1px solid #e3e9f0; border-radius: 0 0 10px 10px; }")
+        detail_layout = QVBoxLayout(self.details); detail_layout.setContentsMargins(54, 8, 12, 10); detail_layout.setSpacing(6)
         for conversation in self.conversations:
             detail_layout.addWidget(ConversationRow(conversation, window))
         root.addWidget(self.details)
@@ -1328,17 +1346,16 @@ class TodayTaskCard(QFrame):
         conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or "未关联 Codex"
         conversation_state = codex_state(conversation)[0] if conversation else None
         accent = TASK_COLORS.get(task.get("status"), "#64748b")
-        tint = {"planned": "#f1eaff", "doing": "#e7f1ff", "done": "#e5f8ef"}.get(task.get("status"), "#eef4fb")
-        self.setStyleSheet(f"QFrame#todayTaskCard {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #ffffff, stop:1 {tint}); border: 1px solid #bfd2eb; border-left: 3px solid {accent}; border-radius: 9px; }} QFrame#todayTaskCard:hover {{ background: #ffffff; border-color: #6f9edd; border-left-color: {accent}; }}")
-        root = QVBoxLayout(self); root.setContentsMargins(11, 9, 9, 8); root.setSpacing(5)
+        tint = {"planned": "#f4efff", "doing": "#eaf2ff", "done": "#e8f7ef"}.get(task.get("status"), "#eef4fb")
+        self.setStyleSheet(f"QFrame#todayTaskCard {{ background: #ffffff; border: 1px solid #d9e2ec; border-left: 3px solid {accent}; border-radius: 10px; }} QFrame#todayTaskCard:hover {{ background: #fbfdff; border-color: #9eb4ce; border-left-color: {accent}; }}")
+        root = QVBoxLayout(self); root.setContentsMargins(12, 10, 10, 9); root.setSpacing(7)
         headline = QHBoxLayout(); headline.setSpacing(8)
-        grip = QLabel(); grip.setFixedSize(10, 18); grip.setPixmap(fluent_icon("\uE700", color=accent, size=10).pixmap(QSize(10, 10))); grip.setAlignment(Qt.AlignCenter); headline.addWidget(grip)
-        title = QLabel(task.get("title") or "未命名任务"); title.setWordWrap(True); title.setStyleSheet("font-size: 13px; font-weight: 650; color: #17345e; border: none;"); headline.addWidget(title, 1)
+        title = QLabel(task.get("title") or "未命名任务"); title.setWordWrap(True); title.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); headline.addWidget(title, 1)
         root.addLayout(headline)
         meta_row = QHBoxLayout(); meta_row.setSpacing(7)
-        meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #5c7394; font-size: 10px; border: none;"); meta_row.addWidget(meta, 1)
+        meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
         if conversation_state == "running":
-            live = QLabel("● LIVE"); live.setStyleSheet("color: #087443; background: #dcf8eb; border: 1px solid #8edab7; border-radius: 7px; padding: 2px 6px; font-size: 9px; font-weight: 700;"); meta_row.addWidget(live)
+            live = QLabel("● Codex 运行中"); live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 3px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
         elif not task.get("sessionId"):
             manual = QLabel("手动状态"); manual.setToolTip("未关联具体 Codex 对话，因此不会自动切换任务状态")
             manual.setStyleSheet("color: #8a5a00; background: #fff4d8; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
@@ -1349,24 +1366,24 @@ class TodayTaskCard(QFrame):
             meta_row.addWidget(carried)
         root.addLayout(meta_row)
         if task.get("notes"):
-            notes = ElidedLabel(task["notes"].replace("\n", " ")); notes.setStyleSheet("color: #4e6686; font-size: 10px; border: none;"); root.addWidget(notes)
+            notes = ElidedLabel(task["notes"].replace("\n", " ")); notes.setStyleSheet("color: #526071; font-size: 11px; border: none;"); root.addWidget(notes)
         actions = QHBoxLayout(); actions.setSpacing(6)
-        status = QComboBox(); status.setFixedSize(78, 28); status.setToolTip("调整任务状态")
+        status = QComboBox(); status.setFixedSize(86, 30); status.setToolTip("调整任务状态")
         for value, label in TASK_STATUS.items(): status.addItem(label, value)
         status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
-        status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 7px; padding: 2px 7px; font-size: 10px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
+        status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
         status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData())); actions.addWidget(status); actions.addStretch()
         if task.get("sessionId"):
-            open_codex = QPushButton("")
-            open_codex.setFixedSize(30, 28)
+            open_codex = QPushButton("打开 Codex")
+            open_codex.setFixedSize(96, 30)
             open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14))
             open_codex.setIconSize(QSize(14, 14))
             open_codex.setToolTip("打开关联的 Codex 对话")
             open_codex.setAccessibleName(f"打开任务 {task.get('title', '')} 的 Codex 对话")
-            open_codex.setStyleSheet("QPushButton { color: #1d4ed8; background: #e5f0ff; border: 1px solid #a6c6f2; border-radius: 7px; padding: 3px; } QPushButton:hover { background: #d3e6ff; border-color: #4d8eea; }")
+            open_codex.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c7d7f2; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dfe9fb; border-color: #9db7e4; }")
             open_codex.clicked.connect(lambda: window.open_task_conversation(task))
             actions.addWidget(open_codex)
-        more = QToolButton(); more.setFixedSize(30, 28); more.setIcon(fluent_icon("\uE712", size=14)); more.setIconSize(QSize(14, 14)); more.setToolTip("更多操作")
+        more = QToolButton(); more.setFixedSize(32, 30); more.setIcon(fluent_icon("\uE712", size=14)); more.setIconSize(QSize(14, 14)); more.setToolTip("更多操作")
         more.setAccessibleName(f"任务 {task.get('title', '')} 的更多操作")
         more.setStyleSheet("QToolButton { border: none; border-radius: 7px; background: transparent; } QToolButton:hover { background: #eaf1fa; } QToolButton::menu-indicator { image: none; }")
         menu = QMenu(more)
@@ -1492,71 +1509,70 @@ class MainWindow(QMainWindow):
     def build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
         root = QVBoxLayout(central); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        top = QFrame(); top.setObjectName("systemSpine"); top.setFixedHeight(92)
-        top.setStyleSheet("QFrame#systemSpine { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f7fbff, stop:0.48 #ffffff, stop:1 #eef7ff); border-bottom: 1px solid #9dc3f5; }")
-        top_layout = QHBoxLayout(top); top_layout.setContentsMargins(18, 7, 20, 7); top_layout.setSpacing(14)
+        top = QFrame(); top.setObjectName("systemSpine"); top.setFixedHeight(76)
+        top.setStyleSheet("QFrame#systemSpine { background: #ffffff; border-bottom: 1px solid #dbe3ee; }")
+        top_layout = QHBoxLayout(top); top_layout.setContentsMargins(18, 10, 20, 10); top_layout.setSpacing(12)
 
-        brand_frame = QFrame(); brand_frame.setFixedWidth(236); brand_frame.setStyleSheet("background: transparent; border: none;")
+        brand_frame = QFrame(); brand_frame.setFixedWidth(218); brand_frame.setStyleSheet("background: transparent; border: none;")
         brand_layout = QHBoxLayout(brand_frame); brand_layout.setContentsMargins(0, 0, 0, 0); brand_layout.setSpacing(10)
-        brand_icon = QLabel(); brand_icon.setFixedSize(38, 38); brand_icon.setAlignment(Qt.AlignCenter)
-        brand_icon.setPixmap(fluent_icon("\uE950", color="#0b6bff", size=27).pixmap(QSize(27, 27)))
-        brand_icon.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #e1efff, stop:1 #f6fbff); border: 1px solid #8dbcf7; border-radius: 9px;")
+        brand_icon = QLabel(); brand_icon.setFixedSize(36, 36); brand_icon.setAlignment(Qt.AlignCenter)
+        brand_icon.setPixmap(fluent_icon("\uE950", color="#2563eb", size=23).pixmap(QSize(23, 23)))
+        brand_icon.setStyleSheet("background: #edf3ff; border: 1px solid #c9daf7; border-radius: 10px;")
         brand_layout.addWidget(brand_icon)
-        brand = QLabel("Codex 项目中心"); brand.setStyleSheet("font-size: 19px; font-weight: 650; color: #102753; letter-spacing: 0.2px;"); brand_layout.addWidget(brand); brand_layout.addStretch(); top_layout.addWidget(brand_frame)
+        brand = QLabel("Codex 项目中心"); brand.setStyleSheet("font-size: 19px; font-weight: 680; color: #172033; letter-spacing: 0.1px;"); brand_layout.addWidget(brand); brand_layout.addStretch(); top_layout.addWidget(brand_frame)
 
-        pulse_frame = QFrame(); pulse_frame.setObjectName("pulseFrame"); pulse_frame.setFixedHeight(76); pulse_frame.setMinimumWidth(360)
-        pulse_frame.setStyleSheet("QFrame#pulseFrame { background: rgba(255,255,255,225); border: 1px solid #9fc6fa; border-radius: 12px; }")
-        pulse_layout = QHBoxLayout(pulse_frame); pulse_layout.setContentsMargins(13, 5, 10, 5); pulse_layout.setSpacing(8)
-        self.pulse_state_label = QLabel("正在同步 Codex"); self.pulse_state_label.setMinimumWidth(118); self.pulse_state_label.setAlignment(Qt.AlignCenter)
-        self.pulse_state_label.setStyleSheet("color: #089564; font-size: 11px; font-weight: 650;"); pulse_layout.addWidget(self.pulse_state_label)
-        pulse_image = QLabel(); pulse_image.setFixedSize(290, 66); pulse_image.setAlignment(Qt.AlignCenter)
-        pulse_asset = ROOT / "assets" / "codex-pulse-core.png"
-        if pulse_asset.exists():
-            pulse_pixmap = QPixmap(str(pulse_asset)).scaled(290, 66, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            crop_x = max(0, (pulse_pixmap.width() - 290) // 2); crop_y = max(0, (pulse_pixmap.height() - 66) // 2)
-            pulse_image.setPixmap(pulse_pixmap.copy(crop_x, crop_y, 290, 66))
-        pulse_layout.addWidget(pulse_image, 1); top_layout.addWidget(pulse_frame, 2)
+        live_frame = QFrame(); live_frame.setObjectName("liveSummary"); live_frame.setFixedHeight(54); live_frame.setMinimumWidth(250)
+        live_frame.setStyleSheet("QFrame#liveSummary { background: #f8fafc; border: 1px solid #d9e2ec; border-radius: 12px; }")
+        live_layout = QHBoxLayout(live_frame); live_layout.setContentsMargins(13, 7, 14, 7); live_layout.setSpacing(10)
+        live_icon = QLabel(); live_icon.setFixedSize(32, 32); live_icon.setAlignment(Qt.AlignCenter)
+        live_icon.setPixmap(fluent_icon("\uE768", color="#2563eb", size=18).pixmap(QSize(18, 18)))
+        live_icon.setStyleSheet("background: #e9f0ff; border: none; border-radius: 9px;"); live_layout.addWidget(live_icon)
+        live_text = QVBoxLayout(); live_text.setSpacing(0)
+        live_caption = QLabel("CODEX 工作区"); live_caption.setStyleSheet("color: #77869a; font-size: 10px; font-weight: 650; letter-spacing: 0.7px;"); live_text.addWidget(live_caption)
+        self.pulse_state_label = QLabel("正在同步本地对话"); self.pulse_state_label.setStyleSheet("color: #42526a; font-size: 13px; font-weight: 650;"); live_text.addWidget(self.pulse_state_label)
+        live_layout.addLayout(live_text, 1); top_layout.addWidget(live_frame, 1)
 
-        telemetry = QFrame(); telemetry.setObjectName("telemetry"); telemetry.setFixedHeight(76); telemetry.setMinimumWidth(300)
-        telemetry.setStyleSheet("QFrame#telemetry { background: rgba(244,249,255,235); border: 1px solid #b3cdf0; border-radius: 12px; }")
-        telemetry_layout = QVBoxLayout(telemetry); telemetry_layout.setContentsMargins(14, 8, 14, 7); telemetry_layout.setSpacing(4)
-        usage_head = QHBoxLayout(); usage_head.setSpacing(10)
-        usage_caption = QLabel("CODEX 用量"); usage_caption.setStyleSheet("color: #527092; font-size: 10px; font-weight: 650; letter-spacing: 0.8px;"); usage_head.addWidget(usage_caption)
-        self.usage_synced_label = QLabel("正在读取额度…"); self.usage_synced_label.setStyleSheet("color: #6881a2; font-size: 10px;"); usage_head.addStretch(); usage_head.addWidget(self.usage_synced_label); telemetry_layout.addLayout(usage_head)
-        metrics = QHBoxLayout(); metrics.setSpacing(12)
+        telemetry = QFrame(); telemetry.setObjectName("telemetry"); telemetry.setFixedHeight(54); telemetry.setMinimumWidth(390)
+        telemetry.setStyleSheet("QFrame#telemetry { background: #f8fafc; border: 1px solid #d9e2ec; border-radius: 12px; }")
+        telemetry_layout = QHBoxLayout(telemetry); telemetry_layout.setContentsMargins(14, 7, 14, 7); telemetry_layout.setSpacing(14)
+        usage_title = QVBoxLayout(); usage_title.setSpacing(0)
+        usage_caption = QLabel("CODEX 用量"); usage_caption.setStyleSheet("color: #526071; font-size: 11px; font-weight: 700; letter-spacing: 0.6px;"); usage_title.addWidget(usage_caption)
+        self.usage_synced_label = ElidedLabel("正在读取额度…"); self.usage_synced_label.setMaximumWidth(150); self.usage_synced_label.setStyleSheet("color: #7a8798; font-size: 10px;"); usage_title.addWidget(self.usage_synced_label); telemetry_layout.addLayout(usage_title, 2)
+        metrics = QHBoxLayout(); metrics.setSpacing(16)
         def telemetry_metric(caption):
-            box = QVBoxLayout(); box.setSpacing(0); value = QLabel("—"); value.setStyleSheet("color: #123569; font-size: 16px; font-weight: 700;")
-            label = QLabel(caption); label.setStyleSheet("color: #6d829f; font-size: 9px;"); box.addWidget(value); box.addWidget(label); metrics.addLayout(box, 1); return value
+            box = QVBoxLayout(); box.setSpacing(0); value = QLabel("—"); value.setStyleSheet("color: #172033; font-size: 15px; font-weight: 700;")
+            label = QLabel(caption); label.setStyleSheet("color: #7a8798; font-size: 10px;"); box.addWidget(value); box.addWidget(label); metrics.addLayout(box, 1); return value
         self.usage_used_label = telemetry_metric("已使用")
         self.usage_remaining_label = telemetry_metric("剩余")
         self.usage_reset_label = telemetry_metric("刷新")
         today_box = QVBoxLayout(); today_box.setSpacing(0)
-        self.usage_today_label = QLabel("—"); self.usage_today_label.setStyleSheet("color: #123569; font-size: 16px; font-weight: 700;")
-        self.usage_today_caption = QLabel("今日 Tokens"); self.usage_today_caption.setStyleSheet("color: #6d829f; font-size: 9px;")
+        self.usage_today_label = QLabel("—"); self.usage_today_label.setStyleSheet("color: #172033; font-size: 15px; font-weight: 700;")
+        self.usage_today_caption = QLabel("今日 Tokens"); self.usage_today_caption.setStyleSheet("color: #7a8798; font-size: 10px;")
         today_box.addWidget(self.usage_today_label); today_box.addWidget(self.usage_today_caption); metrics.addLayout(today_box, 1)
-        telemetry_layout.addLayout(metrics)
-        self.usage_progress = QProgressBar(); self.usage_progress.setRange(0, 100); self.usage_progress.setTextVisible(False); self.usage_progress.setFixedHeight(3)
-        self.usage_progress.setStyleSheet("QProgressBar { background: #d8e7fa; border: none; border-radius: 1px; } QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #2d65ff, stop:1 #00b9e8); border-radius: 1px; }")
+        telemetry_layout.addLayout(metrics, 3)
+        self.usage_progress = QProgressBar(); self.usage_progress.setRange(0, 100); self.usage_progress.setTextVisible(False); self.usage_progress.setFixedSize(4, 36)
+        self.usage_progress.setOrientation(Qt.Vertical)
+        self.usage_progress.setStyleSheet("QProgressBar { background: #e2e8f0; border: none; border-radius: 2px; } QProgressBar::chunk { background: #2563eb; border-radius: 2px; }")
         telemetry_layout.addWidget(self.usage_progress); top_layout.addWidget(telemetry, 2)
 
-        self.sync = QLabel("●  自动同步"); self.sync.setAlignment(Qt.AlignCenter); self.sync.setMinimumWidth(120); self.sync.setFixedHeight(38)
-        self.sync.setStyleSheet("color: #087a55; background: #e8fbf3; border: 1px solid #a6e2cb; border-radius: 10px; padding: 4px 10px; font-size: 11px; font-weight: 650;"); top_layout.addWidget(self.sync)
+        self.sync = QLabel("●  自动同步"); self.sync.setAlignment(Qt.AlignCenter); self.sync.setMinimumWidth(112); self.sync.setFixedHeight(34)
+        self.sync.setStyleSheet("color: #087443; background: #e9f8f0; border: 1px solid #b9e5cd; border-radius: 9px; padding: 3px 9px; font-size: 11px; font-weight: 650;"); top_layout.addWidget(self.sync)
         root.addWidget(top)
         body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0); root.addLayout(body)
-        side = QFrame(); side.setObjectName("navigationRail"); side.setFixedWidth(270)
-        side.setStyleSheet("QFrame#navigationRail { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #f6faff, stop:1 #eef6ff); border-right: 1px solid #a9c9f2; }")
-        side_layout = QVBoxLayout(side); side_layout.setContentsMargins(13, 17, 13, 14); side_layout.setSpacing(4)
+        side = QFrame(); side.setObjectName("navigationRail"); side.setFixedWidth(248)
+        side.setStyleSheet("QFrame#navigationRail { background: #f8fafc; border-right: 1px solid #dde5ee; }")
+        side_layout = QVBoxLayout(side); side_layout.setContentsMargins(12, 18, 12, 14); side_layout.setSpacing(5)
         self.home_nav_button = QPushButton("主页"); self.home_nav_button.setObjectName("nav"); self.home_nav_button.setIcon(fluent_icon("\uE80F", color="#526071", size=16)); self.home_nav_button.setIconSize(QSize(16, 16)); self.home_nav_button.clicked.connect(lambda: self.select_section("home")); side_layout.addWidget(self.home_nav_button)
         self.project_nav_button = QPushButton("项目"); self.project_nav_button.setObjectName("nav"); self.project_nav_button.setIcon(fluent_icon("\uE8B7", color="#526071", size=16)); self.project_nav_button.setIconSize(QSize(16, 16)); self.project_nav_button.clicked.connect(lambda: self.select_section("projects")); side_layout.addWidget(self.project_nav_button)
-        separator = QFrame(); separator.setFixedHeight(1); separator.setStyleSheet("background: #c5d9f3; margin: 12px 8px;"); side_layout.addWidget(separator)
+        separator = QFrame(); separator.setFixedHeight(1); separator.setStyleSheet("background: #e1e7ef; margin: 11px 8px;"); side_layout.addWidget(separator)
         self.category_panel = QWidget(); category_panel_layout = QVBoxLayout(self.category_panel); category_panel_layout.setContentsMargins(0, 0, 0, 0); category_panel_layout.setSpacing(3)
-        category_header_frame = QFrame(); category_header_frame.setObjectName("categoryHeader"); category_header_frame.setFixedHeight(38)
+        category_header_frame = QFrame(); category_header_frame.setObjectName("categoryHeader"); category_header_frame.setFixedHeight(40)
         category_header_frame.setStyleSheet("QFrame#categoryHeader { background: transparent; border: none; } QFrame#categoryHeader QLabel { color: #395679; background: transparent; }")
         category_header = QHBoxLayout(category_header_frame); category_header.setContentsMargins(10, 3, 4, 3); category_header.setSpacing(4)
-        label = QLabel("项目分类"); label.setStyleSheet("color: #25466f; font-size: 13px; font-weight: 650; letter-spacing: 0.3px;"); category_header.addWidget(label); category_header.addStretch()
+        label = QLabel("项目分类"); label.setStyleSheet("color: #4b5c73; font-size: 12px; font-weight: 700; letter-spacing: 0.5px;"); category_header.addWidget(label); category_header.addStretch()
         manage_categories = QToolButton(); manage_categories.setText("管理"); manage_categories.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); manage_categories.setFixedSize(70, 30)
         manage_categories.setIcon(fluent_icon("\uE712", size=14)); manage_categories.setIconSize(QSize(14, 14)); manage_categories.setToolTip("管理项目分类")
-        manage_categories.setStyleSheet("QToolButton { color: #416386; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 4px 7px; } QToolButton:hover { background: #e1efff; border-color: #bdd5f3; }")
+        manage_categories.setStyleSheet("QToolButton { color: #53647a; border: 1px solid transparent; border-radius: 7px; background: transparent; padding: 4px 7px; font-size: 12px; } QToolButton:hover { background: #edf2f7; border-color: #d8e1eb; }")
         category_menu = QMenu(manage_categories)
         add_action = category_menu.addAction(fluent_icon("\uE710", size=14), "新建分类"); add_action.triggered.connect(self.add_category)
         reorder_action = category_menu.addAction(fluent_icon("\uE76F", size=14), "调整顺序"); reorder_action.triggered.connect(self.reorder_categories)
@@ -1573,20 +1589,18 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar()); self.select_section("home")
 
     def build_projects_page(self):
-        main = QWidget(); main.setObjectName("projectsPage"); main.setStyleSheet("QWidget#projectsPage { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #f9fcff, stop:0.55 #f5f9ff, stop:1 #eef7ff); } QWidget#projectsPage QLabel { background: transparent; }"); main_layout = QVBoxLayout(main); main_layout.setContentsMargins(28, 24, 24, 24); main_layout.setSpacing(14)
+        main = QWidget(); main.setObjectName("projectsPage"); main.setStyleSheet("QWidget#projectsPage { background: #f5f7fb; } QWidget#projectsPage QLabel { background: transparent; }"); main_layout = QVBoxLayout(main); main_layout.setContentsMargins(32, 26, 28, 24); main_layout.setSpacing(16)
         heading = QHBoxLayout(); heading.setSpacing(24)
         heading_text = QVBoxLayout(); heading_text.setSpacing(4)
-        title = QLabel("项目"); title.setStyleSheet("font-size: 28px; font-weight: 700; color: #102753;"); heading_text.addWidget(title)
+        title = QLabel("项目"); title.setStyleSheet("font-size: 29px; font-weight: 720; color: #172033;"); heading_text.addWidget(title)
         subtitle = QLabel("管理项目分类，并查看与 Codex 对话的关联状态")
-        subtitle.setStyleSheet("color: #537091; font-size: 12px;"); heading_text.addWidget(subtitle)
+        subtitle.setStyleSheet("color: #66758a; font-size: 13px;"); heading_text.addWidget(subtitle)
         heading.addLayout(heading_text); heading.addStretch()
-        graph_state = QLabel("●  已同步"); graph_state.setFixedHeight(34); graph_state.setAlignment(Qt.AlignCenter); graph_state.setStyleSheet("color: #087a55; background: #e7f9f1; border: 1px solid #9edec4; border-radius: 8px; padding: 0 11px; font-size: 11px; font-weight: 650;"); heading.addWidget(graph_state)
         new_project = QPushButton("新建项目"); new_project.setIcon(fluent_icon("\uE710", color="#ffffff", size=15)); new_project.setIconSize(QSize(15, 15)); new_project.setObjectName("primary"); new_project.setFixedHeight(40); new_project.clicked.connect(lambda: self.edit_project(None)); heading.addWidget(new_project); main_layout.addLayout(heading)
-        divider = QFrame(); divider.setFixedHeight(1); divider.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #176cff, stop:0.55 #8cc5ff, stop:1 transparent);"); main_layout.addWidget(divider)
         tools = QHBoxLayout(); tools.setSpacing(8)
-        self.search = QLineEdit(); self.search.setFixedHeight(38); self.search.setPlaceholderText("搜索项目名称、分类或 Codex 对话…"); self.search.textChanged.connect(self.render); tools.addWidget(self.search)
-        refresh = QToolButton(); refresh.setFixedSize(38, 38); refresh.setIcon(fluent_icon("\uE72C", color="#24588f")); refresh.setIconSize(QSize(16, 16)); refresh.setToolTip("刷新项目与 Codex 状态")
-        refresh.setStyleSheet("QToolButton { background: #f8fbff; border: 1px solid #afc9eb; border-radius: 8px; } QToolButton:hover { background: #e2efff; border-color: #4f8ee8; }")
+        self.search = QLineEdit(); self.search.setFixedHeight(42); self.search.setPlaceholderText("搜索项目、分类或 Codex 对话"); self.search.textChanged.connect(self.render); tools.addWidget(self.search)
+        refresh = QToolButton(); refresh.setFixedSize(42, 42); refresh.setIcon(fluent_icon("\uE72C", color="#42526a")); refresh.setIconSize(QSize(16, 16)); refresh.setToolTip("刷新项目与 Codex 状态")
+        refresh.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover { background: #f1f5fa; border-color: #9fb6d0; }")
         refresh.clicked.connect(self.refresh); tools.addWidget(refresh); main_layout.addLayout(tools)
         self.project_content = QStackedWidget(); self.project_content.setStyleSheet("background: transparent;")
         self.mind_map = ProjectMindMap(self); self.project_content.addWidget(self.mind_map)
@@ -1595,29 +1609,25 @@ class MainWindow(QMainWindow):
         return main
 
     def build_home_page(self):
-        page = QWidget(); page.setObjectName("homePage"); page.setStyleSheet("QWidget#homePage { background: #f8fbff; }"); outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(); self.home_scroll = scroll; scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f8fbff; }")
+        page = QWidget(); page.setObjectName("homePage"); page.setStyleSheet("QWidget#homePage { background: #f5f7fb; }"); outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(); self.home_scroll = scroll; scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f5f7fb; }")
         content = QWidget(); content.setObjectName("homeContent")
-        content.setStyleSheet("QWidget#homeContent { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #f9fcff, stop:0.55 #f5f9ff, stop:1 #eef7ff); } QWidget#homeContent QLabel { background: transparent; }")
-        layout = QVBoxLayout(content); layout.setContentsMargins(28, 22, 24, 24); layout.setSpacing(14); scroll.setWidget(content); outer.addWidget(scroll)
+        content.setStyleSheet("QWidget#homeContent { background: #f5f7fb; } QWidget#homeContent QLabel { background: transparent; }")
+        layout = QVBoxLayout(content); layout.setContentsMargins(32, 26, 28, 26); layout.setSpacing(16); scroll.setWidget(content); outer.addWidget(scroll)
 
         heading = QHBoxLayout(); heading.setSpacing(14)
         heading_text = QVBoxLayout(); heading_text.setSpacing(2)
-        title = QLabel("今日工作台"); title.setStyleSheet("font-size: 29px; font-weight: 700; color: #102753; letter-spacing: 0.3px;"); heading_text.addWidget(title)
+        title = QLabel("今日工作台"); title.setStyleSheet("font-size: 29px; font-weight: 720; color: #172033; letter-spacing: 0.1px;"); heading_text.addWidget(title)
         date_text = datetime.now().strftime("%Y年%m月%d日  %A").replace("Monday", "星期一").replace("Tuesday", "星期二").replace("Wednesday", "星期三").replace("Thursday", "星期四").replace("Friday", "星期五").replace("Saturday", "星期六").replace("Sunday", "星期日")
-        date = QLabel(date_text); date.setStyleSheet("color: #537091; font-size: 12px; font-weight: 500;"); heading_text.addWidget(date); heading.addLayout(heading_text); heading.addStretch()
-        quick_status = QLabel("◆  Codex 本地同步"); quick_status.setFixedHeight(34); quick_status.setAlignment(Qt.AlignCenter)
-        quick_status.setStyleSheet("color: #075ee8; background: #e6f1ff; border: 1px solid #aacbfa; border-radius: 9px; padding: 0 12px; font-size: 11px; font-weight: 650;"); heading.addWidget(quick_status)
+        date = QLabel(date_text); date.setStyleSheet("color: #66758a; font-size: 13px; font-weight: 500;"); heading_text.addWidget(date); heading.addLayout(heading_text); heading.addStretch()
         new_task = QPushButton("新建任务"); new_task.setIcon(fluent_icon("\uE710", color="#ffffff", size=16)); new_task.setIconSize(QSize(16, 16)); new_task.setObjectName("primary"); new_task.setFixedHeight(42); new_task.clicked.connect(self.new_today_task); heading.addWidget(new_task); layout.addLayout(heading)
-
-        divider = QFrame(); divider.setFixedHeight(1); divider.setStyleSheet("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1b6fff, stop:0.55 #8cc5ff, stop:1 transparent);"); layout.addWidget(divider)
 
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
-        self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #142b55;"); board_head.addWidget(self.task_board_title)
-        self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #526f94; font-size: 12px;"); board_head.addWidget(self.task_summary); board_head.addStretch()
+        self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
+        self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #66758a; font-size: 12px;"); board_head.addWidget(self.task_summary); board_head.addStretch()
         history = QToolButton(); history.setFixedSize(36, 36); history.setIcon(fluent_icon("\uE81C", color="#24588f", size=17)); history.setIconSize(QSize(17, 17)); history.setToolTip("查看每日任务记录"); history.setAccessibleName("每日任务记录")
-        history.setStyleSheet("QToolButton { background: #f8fbff; border: 1px solid #afc9eb; border-radius: 8px; } QToolButton:hover, QToolButton:focus { background: #e2efff; border-color: #4f8ee8; }"); history.clicked.connect(lambda: self.show_task_history(0)); board_head.addWidget(history)
+        history.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #f1f5fa; border-color: #9fb6d0; }"); history.clicked.connect(lambda: self.show_task_history(0)); board_head.addWidget(history)
         self.board_date_field = QDateEdit(QDate.currentDate()); self.board_date_field.setCalendarPopup(True); self.board_date_field.setDisplayFormat("yyyy年MM月dd日"); self.board_date_field.setFixedSize(150, 36); self.board_date_field.dateChanged.connect(lambda _date: self.render_today_tasks()); board_head.addWidget(self.board_date_field)
         today_button = QPushButton("今天"); today_button.setFixedHeight(36); today_button.clicked.connect(lambda: self.board_date_field.setDate(QDate.currentDate())); board_head.addWidget(today_button); layout.addLayout(board_head)
 
@@ -1625,13 +1635,17 @@ class MainWindow(QMainWindow):
         self.task_board_layout = QHBoxLayout(self.task_board); self.task_board_layout.setContentsMargins(0, 0, 0, 0); self.task_board_layout.setSpacing(11); layout.addWidget(self.task_board)
 
         self.activity_panel = QFrame(); self.activity_panel.setObjectName("activityPanel")
-        self.activity_panel.setStyleSheet("QFrame#activityPanel { background: rgba(250,253,255,238); border: 1px solid #8fb9ef; border-radius: 12px; border-left: 3px solid #176cff; }")
-        activity_layout = QVBoxLayout(self.activity_panel); activity_layout.setContentsMargins(16, 12, 16, 12); activity_layout.setSpacing(5)
-        activity_head = QHBoxLayout(); activity_head.setSpacing(8)
-        activity_title = QLabel("今日任务记录"); activity_title.setStyleSheet("font-size: 16px; font-weight: 700; color: #17365f;"); activity_head.addWidget(activity_title)
-        activity_hint = QLabel("任务状态与 Codex 活动同步记录"); activity_hint.setStyleSheet("color: #66809f; font-size: 11px;"); activity_head.addWidget(activity_hint); activity_head.addStretch()
-        show_all = QPushButton("查看全部"); show_all.setFixedHeight(30); show_all.clicked.connect(lambda: self.show_task_history(0)); activity_head.addWidget(show_all); activity_layout.addLayout(activity_head)
-        self.activity_rows_layout = QVBoxLayout(); self.activity_rows_layout.setSpacing(0); activity_layout.addLayout(self.activity_rows_layout); layout.addWidget(self.activity_panel)
+        self.activity_panel.setStyleSheet("QFrame#activityPanel { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
+        activity_layout = QVBoxLayout(self.activity_panel); activity_layout.setContentsMargins(0, 0, 0, 0); activity_layout.setSpacing(0)
+        activity_header = QFrame(); activity_header.setObjectName("activityHeader"); activity_header.setFixedHeight(54)
+        activity_header.setStyleSheet("QFrame#activityHeader { background: #fbfcfe; border: none; border-bottom: 1px solid #e2e8f0; border-radius: 12px 12px 0 0; }")
+        activity_head = QHBoxLayout(activity_header); activity_head.setContentsMargins(16, 8, 12, 8); activity_head.setSpacing(9)
+        activity_icon = QLabel(); activity_icon.setFixedSize(28, 28); activity_icon.setAlignment(Qt.AlignCenter); activity_icon.setPixmap(fluent_icon("\uE81C", color="#2563eb", size=17).pixmap(QSize(17, 17))); activity_icon.setStyleSheet("background: #eaf1ff; border-radius: 8px;"); activity_head.addWidget(activity_icon)
+        activity_title = QLabel("今日任务记录"); activity_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #253247;"); activity_head.addWidget(activity_title)
+        activity_hint = QLabel("状态变化与 Codex 活动"); activity_hint.setStyleSheet("color: #748094; font-size: 11px;"); activity_head.addWidget(activity_hint); activity_head.addStretch()
+        show_all = QPushButton("查看全部"); show_all.setFixedHeight(32); show_all.clicked.connect(lambda: self.show_task_history(0)); activity_head.addWidget(show_all); activity_layout.addWidget(activity_header)
+        activity_rows = QWidget(); activity_rows.setObjectName("activityRows"); activity_rows.setStyleSheet("QWidget#activityRows { background: #ffffff; border: none; }")
+        self.activity_rows_layout = QVBoxLayout(activity_rows); self.activity_rows_layout.setContentsMargins(10, 4, 10, 6); self.activity_rows_layout.setSpacing(0); activity_layout.addWidget(activity_rows); layout.addWidget(self.activity_panel)
         layout.addStretch()
         self.render_today_tasks()
         return page
@@ -1674,10 +1688,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "pulse_state_label"):
             if self.running_count:
                 self.pulse_state_label.setText(f"● 活跃 · {self.running_count} 个对话运行中")
-                self.pulse_state_label.setStyleSheet("color: #008d60; font-size: 11px; font-weight: 700;")
+                self.pulse_state_label.setStyleSheet("color: #087443; font-size: 13px; font-weight: 700;")
             else:
-                self.pulse_state_label.setText("○ 待机 · 正在监听 Codex")
-                self.pulse_state_label.setStyleSheet("color: #567394; font-size: 11px; font-weight: 650;")
+                self.pulse_state_label.setText("待机 · 正在监听 Codex")
+                self.pulse_state_label.setStyleSheet("color: #526071; font-size: 13px; font-weight: 650;")
         self.auto_start_tasks_from_codex()
         signature = tuple(
             (
@@ -1801,11 +1815,10 @@ class MainWindow(QMainWindow):
         while self.nav.count():
             item = self.nav.takeAt(0)
             if item.widget(): item.widget().hide(); item.widget().deleteLater()
-        spectrum = ["#2474ff", "#7c3aed", "#00a6c8", "#10a361", "#f59e0b", "#8ba0bb", "#e0528d"]
-        for index, category in enumerate(self.categories):
+        for category in self.categories:
             count = len(self.projects) if category == "全部" else sum(item.get("category") == category for item in self.projects)
             button = QPushButton(f"{category}    {count}"); button.setObjectName("categoryNav"); button.setProperty("active", self.section == "projects" and category == self.category)
-            button.setIcon(fluent_icon("\uECCA", color=spectrum[index % len(spectrum)], size=9)); button.setIconSize(QSize(9, 9))
+            button.setIcon(fluent_icon("\uECCA", color="#94a3b8", size=8)); button.setIconSize(QSize(8, 8))
             button.clicked.connect(lambda _checked=False, value=category: self.select_category(value)); self.nav.addWidget(button)
 
     def select_category(self, category):
@@ -1846,7 +1859,9 @@ class MainWindow(QMainWindow):
             self.usage_today_label.setToolTip(self.usage_today_caption.toolTip())
         self.usage_progress.setValue(used); plan = str(data.get("planType") or "").upper(); suffix = f" · {plan}" if plan else ""
         token_note = " · Tokens 本地估算" if source == "local" else ""
-        self.usage_synced_label.setText(f"真实额度{suffix}{token_note} · {data.get('syncedAt', '')} 同步")
+        sync_text = f"真实额度{suffix}{token_note} · {data.get('syncedAt', '')} 同步"
+        self.usage_synced_label.setText(sync_text)
+        self.usage_synced_label.setToolTip(sync_text)
 
     def project_by_id(self, project_id):
         return next((project for project in self.projects if project.get("id") == project_id), None)
@@ -1905,17 +1920,17 @@ class MainWindow(QMainWindow):
         self.task_summary.setText(f"{len(tasks)} 项 · {counts['doing']} 项进行中 · {counts['done']} 项完成")
         for status, label in TASK_STATUS.items():
             accent = TASK_COLORS[status]
-            surface = {"planned": "#faf7ff", "doing": "#f5f9ff", "done": "#f4fcf8"}.get(status, "#f7faff")
-            column = QFrame(); column.setObjectName("taskColumn"); column.setMinimumSize(250, 300); column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            column.setStyleSheet(f"QFrame#taskColumn {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {surface}, stop:1 #f7fbff); border: 1px solid #a9c6ea; border-top: 3px solid {accent}; border-radius: 11px; }} QFrame#taskColumn QLabel {{ background: transparent; }}")
-            column_layout = QVBoxLayout(column); column_layout.setContentsMargins(11, 10, 11, 11); column_layout.setSpacing(7)
+            surface = {"planned": "#faf8ff", "doing": "#f7faff", "done": "#f7fcf9"}.get(status, "#f8fafc")
+            column = QFrame(); column.setObjectName("taskColumn"); column.setMinimumSize(250, 236); column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            column.setStyleSheet(f"QFrame#taskColumn {{ background: {surface}; border: 1px solid #d8e1eb; border-top: 3px solid {accent}; border-radius: 12px; }} QFrame#taskColumn QLabel {{ background: transparent; }}")
+            column_layout = QVBoxLayout(column); column_layout.setContentsMargins(12, 10, 12, 12); column_layout.setSpacing(8)
             header = QHBoxLayout(); header.setSpacing(7)
             state_icon = QLabel(); state_icon.setFixedSize(18, 18); state_icon.setPixmap(fluent_icon("\uE768", color=accent, size=14).pixmap(QSize(14, 14))); state_icon.setAlignment(Qt.AlignCenter); header.addWidget(state_icon)
-            name = QLabel(label); name.setStyleSheet("font-size: 14px; font-weight: 700; color: #17365f; border: none;"); header.addWidget(name); header.addStretch()
+            name = QLabel(label); name.setStyleSheet("font-size: 14px; font-weight: 700; color: #253247; border: none;"); header.addWidget(name); header.addStretch()
             count = QLabel(str(counts[status])); count_bg = accent if counts[status] else "#e1eaf6"; count_color = "#ffffff" if counts[status] else "#637994"; count.setAlignment(Qt.AlignCenter); count.setFixedSize(24, 20); count.setStyleSheet(f"color: {count_color}; background: {count_bg}; font-size: 10px; font-weight: 700; border: none; border-radius: 9px;"); header.addWidget(count); column_layout.addLayout(header)
             status_tasks = sorted([task for task in tasks if task.get("status", "planned") == status], key=lambda task: task.get("createdAt", ""))
             if not status_tasks:
-                empty = QLabel("暂无任务\n从其他状态拖入或新建任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet(f"color: #7086a2; background: rgba(255,255,255,190); font-size: 11px; border: 1px dashed {accent}; border-radius: 8px; padding: 26px 12px;"); column_layout.addWidget(empty)
+                empty = QLabel("暂无任务\n新建任务或从其他状态移入"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
             for task in status_tasks:
                 column_layout.addWidget(TodayTaskCard(task, self))
             column_layout.addStretch(); self.task_board_layout.addWidget(column, 1, Qt.AlignTop)
@@ -1933,21 +1948,21 @@ class MainWindow(QMainWindow):
         action_names = {"planned": "任务计划", "doing": "任务推进", "done": "任务完成"}
         for index, task in enumerate(recent):
             status = task.get("status", "planned"); accent = TASK_COLORS.get(status, "#64748b")
-            row = QFrame(); row.setObjectName("activityRow"); row.setFixedHeight(42)
-            border = "border-bottom: 1px solid #dbe7f5;" if index < len(recent) - 1 else "border: none;"
-            row.setStyleSheet(f"QFrame#activityRow {{ background: transparent; {border} }} QFrame#activityRow:hover {{ background: #edf5ff; }}")
-            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(8, 3, 8, 3); row_layout.setSpacing(10)
+            row = QFrame(); row.setObjectName("activityRow"); row.setFixedHeight(46)
+            border = "border-bottom: 1px solid #e5eaf0;" if index < len(recent) - 1 else "border: none;"
+            row.setStyleSheet(f"QFrame#activityRow {{ background: transparent; {border} }} QFrame#activityRow:hover {{ background: #f5f8fc; }}")
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(8, 4, 8, 4); row_layout.setSpacing(11)
             icon = QLabel(); icon.setFixedSize(24, 24); icon.setPixmap(fluent_icon("\uE8A7", color=accent, size=15).pixmap(QSize(15, 15))); icon.setAlignment(Qt.AlignCenter)
             icon.setStyleSheet(f"background: { {'planned':'#f1eaff','doing':'#e6f1ff','done':'#e4f7ed'}.get(status, '#eef4fb') }; border: 1px solid {accent}; border-radius: 6px;"); row_layout.addWidget(icon)
-            kind = QLabel(action_names.get(status, "任务更新")); kind.setFixedWidth(72); kind.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(kind)
+            kind = QLabel(action_names.get(status, "任务更新")); kind.setFixedWidth(76); kind.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(kind)
             project = self.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
-            description = ElidedLabel(f"{task.get('title') or '未命名任务'}  ·  {project_name}"); description.setStyleSheet("color: #29496f; font-size: 11px;"); row_layout.addWidget(description, 1)
-            source = QLabel("Codex" if task.get("sessionId") else "手动"); source.setStyleSheet("color: #627b9b; font-size: 10px;"); row_layout.addWidget(source)
+            description = ElidedLabel(f"{task.get('title') or '未命名任务'}  ·  {project_name}"); description.setStyleSheet("color: #34445c; font-size: 12px;"); row_layout.addWidget(description, 1)
+            source = QLabel("Codex" if task.get("sessionId") else "手动"); source.setStyleSheet("color: #748094; font-size: 11px;"); row_layout.addWidget(source)
             try:
                 updated = datetime.fromisoformat(task.get("updatedAt") or task.get("createdAt") or "").strftime("%H:%M")
             except ValueError:
                 updated = "—"
-            time_label = QLabel(updated); time_label.setFixedWidth(42); time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter); time_label.setStyleSheet("color: #45668d; font-size: 10px; font-weight: 600;"); row_layout.addWidget(time_label)
+            time_label = QLabel(updated); time_label.setFixedWidth(44); time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter); time_label.setStyleSheet("color: #53647a; font-size: 11px; font-weight: 600;"); row_layout.addWidget(time_label)
             self.activity_rows_layout.addWidget(row)
 
     def show_task_history(self, initial_tab=0):
@@ -2214,8 +2229,8 @@ class MainWindow(QMainWindow):
         if not order:
             empty = QLabel("没有找到匹配的项目"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #737373; font-size: 13px; padding: 90px;"); self.list.addWidget(empty); return
         for category in order:
-            header = QLabel(f"{category}    {len(groups[category])} 个项目"); header.setStyleSheet("color: #242424; font-size: 14px; font-weight: 600; padding: 12px 0 3px;"); self.list.addWidget(header)
-            rows_holder = ProjectReorderContainer(self, category); rows = QVBoxLayout(rows_holder); rows.setContentsMargins(0, 0, 0, 8); rows.setSpacing(6)
+            header = QLabel(f"{category}    {len(groups[category])} 个项目"); header.setStyleSheet("color: #34445c; font-size: 15px; font-weight: 700; padding: 12px 2px 4px;"); self.list.addWidget(header)
+            rows_holder = ProjectReorderContainer(self, category); rows = QVBoxLayout(rows_holder); rows.setContentsMargins(0, 0, 0, 10); rows.setSpacing(8)
             for project in groups[category]: rows.addWidget(ProjectGroup(project, self))
             self.list.addWidget(rows_holder)
         self.list.addStretch()
