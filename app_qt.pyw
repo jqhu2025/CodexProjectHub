@@ -683,20 +683,38 @@ class UsageScanner(QThread):
 class DailySummaryWorker(QThread):
     generated = pyqtSignal(object)
 
-    def __init__(self, payload, parent=None):
+    def __init__(self, payload, parent=None, visible=False):
         super().__init__(parent)
         self.payload = payload
+        self.visible = visible
 
     def run(self):
-        binary = find_summary_codex_binary()
-        if not binary:
-            self.generated.emit({"error": "未找到 Codex 可执行程序"})
-            return
         thread_id = daily_summary_thread_id()
         if not thread_id:
             self.generated.emit({"error": "尚未配置固定的 Codex 每日总结任务"})
             return
         try:
+            if self.visible:
+                metadata = codex_thread_index().get(thread_id) or {}
+                rollout_path = Path(metadata.get("rolloutPath") or "")
+                if not metadata.get("title") or not rollout_path.is_file():
+                    self.generated.emit({"error": "没有找到固定总结任务的本地会话记录"})
+                    return
+                baseline_size = rollout_path.stat().st_size
+                from codex_hub.desktop_bridge import send_prompt_to_codex_thread
+
+                send_prompt_to_codex_thread(
+                    str(metadata["title"]),
+                    daily_summary_prompt(self.payload, visible=True),
+                )
+                raw = wait_for_codex_thread_reply(rollout_path, baseline_size)
+                self.generated.emit(parse_daily_summary_response(raw, self.payload, thread_id))
+                return
+
+            binary = find_summary_codex_binary()
+            if not binary:
+                self.generated.emit({"error": "未找到 Codex 可执行程序"})
+                return
             with tempfile.TemporaryDirectory(prefix="codex-hub-summary-") as folder:
                 folder = Path(folder)
                 output_path = folder / "summary.json"
@@ -722,23 +740,8 @@ class DailySummaryWorker(QThread):
                     self.generated.emit({"error": detail[:240]})
                     return
                 raw = output_path.read_text(encoding="utf-8").strip() if output_path.exists() else result.stdout.strip()
-                if raw.startswith("```"):
-                    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL)
-                data = json.loads(raw)
-                for key in ("completed", "inProgress", "nextFocus"):
-                    if not isinstance(data.get(key), list):
-                        data[key] = []
-                data.update({
-                    "date": self.payload["date"],
-                    "threadId": thread_id,
-                    "generatedAt": datetime.now().isoformat(timespec="seconds"),
-                    "sourceCounts": {
-                        "tasks": len(self.payload.get("tasks") or []),
-                        "codexActivities": len(self.payload.get("codexActivities") or []),
-                    },
-                })
-                self.generated.emit(data)
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                self.generated.emit(parse_daily_summary_response(raw, self.payload, thread_id))
+        except (OSError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
             self.generated.emit({"error": str(error)[:240]})
 
 
@@ -842,18 +845,110 @@ def build_daily_summary_payload(tasks, projects, target_date):
     return {"date": target_date, "tasks": selected_tasks, "codexActivities": activities}
 
 
-def daily_summary_prompt(payload):
+def daily_summary_prompt(payload, visible=False):
     source = json.dumps(payload, ensure_ascii=False, indent=2)
-    return (
+    task_count = len(payload.get("tasks") or [])
+    activity_count = len(payload.get("codexActivities") or [])
+    rules = (
         "你是固定的每日工作总结助手。请只根据下面提供的昨日记录总结，不要虚构完成情况。\n"
+        f"本次共读取 {task_count} 项昨日任务和 {activity_count} 条 Codex 活动，必须综合全部记录后再总结。\n"
         "要求：overview 用自然、简洁的 2-3 句话说明昨天主要做了什么和当前结果，不超过 180 个汉字；"
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
         "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
-        "仅返回 JSON 对象，不要 Markdown 代码围栏，结构必须是："
-        '{"overview":"...","completed":["..."],"inProgress":["..."],"nextFocus":["..."]}。\n\n'
-        "昨日记录：\n" + source
+        "nextFocus 不只是重复未完成项，要结合现状给出具体、可执行的下一步进化建议，例如更可靠的验证、拆分或决策动作。\n"
     )
+    schema = '{"overview":"...","completed":["..."],"inProgress":["..."],"nextFocus":["..."]}'
+    if visible:
+        output = (
+            f"先注明“本次读取：{task_count} 项任务 · {activity_count} 条 Codex 活动”，再用“工作概览 / 完成成果 / 仍在推进 / 下一步进化建议”四个简短部分输出便于阅读的中文总结。"
+            "最后单独一行输出 CODEX_HUB_JSON:，其后紧跟用于软件写回的 JSON 对象，结构必须是："
+            f"{schema}。不要在该 JSON 行后添加内容。\n\n"
+        )
+    else:
+        output = f"仅返回 JSON 对象，不要 Markdown 代码围栏，结构必须是：{schema}。\n\n"
+    return rules + output + "昨日记录：\n" + source
+
+
+def parse_daily_summary_response(raw, payload, thread_id):
+    """Normalize pure JSON and the visible Codex response marker into one record."""
+    raw = str(raw or "").strip()
+    marker = "CODEX_HUB_JSON:"
+    if marker in raw:
+        raw = raw.rsplit(marker, 1)[1].strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL)
+    start = raw.find("{")
+    if start < 0:
+        raise json.JSONDecodeError("Codex 返回中缺少 JSON", raw, 0)
+    data, _ = json.JSONDecoder().raw_decode(raw[start:])
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("Codex 返回的总结不是 JSON 对象", raw, start)
+    data["overview"] = str(data.get("overview") or "").strip()
+    for key in ("completed", "inProgress", "nextFocus"):
+        values = data.get(key)
+        data[key] = [str(item).strip() for item in values if str(item).strip()][:4] if isinstance(values, list) else []
+    data.update({
+        "date": payload["date"],
+        "threadId": thread_id,
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "sourceCounts": {
+            "tasks": len(payload.get("tasks") or []),
+            "codexActivities": len(payload.get("codexActivities") or []),
+        },
+    })
+    return data
+
+
+def wait_for_codex_thread_reply(rollout_path, baseline_size, timeout=240):
+    """Wait for the visible Codex turn appended after ``baseline_size``."""
+    deadline = time.monotonic() + timeout
+    position = int(baseline_size)
+    pending = b""
+    task_started = False
+    final_message = ""
+    while time.monotonic() < deadline:
+        try:
+            current_size = rollout_path.stat().st_size
+            if current_size < position:
+                position = 0
+                pending = b""
+            if current_size > position:
+                with rollout_path.open("rb") as file:
+                    file.seek(position)
+                    pending += file.read()
+                    position = file.tell()
+                lines = pending.split(b"\n")
+                pending = lines.pop()
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    kind = record.get("type")
+                    item = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+                    if kind == "event_msg" and item.get("type") == "task_started":
+                        task_started = True
+                    if not task_started:
+                        continue
+                    if kind == "event_msg" and item.get("type") == "agent_message":
+                        final_message = str(item.get("message") or final_message)
+                    elif kind == "response_item" and item.get("type") == "message" and item.get("role") == "assistant":
+                        parts = item.get("content") if isinstance(item.get("content"), list) else []
+                        text_parts = [str(part.get("text") or "") for part in parts if isinstance(part, dict)]
+                        if any(text_parts):
+                            final_message = "".join(text_parts)
+                    elif kind == "event_msg" and item.get("type") == "task_complete":
+                        final_message = str(item.get("last_agent_message") or final_message)
+                        if final_message.strip():
+                            return final_message.strip()
+                        raise RuntimeError("Codex 已结束总结，但没有返回可读取的内容")
+        except OSError:
+            pass
+        time.sleep(0.2)
+    raise TimeoutError("等待 Codex 每日总结超时")
 
 
 def compact_summary_text(text, limit=150):
@@ -1750,7 +1845,10 @@ class DailySummaryDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("昨日工作总结"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel(f"{summary.get('date', '')} · 由固定 Codex 任务生成")
+        source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
+        task_count = int(source_counts.get("tasks") or 0)
+        activity_count = int(source_counts.get("codexActivities") or 0)
+        subtitle = QLabel(f"{summary.get('date', '')} · 已读取 {task_count} 项任务、{activity_count} 条 Codex 活动")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
         generated = QLabel("已写回工作台"); generated.setAlignment(Qt.AlignCenter); generated.setFixedHeight(28)
         generated.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; padding: 2px 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(generated)
@@ -1765,7 +1863,7 @@ class DailySummaryDialog(QDialog):
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         content = QWidget(); content.setStyleSheet("background: transparent;"); content_layout = QVBoxLayout(content); content_layout.setContentsMargins(0, 0, 6, 0); content_layout.setSpacing(10)
-        sections = (("完成成果", "completed", "#16803c", "#f3fbf7"), ("仍在推进", "inProgress", "#2563eb", "#f4f7ff"), ("今天优先", "nextFocus", "#7c3aed", "#faf7ff"))
+        sections = (("完成成果", "completed", "#16803c", "#f3fbf7"), ("仍在推进", "inProgress", "#2563eb", "#f4f7ff"), ("下一步进化建议", "nextFocus", "#7c3aed", "#faf7ff"))
         for title_text, key, color, background in sections:
             card = QFrame(); card.setObjectName("summarySection"); card.setStyleSheet(f"QFrame#summarySection {{ background: {background}; border: 1px solid #dfe6ef; border-radius: 10px; }}")
             card_layout = QVBoxLayout(card); card_layout.setContentsMargins(15, 11, 15, 13); card_layout.setSpacing(7)
@@ -2411,6 +2509,9 @@ class MainWindow(QMainWindow):
             len(summary.get("inProgress") or []),
             len(summary.get("nextFocus") or []),
         )
+        source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
+        task_count = int(source_counts.get("tasks") or 0)
+        activity_count = int(source_counts.get("codexActivities") or 0)
         generated_at = str(summary.get("generatedAt") or "")
         updated_text = ""
         try:
@@ -2418,7 +2519,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
         self.daily_summary_meta.setText(
-            f"完成 {counts[0]} · 进行中 {counts[1]} · 今日优先 {counts[2]}{updated_text} · 点击查看完整回顾"
+            f"已读取 {task_count} 项任务、{activity_count} 条 Codex 活动 · 完成 {counts[0]} · 进行中 {counts[1]} · 进化建议 {counts[2]}{updated_text}"
         )
 
     def start_daily_summary(self, force=False):
@@ -2433,12 +2534,17 @@ class MainWindow(QMainWindow):
         self.summary_attempt_date = target_date
         self.daily_summary_error = ""
         payload = build_daily_summary_payload(self.today_tasks, self.projects, target_date)
-        worker = DailySummaryWorker(payload, self)
+        worker = DailySummaryWorker(payload, self, visible=force)
         worker.generated.connect(self.on_daily_summary_generated)
         worker.finished.connect(lambda: self.finish_daily_summary(worker))
         self.daily_summary_worker = worker
         self.render_daily_summary()
-        self.statusBar().showMessage("已发送到固定 Codex 总结对话，正在生成……", 5000)
+        if force:
+            self.statusBar().showMessage("正在切换到 Codex 的固定总结对话并发送请求……", 5000)
+            self.showMinimized()
+            QApplication.processEvents()
+        else:
+            self.statusBar().showMessage("正在后台生成昨日工作总结……", 5000)
         worker.start()
 
     def finish_daily_summary(self, worker):
@@ -2475,9 +2581,23 @@ class MainWindow(QMainWindow):
         if not thread_id:
             QMessageBox.information(self, "尚未配置", "请先在本地设置中配置 Codex 每日总结任务。")
             return
-        opened = QDesktopServices.openUrl(QUrl(f"codex://threads/{thread_id}"))
-        if not opened:
-            QMessageBox.warning(self, "无法打开", "Codex 没有响应每日总结任务跳转。")
+        metadata = codex_thread_index().get(thread_id) or {}
+        thread_title = str(metadata.get("title") or "").strip()
+        if not thread_title:
+            QMessageBox.warning(self, "无法打开", "没有找到固定总结任务的本地标题。")
+            return
+        self.showMinimized()
+        QApplication.processEvents()
+        QTimer.singleShot(250, lambda: self.focus_daily_summary_thread(thread_title))
+
+    def focus_daily_summary_thread(self, thread_title):
+        try:
+            from codex_hub.desktop_bridge import focus_codex_thread
+            focus_codex_thread(thread_title)
+        except (OSError, RuntimeError) as error:
+            self.showNormal()
+            self.raise_()
+            QMessageBox.warning(self, "无法打开", f"没有成功切换到 Codex 总结任务：\n{error}")
 
     def project_by_id(self, project_id):
         return next((project for project in self.projects if project.get("id") == project_id), None)

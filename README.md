@@ -70,7 +70,9 @@ Removing a project from the application does not delete its folder or Codex conv
 - Show running, completed, and linked states.
 - Read Codex quota usage and reset time.
 - Estimate current-day tokens from local session logs when the official daily bucket is delayed.
-- Resume the configured daily-summary conversation through Codex CLI and store its structured response locally.
+- Generate the previous day's review through a configured Codex conversation and store its structured response locally.
+- Send manual regeneration requests visibly through Codex Desktop, then write the reply back into the dashboard.
+- Include completed work, active work, and concrete next-step evolution suggestions in every review.
 
 The application reads Codex metadata and session activity. It never edits Codex databases directly. The optional daily-summary feature sends one prompt to the conversation ID configured by the user.
 
@@ -80,7 +82,8 @@ The application reads Codex metadata and session activity. It never edits Codex 
 - Python 3.10 or newer
 - PyQt5 5.15
 - Codex Desktop for conversation synchronization and deep links
-- A current Codex CLI installation for the optional fixed-conversation daily summary
+- A current Codex CLI installation for automatic background daily summaries
+- A running Codex Desktop window for visible manual regeneration
 
 ## Installation
 

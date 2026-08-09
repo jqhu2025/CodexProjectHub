@@ -113,6 +113,28 @@ class DailySummaryTests(unittest.TestCase):
         self.assertIn('"overview"', prompt)
         self.assertIn('"completed"', prompt)
         self.assertIn("不要虚构完成情况", prompt)
+        self.assertIn("下一步进化建议", prompt)
+
+    def test_visible_prompt_is_readable_and_has_writeback_marker(self):
+        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{}]}, visible=True)
+        self.assertIn("本次读取：2 项任务 · 1 条 Codex 活动", prompt)
+        self.assertIn("工作概览 / 完成成果 / 仍在推进 / 下一步进化建议", prompt)
+        self.assertIn("CODEX_HUB_JSON:", prompt)
+
+    def test_visible_summary_marker_is_parsed_for_writeback(self):
+        raw = (
+            "## 工作概览\n已完成检查。\n"
+            'CODEX_HUB_JSON: {"overview":"已完成检查。","completed":["项目：检查完成"],'
+            '"inProgress":[],"nextFocus":["项目：增加回归验证"]}'
+        )
+        result = APP.parse_daily_summary_response(
+            raw,
+            {"date": "2026-08-08", "tasks": [{}], "codexActivities": []},
+            "summary-thread",
+        )
+        self.assertEqual(result["overview"], "已完成检查。")
+        self.assertEqual(result["nextFocus"], ["项目：增加回归验证"])
+        self.assertEqual(result["sourceCounts"]["tasks"], 1)
 
     def test_summary_thread_can_be_configured_without_committing_an_id(self):
         with patch.dict(APP.os.environ, {"CODEX_HUB_SUMMARY_THREAD_ID": "summary-thread"}):
