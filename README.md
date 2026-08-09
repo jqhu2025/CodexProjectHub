@@ -14,6 +14,10 @@ Codex remains the main interface for conversation and execution. This applicatio
 
 ![Projects and linked Codex conversations](docs/images/project-list.png)
 
+### Project workbench
+
+![Project goals, next action, tasks, and Codex conversations](docs/images/project-workbench.png)
+
 ### Running conversations
 
 ![Running Codex conversation manager](docs/images/running-conversations.png)
@@ -28,7 +32,10 @@ All screenshots use fictional sample data. They do not contain real project path
 - Create, edit, remove, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
-- Search projects by name, category, path, next action, conversation title, or conversation summary.
+- Define a project objective, management priority, lifecycle state, and concrete next action.
+- Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
+- Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
+- Filter the portfolio by current focus, missing next action, or paused/idea state.
 - Filter projects by running, completed, linked, or unlinked state.
 - Expand a project to view its linked Codex conversations.
 - Continue a project by copying its handoff context and opening the running or most recent Codex conversation.
@@ -44,6 +51,8 @@ Removing a project from the application does not delete its folder or Codex conv
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
+- Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
+- Write the structured review back to the home workspace as completed work, work in progress, and suggested next focus.
 
 ### Codex integration
 
@@ -56,8 +65,9 @@ Removing a project from the application does not delete its folder or Codex conv
 - Show running, completed, and linked states.
 - Read Codex quota usage and reset time.
 - Estimate current-day tokens from local session logs when the official daily bucket is delayed.
+- Resume the configured daily-summary conversation through Codex CLI and store its structured response locally.
 
-The application only reads Codex metadata and session activity. It does not modify Codex conversations or databases.
+The application reads Codex metadata and session activity. It never edits Codex databases directly. The optional daily-summary feature sends one prompt to the conversation ID configured by the user.
 
 ## Requirements
 
@@ -65,6 +75,7 @@ The application only reads Codex metadata and session activity. It does not modi
 - Python 3.10 or newer
 - PyQt5 5.15
 - Codex Desktop for conversation synchronization and deep links
+- A current Codex CLI installation for the optional fixed-conversation daily summary
 
 ## Installation
 
@@ -95,6 +106,22 @@ $env:CODEX_EXECUTABLE = "C:\path\to\codex.exe"
 python app_qt.pyw
 ```
 
+### Configure the fixed daily-summary conversation
+
+Copy the local settings template and place the ID of the Codex conversation that should generate daily reviews:
+
+```powershell
+Copy-Item data\settings.example.json data\settings.json
+```
+
+```json
+{
+  "dailySummaryThreadId": "your-codex-thread-id"
+}
+```
+
+The conversation ID can also be provided through `CODEX_HUB_SUMMARY_THREAD_ID`. Runtime settings and generated summaries are ignored by Git.
+
 ## Sample data
 
 The repository does not include personal runtime data. To load the fictional data used in the screenshots:
@@ -104,6 +131,7 @@ Copy-Item data\categories.example.json data\categories.json
 Copy-Item data\projects.example.json data\projects.json
 Copy-Item data\project_layout.example.json data\project_layout.json
 Copy-Item data\today_tasks.example.json data\today_tasks.json
+Copy-Item data\settings.example.json data\settings.json
 ```
 
 The sample project paths do not need to exist unless you use the **Open Folder** action.
@@ -125,11 +153,13 @@ Runtime data is stored in the `data` directory:
 | `data/projects.json` | Project names, categories, local paths, and status. |
 | `data/categories.json` | Custom category names and order. |
 | `data/today_tasks.json` | Daily tasks and optional conversation references. |
+| `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
+| `data/settings.json` | Local configuration, including the optional summary conversation ID. |
 | `data/project_layout.json` | Project order and hidden-project settings. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 
-The application does not start a web server, listen on a network port, or upload local project data.
+The application does not start a web server or listen on a network port. When daily summaries are enabled, the previous day's task packet is sent to the user-selected Codex conversation; other runtime data remains local.
 
 ## Project structure
 

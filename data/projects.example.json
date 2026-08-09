@@ -6,6 +6,8 @@
     "path": "C:\\Projects\\SpectraStudio",
     "manualProject": true,
     "status": "active",
+    "priority": "focus",
+    "objective": "Deliver a reliable desktop workflow for spectral analysis",
     "color": "#2474FF",
     "nextStep": "Polish the export workflow"
   },
@@ -16,6 +18,8 @@
     "path": "C:\\Projects\\DesktopAnalytics",
     "manualProject": true,
     "status": "active",
+    "priority": "normal",
+    "objective": "Turn local experiment data into a clear desktop dashboard",
     "color": "#00A6C8",
     "nextStep": "Validate the new dashboard layout"
   },
@@ -26,6 +30,8 @@
     "path": "C:\\Projects\\SignalModeling",
     "manualProject": true,
     "status": "active",
+    "priority": "focus",
+    "objective": "Establish a reproducible benchmark for signal models",
     "color": "#7C3AED",
     "nextStep": "Compare the latest benchmark results"
   },
@@ -36,6 +42,8 @@
     "path": "C:\\Projects\\PublicationFigures",
     "manualProject": true,
     "status": "active",
+    "priority": "normal",
+    "objective": "Prepare publication-ready figures with traceable revisions",
     "color": "#10A361",
     "nextStep": "Review the revised figure set"
   },
@@ -46,6 +54,8 @@
     "path": "C:\\Projects\\AutomationToolkit",
     "manualProject": true,
     "status": "active",
+    "priority": "later",
+    "objective": "Standardize repeatable release and maintenance workflows",
     "color": "#F59E0B",
     "nextStep": "Document the release workflow"
   }

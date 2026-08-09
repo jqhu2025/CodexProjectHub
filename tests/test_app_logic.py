@@ -78,6 +78,46 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window.copy_context.assert_called_once_with(project)
         window.open_codex_conversation.assert_called_once_with(running)
 
+    def test_management_scope_surfaces_focus_and_missing_next_step(self):
+        focus = {"priority": "focus", "status": "active", "nextStep": "Run validation"}
+        missing = {"priority": "normal", "status": "active", "nextStep": ""}
+        paused = {"priority": "normal", "status": "paused", "nextStep": "Decide whether to resume"}
+        self.assertTrue(APP.project_management_scope_matches(focus, "focus"))
+        self.assertTrue(APP.project_management_scope_matches(missing, "needs_next"))
+        self.assertTrue(APP.project_management_scope_matches(paused, "paused"))
+        self.assertFalse(APP.project_management_scope_matches(paused, "needs_next"))
+
+    def test_focus_projects_sort_before_regular_projects(self):
+        projects = [
+            {"name": "Regular", "priority": "normal", "nextStep": "Continue"},
+            {"name": "Focus", "priority": "focus", "nextStep": "Validate"},
+        ]
+        projects.sort(key=APP.project_management_sort_key)
+        self.assertEqual([item["name"] for item in projects], ["Focus", "Regular"])
+
+
+class DailySummaryTests(unittest.TestCase):
+    def test_payload_uses_only_requested_date_and_resolves_project(self):
+        tasks = [
+            {"date": "2026-08-08", "title": "Validate model", "status": "doing", "projectId": "p1", "notes": "Compare alpha"},
+            {"date": "2026-08-09", "title": "Today", "status": "planned", "projectId": "p1"},
+        ]
+        projects = [{"id": "p1", "name": "Denoising", "conversations": []}]
+        payload = APP.build_daily_summary_payload(tasks, projects, "2026-08-08")
+        self.assertEqual(len(payload["tasks"]), 1)
+        self.assertEqual(payload["tasks"][0]["project"], "Denoising")
+        self.assertEqual(payload["tasks"][0]["status"], "进行中")
+
+    def test_prompt_requires_specific_structured_output(self):
+        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [], "codexActivities": []})
+        self.assertIn('"overview"', prompt)
+        self.assertIn('"completed"', prompt)
+        self.assertIn("不要虚构完成情况", prompt)
+
+    def test_summary_thread_can_be_configured_without_committing_an_id(self):
+        with patch.dict(APP.os.environ, {"CODEX_HUB_SUMMARY_THREAD_ID": "summary-thread"}):
+            self.assertEqual(APP.daily_summary_thread_id(), "summary-thread")
+
 
 if __name__ == "__main__":
     unittest.main()
