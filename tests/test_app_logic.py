@@ -165,6 +165,37 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("实际推进", row.accessibleName())
         row.close()
 
+    def test_project_rows_show_the_routed_primary_command_instead_of_a_secondary_review_state(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Validation", "category": "Research",
+            "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
+            "objective": "Ship", "nextStep": "Package release", "activeTaskCount": 1,
+            "conversations": [],
+        }
+        task = {"id": "task", "projectId": "stable", "status": "doing", "title": "Validate candidate"}
+        command = APP.project_workbench_command(
+            project, [], APP.QDate.currentDate().toString(APP.Qt.ISODate),
+            {"queue": "alignment", "item": {
+                "project": project, "tasks": [task], "declaredNextStep": "Package release",
+            }},
+        )
+
+        row = APP.ProjectMapRow(project, "已关联", "#526071", "#eef2f6", lambda: None, command)
+        self.assertIn("校准方向", row.command_label.text())
+        self.assertIn("先确认实际执行方向", row.command_label.text())
+        self.assertNotIn("待建基线", row.command_label.text())
+        self.assertIn("首要动作：校准方向", row.accessibleName())
+
+        parent = APP.QWidget(); parent.categories = ["全部", "Research"]; parent.expansion_preferences = {}
+        group = APP.ProjectGroup(project, parent, command)
+        labels = [label.text() for label in group.findChildren(APP.QLabel)]
+        self.assertIn("校准方向", labels)
+        self.assertNotIn("待建基线", labels)
+        self.assertIn("首要动作：校准方向", group.accessibleName())
+        status = next(label for label in group.findChildren(APP.QLabel) if label.text() == "● 未关联")
+        self.assertEqual((status.width(), status.height()), (78, 28))
+        row.close(); group.close(); parent.close()
+
     def test_project_review_returns_to_the_same_batch_after_inspecting_the_workspace(self):
         project = {
             "id": "project-1", "name": "Release", "status": "active", "priority": "normal",

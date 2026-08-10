@@ -1224,6 +1224,52 @@ def project_review_summary(project):
     return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
 
 
+PROJECT_COMMAND_TONE_COLORS = {
+    "danger": ("#b42318", "#fff0ee"),
+    "warning": ("#a15c00", "#fff4e5"),
+    "primary": ("#1d4ed8", "#edf3ff"),
+    "focus": ("#6d3fc0", "#f1eaff"),
+    "success": ("#087443", "#e7f7ef"),
+    "neutral": ("#526071", "#eef2f6"),
+}
+
+
+def project_command_row_presentation(project, command=None):
+    """Keep project rows aligned with the workbench's one primary command."""
+    stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
+    if not command:
+        control_key, control_label, control_color, control_background, control_reason = project_control_state(project)
+        next_step = str(project.get("nextStep") or "").strip()
+        detail = (
+            f"{stage_label} · {control_label}：{control_reason}"
+            if control_key in {"blocked", "review", "attention"} else
+            f"{stage_label} · {next_step or control_reason}"
+        )
+        return {
+            "label": control_label, "detail": detail, "color": control_color,
+            "background": control_background,
+            "tooltip": f"阶段：{stage_label}\n健康度：{control_label}\n{control_reason}\n下一步：{next_step or '尚未设置'}",
+        }
+    key = str(command.get("key") or "")
+    label = str(command.get("actionLabel") or "").strip() or {
+        "completed": "已完成", "inactive": "待评估", "idle": "待完善",
+    }.get(key, str(command.get("kind") or "当前状态"))
+    title = str(command.get("title") or "当前项目").strip()
+    reason = str(command.get("reason") or "").strip()
+    detail = f"{stage_label} · {label}：{reason if key == 'attention' and reason else title}"
+    color, background = PROJECT_COMMAND_TONE_COLORS.get(str(command.get("tone") or "neutral"), PROJECT_COMMAND_TONE_COLORS["neutral"])
+    objective = str(command.get("objective") or "目标未明确")
+    next_step = str(command.get("nextStep") or "下一步未明确")
+    evidence = str(command.get("evidenceText") or "暂无执行证据")
+    return {
+        "label": label, "detail": detail, "color": color, "background": background,
+        "tooltip": (
+            f"首要动作：{title}\n判断依据：{reason or '当前状态无需额外说明'}\n"
+            f"目标：{objective}\n下一步：{next_step}\n执行证据：{evidence}"
+        ),
+    }
+
+
 def project_confirmation_counts(projects):
     """Classify confirmation work without conflating setup and cadence review."""
     counts = {"governance": 0, "baseline": 0, "overdue": 0, "total": 0}
@@ -2817,7 +2863,7 @@ class ProjectReorderContainer(QWidget):
 
 
 class ProjectMapRow(QFrame):
-    def __init__(self, project, state_text, state_color, state_background, handler):
+    def __init__(self, project, state_text, state_color, state_background, handler, command=None):
         super().__init__()
         self.handler = handler
         self.setObjectName("projectMapRow")
@@ -2825,7 +2871,8 @@ class ProjectMapRow(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setToolTip("打开项目管理面板；总览不展开具体对话")
-        control_key, control_label, control_color, _control_background, control_reason = project_control_state(project)
+        _control_key, control_label, _control_color, _control_background, control_reason = project_control_state(project)
+        command_view = project_command_row_presentation(project, command)
         stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
         signals = project_strategy_execution_signals(project)
         signal_descriptions = []
@@ -2834,7 +2881,10 @@ class ProjectMapRow(QFrame):
         if signals["executing"]:
             signal_descriptions.append(f"实际推进：{signals['executionReason']}")
         signal_description = f"，{'；'.join(signal_descriptions)}" if signal_descriptions else ""
-        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}{signal_description}，Codex {state_text}")
+        self.setAccessibleName(
+            f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，健康度{control_label}{signal_description}，"
+            f"首要动作：{command_view['label']}，{command_view['detail']}，Codex {state_text}"
+        )
         self.setStyleSheet(
             "QFrame#projectMapRow { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 9px; }"
             "QFrame#projectMapRow:hover { background: #f5f8fc; border-color: #b8c8dc; }"
@@ -2845,8 +2895,8 @@ class ProjectMapRow(QFrame):
         layout.setSpacing(9)
         dot = QLabel()
         dot.setFixedSize(6, 6)
-        dot.setToolTip(f"项目健康度：{control_label} · {control_reason}")
-        dot.setStyleSheet(f"background: {control_color}; border: none; border-radius: 3px;")
+        dot.setToolTip(f"项目健康度：{control_label} · {control_reason}\n\n{command_view['tooltip']}")
+        dot.setStyleSheet(f"background: {command_view['color']}; border: none; border-radius: 3px;")
         layout.addWidget(dot)
         text_box = QVBoxLayout(); text_box.setSpacing(1)
         title_row = QHBoxLayout(); title_row.setSpacing(6)
@@ -2863,15 +2913,10 @@ class ProjectMapRow(QFrame):
             executing.setStyleSheet(f"color: {signals['executionColor']}; background: {signals['executionBackground']}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
             title_row.addWidget(executing)
         text_box.addLayout(title_row)
-        next_step = str(project.get("nextStep") or "").strip()
-        if control_key in {"blocked", "review", "attention"}:
-            control_text = f"{stage_label} · {control_label}：{control_reason}"
-        else:
-            control_text = f"{stage_label} · {next_step or control_reason}"
-        next_label = ElidedLabel(control_text)
-        next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n{control_reason}\n下一步：{next_step or '尚未设置'}")
-        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'review', 'attention'} else '#66758a'}; border: none; font-size: 10px;")
-        text_box.addWidget(next_label)
+        self.command_label = ElidedLabel(command_view["detail"])
+        self.command_label.setToolTip(command_view["tooltip"])
+        self.command_label.setStyleSheet(f"color: {command_view['color']}; border: none; font-size: 10px;")
+        text_box.addWidget(self.command_label)
         layout.addLayout(text_box, 1)
         state = QLabel(state_text)
         state.setAlignment(Qt.AlignCenter)
@@ -2939,6 +2984,7 @@ class ProjectMindMap(QGraphicsView):
 
     def update_map(self, projects, categories):
         self.map_scene.clear()
+        routing = self.window.project_decision_routing()
         groups = {}
         for project in projects:
             groups.setdefault(project.get("category") or "未分类", []).append(project)
@@ -3028,9 +3074,11 @@ class ProjectMindMap(QGraphicsView):
 
             for project in items:
                 _state, state_text, state_color, background = project_display_state(project)
+                command = self.window.project_command_for(project, routing)
                 row = ProjectMapRow(
                     project, state_text, state_color, background,
                     lambda value=project: self.window.open_project_workspace(value),
+                    command,
                 )
                 card_layout.addWidget(row)
             card_layout.addStretch(1)
@@ -3043,7 +3091,7 @@ class ProjectMindMap(QGraphicsView):
 
 
 class ProjectGroup(QFrame):
-    def __init__(self, project, window):
+    def __init__(self, project, window, command=None):
         super().__init__()
         self.project, self.window = project, window
         self.conversations = project.get("conversations") or []
@@ -3067,23 +3115,24 @@ class ProjectGroup(QFrame):
         if signals["executing"]:
             executing = QLabel("实际推进"); executing.setFixedSize(62, 20); executing.setAlignment(Qt.AlignCenter); executing.setToolTip(signals["executionReason"])
             executing.setStyleSheet(f"color: {signals['executionColor']}; background: {signals['executionBackground']}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(executing)
-        control_key, control_label, control_color, control_background, control_reason = project_control_state(project)
-        health = QLabel(control_label); health.setFixedSize(48, 20); health.setAlignment(Qt.AlignCenter); health.setToolTip(control_reason)
-        health.setStyleSheet(f"color: {control_color}; background: {control_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(health)
+        command_view = project_command_row_presentation(project, command)
+        command_badge = QLabel(command_view["label"]); command_badge.setFixedSize(max(52, min(82, 24 + len(command_view["label"]) * 10)), 20); command_badge.setAlignment(Qt.AlignCenter); command_badge.setToolTip(command_view["tooltip"])
+        command_badge.setStyleSheet(f"color: {command_view['color']}; background: {command_view['background']}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(command_badge)
         name_box.addLayout(name_row)
-        next_step = str(project.get("nextStep") or "").strip()
-        stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
-        detail_text = control_reason if control_key in {"blocked", "review", "attention"} else (next_step or control_reason)
-        next_label = ElidedLabel(f"{stage_label} · {detail_text}"); next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n下一步：{next_step or '尚未设置'}")
-        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'review', 'attention'} else '#66758a'}; font-size: 10px; border: none;"); name_box.addWidget(next_label)
+        command_detail = ElidedLabel(command_view["detail"]); command_detail.setToolTip(command_view["tooltip"])
+        command_detail.setStyleSheet(f"color: {command_view['color']}; font-size: 10px; border: none;"); name_box.addWidget(command_detail)
         layout.addLayout(name_box, 1)
+        self.setAccessibleName(
+            f"{project.get('name') or '未命名项目'}；首要动作：{command_view['label']}；{command_view['detail']}；"
+            f"{signals['strategicReason']}；{signals['executionReason']}"
+        )
         category_select = QComboBox(); category_select.setFixedSize(138, 34); category_select.addItems(window.categories[1:]); category_select.setCurrentText(project.get("category", "未分类")); category_select.setToolTip("调整项目分类"); category_select.setAccessibleName(f"{project['name']} 的项目分类")
         category_select.setStyleSheet("QComboBox { background: #f3f6fa; border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; color: #526071; font-size: 12px; } QComboBox:hover, QComboBox:focus { background: #eef3f8; border-color: #cbd7e5; } QComboBox::drop-down { border: none; width: 22px; }")
         category_select.activated[str].connect(lambda category: window.change_project_category(project, category)); layout.addWidget(category_select)
         state_key, state_label, status_color, status_background = project_display_state(project)
         status_text = f"● {state_label}"
         count = QLabel(f"{len(self.conversations)} 个对话"); count.setFixedWidth(72); count.setAlignment(Qt.AlignRight | Qt.AlignVCenter); count.setStyleSheet("color: #748094; font-size: 11px; border: none;"); layout.addWidget(count)
-        status = QLabel(status_text); status.setFixedWidth(78); status.setAlignment(Qt.AlignCenter); status.setStyleSheet(f"color: {status_color}; background: {status_background}; border-radius: 9px; padding: 4px 7px; font-size: 11px; font-weight: 650;"); layout.addWidget(status)
+        status = QLabel(status_text); status.setFixedSize(78, 28); status.setAlignment(Qt.AlignCenter); status.setStyleSheet(f"color: {status_color}; background: {status_background}; border-radius: 9px; padding: 4px 7px; font-size: 11px; font-weight: 650;"); layout.addWidget(status)
         continue_button = QPushButton("项目面板"); continue_button.setFixedSize(94, 34); continue_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); continue_button.setIconSize(QSize(14, 14)); continue_button.setToolTip("查看目标、下一步、任务和 Codex 对话")
         continue_button.setAccessibleName(f"打开项目面板 {project['name']}")
         continue_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 4px 9px; font-size: 12px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
@@ -5891,8 +5940,14 @@ class ProjectWorkbenchDialog(QDialog):
     def refresh_command_state(self):
         routing = self.window.project_decision_routing()
         primary = primary_project_decision(self.project, routing)
-        today = QDate.currentDate().toString(Qt.ISODate)
-        command = project_workbench_command(self.project, self.window.today_tasks, today, primary)
+        provider = getattr(self.window, "project_command_for", None)
+        command = (
+            provider(self.project, routing)
+            if callable(provider) else
+            project_workbench_command(
+                self.project, self.window.today_tasks, QDate.currentDate().toString(Qt.ISODate), primary
+            )
+        )
         self._primary_decision = primary
         self._primary_command = command
         palettes = {
@@ -6750,6 +6805,13 @@ class MainWindow(QMainWindow):
             ("focus_commitment", focus_commitments),
             ("review", groups.get("review", [])),
         ))
+
+    def project_command_for(self, project, routing=None):
+        """Use the same primary decision in portfolio rows and the project workbench."""
+        routing = routing or self.project_decision_routing()
+        primary = primary_project_decision(project, routing)
+        today = QDate.currentDate().toString(Qt.ISODate)
+        return project_workbench_command(project, self.today_tasks, today, primary)
 
     def risk_response_queue(self):
         return sorted(
@@ -8910,6 +8972,7 @@ class MainWindow(QMainWindow):
 
     def render(self):
         projects = self.shown()
+        routing = self.project_decision_routing() if projects else {"queues": {}}
         if hasattr(self, "governance_button"):
             governance_count = len(self.project_governance_candidates())
             if governance_count:
@@ -8956,7 +9019,7 @@ class MainWindow(QMainWindow):
         for category in order:
             header = QLabel(f"{category}    {len(groups[category])} 个项目"); header.setStyleSheet("color: #34445c; font-size: 15px; font-weight: 700; padding: 12px 2px 4px;"); self.list.addWidget(header)
             rows_holder = ProjectReorderContainer(self, category); rows = QVBoxLayout(rows_holder); rows.setContentsMargins(0, 0, 0, 10); rows.setSpacing(8)
-            for project in groups[category]: rows.addWidget(ProjectGroup(project, self))
+            for project in groups[category]: rows.addWidget(ProjectGroup(project, self, self.project_command_for(project, routing)))
             self.list.addWidget(rows_holder)
         self.list.addStretch()
 
