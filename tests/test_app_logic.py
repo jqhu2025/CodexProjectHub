@@ -308,7 +308,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(changed)
         update = window.update_project_management.call_args.args[1]
         self.assertEqual(update["priority"], "focus")
-        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
+        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "focus")
 
     def test_activity_evidence_uses_the_latest_real_task_codex_or_review_timestamp(self):
         project = {
@@ -359,7 +359,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         update = window.update_project_management.call_args.args[1]
         self.assertEqual(update["status"], "paused")
         self.assertEqual(update["priority"], "later")
-        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
+        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "calibration")
 
     def test_task_wip_capacity_uses_only_active_tasks_on_the_selected_day(self):
         tasks = [
@@ -484,6 +484,33 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             APP.MainWindow.update_project_management(window, project, complete, notify=False, source="codex")
         self.assertTrue(project.get("reviewedAt"))
         self.assertEqual(project["reviewedAt"], target["reviewedAt"])
+
+    def test_incomplete_project_editor_save_does_not_claim_a_review_baseline(self):
+        data = {
+            "name": "Research workspace", "path": "C:/sample/research", "color": "#58d7f6",
+            "category": "Research", "status": "active", "priority": "normal",
+            "stage": "planning", "health": "on_track", "objective": "",
+            "nextStep": "", "blocker": "", "icon": "",
+        }
+        dialog = Mock()
+        dialog.exec_.return_value = APP.QDialog.Accepted
+        dialog.value.return_value = data
+        dialog.insight_applied = False
+        status_bar = Mock()
+        window = SimpleNamespace(
+            categories=["全部", "Research"], saved_projects=[], project_layout={"hiddenProjectIds": [], "categoryOrders": {}},
+            apply_project_completion_lifecycle=Mock(return_value=True),
+            record_project_decision=Mock(return_value={"id": "decision"}),
+            refresh=Mock(), statusBar=lambda: status_bar, view_signature="old",
+        )
+        with patch.object(APP, "ProjectEditor", return_value=dialog), patch.object(
+            APP, "codex_sidebar_projects", return_value=[]
+        ), patch.object(APP, "save_json"):
+            APP.MainWindow.edit_project(window, None)
+
+        self.assertEqual(len(window.saved_projects), 1)
+        self.assertNotIn("reviewedAt", window.saved_projects[0])
+        window.record_project_decision.assert_called_once()
 
     def test_completed_project_is_closed_as_one_coherent_decision(self):
         normalized, notes = APP.normalize_project_management_decision(

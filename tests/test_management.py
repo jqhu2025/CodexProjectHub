@@ -9,6 +9,20 @@ class ManagementModuleTests(unittest.TestCase):
     def test_domain_module_has_no_qt_dependency(self):
         self.assertNotIn("PyQt", inspect.getsource(management))
 
+    def test_only_complete_full_governance_changes_establish_a_review_baseline(self):
+        complete = {
+            "status": "active", "objective": "Ship validated release", "nextStep": "Run acceptance checks",
+            "stage": "validation", "health": "on_track", "blocker": "",
+        }
+        incomplete = {**complete, "objective": ""}
+
+        for source in ("manual", "editor", "codex", "created"):
+            self.assertTrue(management.project_change_establishes_review(complete, source, True))
+        for source in ("focus", "calibration", "alignment", "category", "undo"):
+            self.assertFalse(management.project_change_establishes_review(complete, source, True))
+        self.assertFalse(management.project_change_establishes_review(incomplete, "editor", True))
+        self.assertFalse(management.project_change_establishes_review(complete, "editor", False))
+
     def test_task_history_records_only_real_transitions(self):
         task = {"id": "task-1", "status": "planned"}
         self.assertTrue(management.record_task_status_event(

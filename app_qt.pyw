@@ -66,6 +66,7 @@ from codex_hub.management import (
     project_management_validation_error,
     project_blocker_duration_label,
     project_completion_outcome,
+    project_change_establishes_review,
     project_next_step_completion_update,
     project_next_step_reopen_update,
     record_task_completion_outcome,
@@ -5097,7 +5098,7 @@ class MainWindow(QMainWindow):
             "nextStep": project.get("nextStep", ""),
             "blocker": project.get("blocker", ""),
         }
-        result = self.update_project_management(project, data, notify=False, source="manual")
+        result = self.update_project_management(project, data, notify=False, source="focus")
         if result is None:
             self.statusBar().showMessage("没有成功调整项目重点，请确认项目仍然存在", 3600)
             return False
@@ -5137,7 +5138,7 @@ class MainWindow(QMainWindow):
             "nextStep": project.get("nextStep", ""),
             "blocker": project.get("blocker", ""),
         }
-        result = self.update_project_management(project, data, notify=False, source="manual")
+        result = self.update_project_management(project, data, notify=False, source="calibration")
         if result is None:
             return False
         self.statusBar().showMessage(f"{project.get('name') or '项目'}已暂缓；资料、文件和 Codex 对话均保留", 4000)
@@ -6431,11 +6432,7 @@ class MainWindow(QMainWindow):
                 project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
         entry = self.record_project_decision(project, before, target, decision_source, occurred_at)
-        if (
-            entry is not None
-            and decision_source in {"manual", "editor", "codex", "created"}
-            and not project_governance_gaps(target)
-        ):
+        if project_change_establishes_review(target, decision_source, entry is not None):
             target["reviewedAt"] = occurred_at
             project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
@@ -6897,7 +6894,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
             return
         entry = self.record_project_decision(decision_project, before, target, source, occurred_at)
-        if entry is not None:
+        if project_change_establishes_review(target, source, entry is not None):
             target["reviewedAt"] = occurred_at
             decision_project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)

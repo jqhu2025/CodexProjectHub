@@ -60,7 +60,10 @@ PROJECT_DECISION_SOURCES = {
     "archive": "项目归档",
     "restore": "项目恢复",
     "closeout": "项目收尾",
+    "focus": "战略重点调整",
+    "calibration": "活跃组合校准",
 }
+PROJECT_REVIEW_BASELINE_SOURCES = {"manual", "editor", "codex", "created"}
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 PROJECT_BLOCKER_LIFECYCLE_FIELDS = (
     "blockedAt",
@@ -621,6 +624,21 @@ def project_governance_gaps(project):
     if project.get("health") not in PROJECT_HEALTH:
         gaps.append("health")
     return gaps
+
+
+def project_change_establishes_review(project, source, has_changes=True):
+    """Return True only when a complete project review can be claimed.
+
+    Full editor/manual saves, reviewed Codex governance, and complete project
+    creation may establish a baseline. Narrow portfolio actions such as focus,
+    calibration, alignment, category moves, or undo remain audited decisions
+    without pretending every governance field was reviewed.
+    """
+    return bool(
+        has_changes
+        and source in PROJECT_REVIEW_BASELINE_SOURCES
+        and not project_governance_gaps(project)
+    )
 
 
 def merge_missing_project_insight(project, insight, allowed_fields=None):
