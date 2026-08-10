@@ -141,6 +141,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         ]
         self.assertEqual([task["id"] for task in APP.open_project_tasks(tasks, project)], ["planned", "doing"])
 
+    def test_task_status_transition_rejects_same_or_unknown_columns(self):
+        task = {"status": "planned"}
+        self.assertTrue(APP.task_status_transition_allowed(task, "doing"))
+        self.assertTrue(APP.task_status_transition_allowed(task, "done"))
+        self.assertFalse(APP.task_status_transition_allowed(task, "planned"))
+        self.assertFalse(APP.task_status_transition_allowed(task, "blocked"))
+        self.assertFalse(APP.task_status_transition_allowed(None, "doing"))
+
     def test_portfolio_decision_groups_surface_actions_without_forcing_exclusivity(self):
         active_attention = {
             "name": "Active risk", "status": "active", "health": "attention",

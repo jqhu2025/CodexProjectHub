@@ -60,6 +60,7 @@ Removing a project from the application does not delete its folder or Codex conv
 - Associate a task with a category, project, and optional Codex conversation.
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
 - Create a task directly in any board column with that state preselected.
+- Drag a task by its handle between Planned, In Progress, and Completed; the status selector remains available as an accessible fallback.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.

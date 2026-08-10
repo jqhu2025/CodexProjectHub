@@ -1112,6 +1112,10 @@ def open_project_tasks(tasks, project):
     ]
 
 
+def task_status_transition_allowed(task, target_status):
+    return bool(task and target_status in TASK_STATUS and task.get("status", "planned") != target_status)
+
+
 def project_focus_state(project):
     """Resolve the live portfolio focus from deliberate priority and actual work."""
     if (project or {}).get("status", "active") != "active":
@@ -1822,6 +1826,95 @@ class ProjectDragHandle(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class TaskDragHandle(QLabel):
+    MIME_TYPE = "application/x-codex-task-id"
+
+    def __init__(self, task):
+        super().__init__()
+        self.task_id = str((task or {}).get("id") or "")
+        self.press_position = None
+        self.setFixedSize(24, 26)
+        self.setAlignment(Qt.AlignCenter)
+        self.setPixmap(fluent_icon("\uE76F", color="#8794a6", size=14).pixmap(QSize(14, 14)))
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("拖到其他列可调整任务状态")
+        self.setAccessibleName(f"拖动任务 {(task or {}).get('title', '未命名任务')} 调整状态")
+        self.setStyleSheet("border: none; background: transparent;")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.task_id:
+            self.press_position = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton) or self.press_position is None or not self.task_id:
+            return
+        if (event.pos() - self.press_position).manhattanLength() < QApplication.startDragDistance():
+            return
+        mime = QMimeData(); mime.setData(self.MIME_TYPE, self.task_id.encode("utf-8"))
+        drag = QDrag(self); drag.setMimeData(mime); drag.exec_(Qt.MoveAction)
+        self.setCursor(Qt.OpenHandCursor)
+
+    def mouseReleaseEvent(self, event):
+        self.setCursor(Qt.OpenHandCursor)
+        self.press_position = None
+        super().mouseReleaseEvent(event)
+
+
+class TaskDropColumn(QFrame):
+    def __init__(self, window, status):
+        super().__init__()
+        self.window = window
+        self.status = status
+        self.setAcceptDrops(True)
+        self.setObjectName("taskColumn")
+        self.setProperty("dropActive", False)
+
+    def task_from_event(self, event):
+        if not event.mimeData().hasFormat(TaskDragHandle.MIME_TYPE):
+            return None
+        try:
+            task_id = bytes(event.mimeData().data(TaskDragHandle.MIME_TYPE)).decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return next((task for task in self.window.today_tasks if str(task.get("id") or "") == task_id), None)
+
+    def set_drop_active(self, active):
+        if bool(self.property("dropActive")) == bool(active):
+            return
+        self.setProperty("dropActive", bool(active))
+        self.style().unpolish(self); self.style().polish(self)
+
+    def dragEnterEvent(self, event):
+        task = self.task_from_event(event)
+        if not task_status_transition_allowed(task, self.status):
+            event.ignore(); return
+        self.set_drop_active(True)
+        self.window.statusBar().showMessage(f"松开后移至“{TASK_STATUS[self.status]}”")
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        task = self.task_from_event(event)
+        if task_status_transition_allowed(task, self.status):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.set_drop_active(False)
+        self.window.statusBar().clearMessage()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        task = self.task_from_event(event)
+        self.set_drop_active(False)
+        if not task_status_transition_allowed(task, self.status):
+            event.ignore(); return
+        event.acceptProposedAction()
+        self.window.set_task_status(task.get("id"), self.status)
+
+
 class ProjectReorderContainer(QWidget):
     def __init__(self, window, category):
         super().__init__()
@@ -2326,6 +2419,7 @@ class TodayTaskCard(QFrame):
         root = QVBoxLayout(self); root.setContentsMargins(12, 10, 10, 9); root.setSpacing(7)
         headline = QHBoxLayout(); headline.setSpacing(8)
         title = QLabel(task.get("title") or "未命名任务"); title.setWordWrap(True); title.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); headline.addWidget(title, 1)
+        headline.addWidget(TaskDragHandle(task), 0, Qt.AlignTop)
         root.addLayout(headline)
         meta_row = QHBoxLayout(); meta_row.setSpacing(7)
         meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
@@ -3566,8 +3660,12 @@ class MainWindow(QMainWindow):
         for status, label in TASK_STATUS.items():
             accent = TASK_COLORS[status]
             surface = {"planned": "#faf8ff", "doing": "#f7faff", "done": "#f7fcf9"}.get(status, "#f8fafc")
-            column = QFrame(); column.setObjectName("taskColumn"); column.setMinimumSize(250, 236); column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            column.setStyleSheet(f"QFrame#taskColumn {{ background: {surface}; border: 1px solid #d8e1eb; border-top: 3px solid {accent}; border-radius: 12px; }} QFrame#taskColumn QLabel {{ background: transparent; }}")
+            column = TaskDropColumn(self, status); column.setMinimumSize(250, 236); column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            column.setStyleSheet(
+                f"QFrame#taskColumn {{ background: {surface}; border: 1px solid #d8e1eb; border-top: 3px solid {accent}; border-radius: 12px; }}"
+                f"QFrame#taskColumn[dropActive='true'] {{ background: #eef5ff; border: 2px dashed {accent}; border-top: 3px solid {accent}; }}"
+                "QFrame#taskColumn QLabel { background: transparent; }"
+            )
             column_layout = QVBoxLayout(column); column_layout.setContentsMargins(12, 10, 12, 12); column_layout.setSpacing(8)
             header = QHBoxLayout(); header.setSpacing(7)
             state_icon = QLabel(); state_icon.setFixedSize(18, 18); state_icon.setPixmap(fluent_icon("\uE768", color=accent, size=14).pixmap(QSize(14, 14))); state_icon.setAlignment(Qt.AlignCenter); header.addWidget(state_icon)
@@ -3657,7 +3755,7 @@ class MainWindow(QMainWindow):
 
     def set_task_status(self, task_id, status):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
-        if not task or status not in TASK_STATUS:
+        if not task_status_transition_allowed(task, status):
             return
         previous_status = task.get("status", "planned")
         now = datetime.now().isoformat(timespec="seconds")
@@ -3671,6 +3769,7 @@ class MainWindow(QMainWindow):
         else:
             self.sync_project_workload(); self.view_signature = None
             self.render_today_tasks(); self.render()
+            self.statusBar().showMessage(f"任务已移至“{TASK_STATUS[status]}”", 2200)
 
     def delete_today_task(self, task):
         if QMessageBox.question(self, "删除任务", f"确定删除“{task.get('title', '未命名任务')}”吗？") != QMessageBox.Yes:
