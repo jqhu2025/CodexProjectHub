@@ -1247,6 +1247,106 @@ def portfolio_decision_groups(projects):
     }
 
 
+def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None):
+    """Choose one calm, evidence-based management decision from competing queues."""
+    groups = groups or {}
+    capacity_state = capacity_state or {}
+    alignments = list(alignments or [])
+    lifecycle_items = list(lifecycle_items or [])
+    wip_state = wip_state or {}
+
+    def names_for(items, nested=False):
+        projects = [(item.get("project") or {}) if nested else item for item in items]
+        return [str(project.get("name") or "未命名项目") for project in projects]
+
+    def preview(names, limit=3):
+        text = "、".join(names[:limit])
+        return f"{text} 等 {len(names)} 项" if len(names) > limit else text
+
+    def finalize(decision):
+        secondary = []
+        if alignments and decision["scope"] != "alignment":
+            secondary.append(f"执行校准 {len(alignments)}")
+        if lifecycle_items and decision["scope"] != "lifecycle":
+            secondary.append(f"生命周期 {len(lifecycle_items)}")
+        decision["secondary"] = " · ".join(secondary)
+        return decision
+
+    attention = list(groups.get("attention") or [])
+    if attention:
+        names = names_for(attention)
+        blocked = sum(project_control_state(project)[0] == "blocked" for project in attention)
+        detail = f"其中 {blocked} 项阻塞" if blocked else "已确认需要关注"
+        return finalize({
+            "scope": "attention", "count": len(attention), "title": "先处理风险与阻塞",
+            "summary": f"{detail}：{preview(names)}", "names": names, "action": "进入处置",
+        })
+
+    wip_over_by = int(wip_state.get("overBy") or 0)
+    if wip_over_by:
+        tasks = list(wip_state.get("doing") or [])
+        names = [str(task.get("title") or "未命名任务") for task in tasks]
+        protected = len(wip_state.get("protected") or [])
+        protected_text = f"，其中 {protected} 项由 Codex 运行保护" if protected else ""
+        return finalize({
+            "scope": "task_wip", "count": wip_over_by, "title": "收敛进行中任务",
+            "summary": f"当前 {wip_state.get('count', len(tasks))}/{wip_state.get('limit', 0)}，超出容量 {wip_over_by} 项{protected_text}：{preview(names)}",
+            "names": names, "action": "收敛并行",
+        })
+
+    if alignments:
+        names = names_for(alignments, nested=True)
+        return finalize({
+            "scope": "alignment", "count": len(alignments), "title": "校准实际执行方向",
+            "summary": f"今日执行与项目已保存的下一步不一致：{preview(names)}",
+            "names": names, "action": "逐项校准",
+        })
+
+    needs_next = list(groups.get("needs_next") or [])
+    if needs_next:
+        names = names_for(needs_next)
+        return finalize({
+            "scope": "needs_next", "count": len(needs_next), "title": "明确项目下一步",
+            "summary": f"这些活跃项目尚无可执行动作：{preview(names)}",
+            "names": names, "action": "补齐决策",
+        })
+
+    over_by = int(capacity_state.get("overBy") or 0)
+    outside_focus = list(capacity_state.get("executionOutsideFocus") or [])
+    if over_by:
+        names = names_for(capacity_state.get("strategic") or [])
+        return finalize({
+            "scope": "focus_capacity", "count": over_by, "title": "收敛战略重点",
+            "summary": f"重点组合超出容量 {over_by} 项：{preview(names)}",
+            "names": names, "action": "调整重点",
+        })
+    if outside_focus:
+        names = names_for(outside_focus)
+        return finalize({
+            "scope": "focus_capacity", "count": len(outside_focus), "title": "校准战略重点",
+            "summary": f"实际推进尚未纳入重点组合：{preview(names)}",
+            "names": names, "action": "调整重点",
+        })
+
+    review = list(groups.get("review") or [])
+    if review:
+        names = names_for(review)
+        return finalize({
+            "scope": "review", "count": len(review), "title": "建立项目复核节奏",
+            "summary": f"待建立或更新管理基线：{preview(names)}",
+            "names": names, "action": "开始复核",
+        })
+
+    if lifecycle_items:
+        names = names_for(lifecycle_items, nested=True)
+        return finalize({
+            "scope": "lifecycle", "count": len(lifecycle_items), "title": "校准活跃项目组合",
+            "summary": f"长期静默项目需要确认继续或暂缓：{preview(names)}",
+            "names": names, "action": "逐项确认",
+        })
+    return None
+
+
 def build_daily_summary_payload(tasks, projects, target_date, project_decisions=None):
     """Create a compact, factual source packet for the fixed Codex summary task."""
     project_index = {
@@ -5105,41 +5205,17 @@ class MainWindow(QMainWindow):
             decision_layout.addWidget(card, 1)
         layout.addWidget(decision_panel)
 
-        self.execution_alignment_panel = ClickableFrame(); self.execution_alignment_panel.setObjectName("executionAlignmentPanel"); self.execution_alignment_panel.setMinimumHeight(54)
-        self.execution_alignment_panel.setToolTip("逐项确认项目保存的下一步与今日实际执行是否一致")
-        self.execution_alignment_panel.setStyleSheet(
-            "QFrame#executionAlignmentPanel { background: #f7faff; border: 1px solid #c9d8ee; border-left: 4px solid #2563eb; border-radius: 10px; }"
-            "QFrame#executionAlignmentPanel:hover, QFrame#executionAlignmentPanel:focus { background: #ffffff; border-color: #7ea4db; border-left-color: #1d4ed8; }"
-        )
-        self.execution_alignment_panel.clicked.connect(self.show_execution_alignment_queue)
-        alignment_layout = QHBoxLayout(self.execution_alignment_panel); alignment_layout.setContentsMargins(13, 8, 12, 8); alignment_layout.setSpacing(10)
-        alignment_icon = QLabel(); alignment_icon.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_icon.setFixedSize(30, 30); alignment_icon.setAlignment(Qt.AlignCenter)
-        alignment_icon.setPixmap(fluent_icon("\uE8A7", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); alignment_icon.setStyleSheet("background: #e7effc; border-radius: 8px;"); alignment_layout.addWidget(alignment_icon)
-        alignment_text_box = QVBoxLayout(); alignment_text_box.setSpacing(1)
-        alignment_title = QLabel("执行方向待确认"); alignment_title.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_title.setStyleSheet("color: #253247; font-size: 13px; font-weight: 700;"); alignment_text_box.addWidget(alignment_title)
-        self.execution_alignment_summary = ElidedLabel(); self.execution_alignment_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.execution_alignment_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); alignment_text_box.addWidget(self.execution_alignment_summary); alignment_layout.addLayout(alignment_text_box, 1)
-        self.execution_alignment_count = QLabel("0"); self.execution_alignment_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.execution_alignment_count.setAlignment(Qt.AlignCenter); self.execution_alignment_count.setFixedSize(30, 26)
-        self.execution_alignment_count.setStyleSheet("color: #1d4ed8; background: #e8f0ff; border-radius: 8px; font-size: 12px; font-weight: 750;"); alignment_layout.addWidget(self.execution_alignment_count)
-        alignment_action = QLabel("逐项校准  →"); alignment_action.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_action.setStyleSheet("color: #1d4ed8; font-size: 11px; font-weight: 700;"); alignment_layout.addWidget(alignment_action)
-        self.execution_alignment_panel.hide(); layout.addWidget(self.execution_alignment_panel)
-
-        self.lifecycle_calibration_panel = ClickableFrame(); self.lifecycle_calibration_panel.setObjectName("lifecycleCalibrationPanel"); self.lifecycle_calibration_panel.setMinimumHeight(54)
-        self.lifecycle_calibration_panel.setToolTip("逐项确认长期静默的活跃项目应继续推进还是暂缓")
-        self.lifecycle_calibration_panel.setStyleSheet(
-            "QFrame#lifecycleCalibrationPanel { background: #f7f9fc; border: 1px solid #d2dce8; border-left: 4px solid #315f9b; border-radius: 10px; }"
-            "QFrame#lifecycleCalibrationPanel:hover, QFrame#lifecycleCalibrationPanel:focus { background: #ffffff; border-color: #8ba6c7; border-left-color: #24588f; }"
-        )
-        self.lifecycle_calibration_panel.clicked.connect(self.show_lifecycle_calibration)
-        calibration_layout = QHBoxLayout(self.lifecycle_calibration_panel); calibration_layout.setContentsMargins(13, 8, 12, 8); calibration_layout.setSpacing(10)
-        calibration_icon = QLabel(); calibration_icon.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_icon.setFixedSize(30, 30); calibration_icon.setAlignment(Qt.AlignCenter)
-        calibration_icon.setPixmap(fluent_icon("\uE823", color="#315f9b", size=16).pixmap(QSize(16, 16))); calibration_icon.setStyleSheet("background: #e7eef7; border-radius: 8px;"); calibration_layout.addWidget(calibration_icon)
-        calibration_text = QVBoxLayout(); calibration_text.setSpacing(1)
-        calibration_title = QLabel("活跃组合待校准"); calibration_title.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_title.setStyleSheet("color: #253247; font-size: 13px; font-weight: 700;"); calibration_text.addWidget(calibration_title)
-        self.lifecycle_calibration_summary = ElidedLabel(); self.lifecycle_calibration_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.lifecycle_calibration_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); calibration_text.addWidget(self.lifecycle_calibration_summary); calibration_layout.addLayout(calibration_text, 1)
-        self.lifecycle_calibration_count = QLabel("0"); self.lifecycle_calibration_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.lifecycle_calibration_count.setAlignment(Qt.AlignCenter); self.lifecycle_calibration_count.setFixedSize(30, 26)
-        self.lifecycle_calibration_count.setStyleSheet("color: #315f9b; background: #e7eef7; border-radius: 8px; font-size: 12px; font-weight: 750;"); calibration_layout.addWidget(self.lifecycle_calibration_count)
-        calibration_action = QLabel("逐项确认  →"); calibration_action.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_action.setStyleSheet("color: #315f9b; font-size: 11px; font-weight: 700;"); calibration_layout.addWidget(calibration_action)
-        self.lifecycle_calibration_panel.hide(); layout.addWidget(self.lifecycle_calibration_panel)
+        self.portfolio_priority_panel = ClickableFrame(); self.portfolio_priority_panel.setObjectName("portfolioPriorityPanel"); self.portfolio_priority_panel.setMinimumHeight(62)
+        self.portfolio_priority_panel.clicked.connect(self.open_portfolio_priority_decision)
+        priority_layout = QHBoxLayout(self.portfolio_priority_panel); priority_layout.setContentsMargins(14, 9, 13, 9); priority_layout.setSpacing(11)
+        self.portfolio_priority_icon = QLabel(); self.portfolio_priority_icon.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_icon.setFixedSize(34, 34); self.portfolio_priority_icon.setAlignment(Qt.AlignCenter); priority_layout.addWidget(self.portfolio_priority_icon)
+        priority_text = QVBoxLayout(); priority_text.setSpacing(1)
+        self.portfolio_priority_kicker = QLabel("下一项管理决策"); self.portfolio_priority_kicker.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_kicker.setStyleSheet("color: #718096; font-size: 10px; font-weight: 650; letter-spacing: 0.5px;"); priority_text.addWidget(self.portfolio_priority_kicker)
+        self.portfolio_priority_title = QLabel(); self.portfolio_priority_title.setAttribute(Qt.WA_TransparentForMouseEvents); priority_text.addWidget(self.portfolio_priority_title)
+        self.portfolio_priority_summary = ElidedLabel(); self.portfolio_priority_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); priority_text.addWidget(self.portfolio_priority_summary); priority_layout.addLayout(priority_text, 1)
+        self.portfolio_priority_count = QLabel("0"); self.portfolio_priority_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_count.setAlignment(Qt.AlignCenter); self.portfolio_priority_count.setFixedSize(34, 28); priority_layout.addWidget(self.portfolio_priority_count)
+        self.portfolio_priority_action = QLabel("打开队列  →"); self.portfolio_priority_action.setAttribute(Qt.WA_TransparentForMouseEvents); priority_layout.addWidget(self.portfolio_priority_action)
+        self.portfolio_priority_panel.hide(); layout.addWidget(self.portfolio_priority_panel)
 
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
@@ -5379,6 +5455,17 @@ class MainWindow(QMainWindow):
         today = QDate.currentDate().toString(Qt.ISODate)
         return portfolio_execution_alignment_queue(self.projects, self.today_tasks, today)
 
+    def open_portfolio_priority_decision(self):
+        scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
+        if scope == "task_wip":
+            self.show_task_wip()
+        elif scope == "alignment":
+            self.show_execution_alignment_queue()
+        elif scope == "lifecycle":
+            self.show_lifecycle_calibration()
+        elif scope:
+            self.open_project_scope(scope)
+
     def show_execution_alignment_queue(self):
         alignments = self.execution_alignment_queue()
         if not alignments:
@@ -5455,39 +5542,51 @@ class MainWindow(QMainWindow):
             controls["preview"].setToolTip(tooltip)
             controls["frame"].setToolTip(tooltip)
             controls["frame"].setAccessibleName(f"{controls['caption']}，{len(projects)} 个项目。{summary}")
-        if hasattr(self, "execution_alignment_panel"):
+        if hasattr(self, "portfolio_priority_panel"):
             alignments = self.execution_alignment_queue()
-            self.execution_alignment_panel.setVisible(bool(alignments))
-            if alignments:
-                names = [str((item.get("project") or {}).get("name") or "未命名项目") for item in alignments]
-                preview = "、".join(names[:3])
-                if len(names) > 3:
-                    preview += f" 等 {len(names)} 项"
-                summary = f"{len(names)} 个项目的今日执行与已保存下一步不同：{preview}"
-                tooltip = "执行方向待确认\n" + "\n".join(f"• {name}" for name in names)
-                self.execution_alignment_count.setText(str(len(names)))
-                self.execution_alignment_summary.setText(summary); self.execution_alignment_summary.setToolTip(tooltip)
-                self.execution_alignment_panel.setToolTip(tooltip)
-                self.execution_alignment_panel.setAccessibleName(f"执行方向待确认，{len(names)} 个项目。{summary}")
-        if hasattr(self, "lifecycle_calibration_panel"):
-            queue_items = self.lifecycle_calibration_queue()
-            self.lifecycle_calibration_panel.setVisible(bool(queue_items))
-            if queue_items:
-                names = [str((item.get("project") or {}).get("name") or "未命名项目") for item in queue_items]
-                preview = "、".join(names[:3])
-                if len(names) > 3:
-                    preview += f" 等 {len(names)} 项"
-                days = portfolio_inactivity_days()
-                summary = f"{len(names)} 个活跃项目已静默至少 {days} 天：{preview}"
-                details = [
-                    f"• {(item.get('project') or {}).get('name') or '未命名项目'}：{(item.get('state') or {}).get('reason') or '等待确认'}"
-                    for item in queue_items
-                ]
-                tooltip = "活跃组合待校准\n" + "\n".join(details)
-                self.lifecycle_calibration_count.setText(str(len(names)))
-                self.lifecycle_calibration_summary.setText(summary); self.lifecycle_calibration_summary.setToolTip(tooltip)
-                self.lifecycle_calibration_panel.setToolTip(tooltip)
-                self.lifecycle_calibration_panel.setAccessibleName(f"活跃组合待校准，{len(names)} 个项目。{summary}")
+            lifecycle_items = self.lifecycle_calibration_queue()
+            wip_state = self.task_wip_state(QDate.currentDate().toString(Qt.ISODate))
+            decision = portfolio_priority_decision(
+                groups, capacity_state, alignments, lifecycle_items, wip_state=wip_state
+            )
+            self.portfolio_priority_panel.setVisible(decision is not None)
+            self._portfolio_priority_scope = (decision or {}).get("scope", "")
+            if decision:
+                scope = decision["scope"]
+                palette = {
+                    "attention": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE7BA"),
+                    "task_wip": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE8EF"),
+                    "alignment": ("#1d4ed8", "#f5f8ff", "#c9d8ee", "#e7effc", "\uE8A7"),
+                    "needs_next": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE72A"),
+                    "focus_capacity": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE8D4"),
+                    "review": ("#315f9b", "#f6f9fd", "#cfdae8", "#e7eef7", "\uE81C"),
+                    "lifecycle": ("#315f9b", "#f7f9fc", "#d2dce8", "#e7eef7", "\uE823"),
+                }
+                color, background, border, icon_background, glyph = palette[scope]
+                self.portfolio_priority_panel.setStyleSheet(
+                    f"QFrame#portfolioPriorityPanel {{ background: {background}; border: 1px solid {border}; border-left: 4px solid {color}; border-radius: 11px; }}"
+                    f"QFrame#portfolioPriorityPanel:hover, QFrame#portfolioPriorityPanel:focus {{ background: #ffffff; border-color: {color}; }}"
+                )
+                self.portfolio_priority_icon.setPixmap(fluent_icon(glyph, color=color, size=17).pixmap(QSize(17, 17)))
+                self.portfolio_priority_icon.setStyleSheet(f"background: {icon_background}; border-radius: 9px;")
+                self.portfolio_priority_title.setText(decision["title"])
+                self.portfolio_priority_title.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 720;")
+                summary_text = decision["summary"]
+                if decision.get("secondary"):
+                    summary_text += f"  ·  后续：{decision['secondary']}"
+                self.portfolio_priority_summary.setText(summary_text)
+                self.portfolio_priority_count.setText(str(decision["count"]))
+                self.portfolio_priority_count.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid {border}; border-radius: 8px; font-size: 12px; font-weight: 750;")
+                self.portfolio_priority_action.setText(f"{decision['action']}  →")
+                self.portfolio_priority_action.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 700;")
+                tooltip = decision["title"] + "\n" + "\n".join(f"• {name}" for name in decision["names"])
+                if decision.get("secondary"):
+                    tooltip += f"\n后续队列：{decision['secondary']}"
+                self.portfolio_priority_summary.setToolTip(tooltip)
+                self.portfolio_priority_panel.setToolTip(tooltip)
+                self.portfolio_priority_panel.setAccessibleName(
+                    f"下一项管理决策：{decision['title']}，{decision['count']} 项。{summary_text}"
+                )
 
     def refresh(self, silent=False, scan=True):
         categories = load_categories()

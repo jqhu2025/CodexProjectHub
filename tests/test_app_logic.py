@@ -769,6 +769,67 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertNotIn(legacy_review, groups["attention"])
         self.assertEqual(groups["needs_next"], [needs_next])
 
+    def test_portfolio_priority_selects_one_decision_in_management_order(self):
+        risk = {"name": "Blocked release", "status": "active", "blocker": "Missing input"}
+        alignment = {"project": {"name": "Model validation"}}
+        needs_next = {"name": "Research plan"}
+        outside_focus = {"name": "Live experiment"}
+        review = {"name": "Portfolio review"}
+        lifecycle = {"project": {"name": "Quiet project"}}
+        groups = {"attention": [risk], "needs_next": [needs_next], "review": [review]}
+        capacity = {
+            "overBy": 0, "executionOutsideFocus": [outside_focus],
+            "strategic": [], "capacity": 3,
+        }
+
+        decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
+        self.assertEqual((decision["scope"], decision["title"]), ("attention", "先处理风险与阻塞"))
+        self.assertEqual(decision["secondary"], "执行校准 1 · 生命周期 1")
+
+        groups["attention"] = []
+        wip = {
+            "count": 4, "limit": 3, "overBy": 1,
+            "doing": [{"title": "Validation"}, {"title": "Packaging"}],
+            "protected": [{"title": "Validation"}],
+        }
+        wip_decision = APP.portfolio_priority_decision(
+            groups, capacity, [alignment], [lifecycle], wip_state=wip
+        )
+        self.assertEqual((wip_decision["scope"], wip_decision["count"]), ("task_wip", 1))
+        self.assertIn("Codex 运行保护", wip_decision["summary"])
+
+        alignment_decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
+        self.assertEqual(alignment_decision["scope"], "alignment")
+        self.assertEqual(alignment_decision["secondary"], "生命周期 1")
+        self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "needs_next")
+
+        groups["needs_next"] = []
+        self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "focus_capacity")
+        capacity["executionOutsideFocus"] = []
+        self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "review")
+        groups["review"] = []
+        self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "lifecycle")
+        self.assertIsNone(APP.portfolio_priority_decision(groups, capacity, [], []))
+
+    def test_portfolio_priority_routes_to_the_existing_decision_flow(self):
+        window = SimpleNamespace(
+            _portfolio_priority_scope="alignment",
+            show_execution_alignment_queue=Mock(), show_lifecycle_calibration=Mock(),
+            open_project_scope=Mock(),
+        )
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_execution_alignment_queue.assert_called_once_with()
+        window.open_project_scope.assert_not_called()
+
+        window._portfolio_priority_scope = "task_wip"
+        window.show_task_wip = Mock()
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_task_wip.assert_called_once_with()
+
+        window._portfolio_priority_scope = "review"
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.open_project_scope.assert_called_once_with("review")
+
     def test_project_insight_requires_an_existing_project_folder(self):
         with patch.object(APP, "find_summary_codex_binary", return_value="codex"):
             result = APP.generate_project_insight({"path": "Z:/definitely-missing-project"})
