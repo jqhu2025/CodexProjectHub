@@ -249,6 +249,35 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("验证阶段", management.format_project_decision_summary(entry))
         self.assertIn("需关注", management.format_project_decision_summary(entry))
 
+    def test_execution_alignment_only_surfaces_unreviewed_real_divergence(self):
+        project = {
+            "id": "runtime-id", "savedId": "stable-id", "name": "Release",
+            "status": "active", "priority": "normal", "nextStep": "Run verification",
+        }
+        matching = {"id": "task-1", "projectId": "stable-id", "date": "2026-08-10", "status": "doing", "title": " Run   verification "}
+        self.assertIsNone(management.project_execution_alignment(project, [matching], "2026-08-10"))
+
+        live = {**matching, "title": "Investigate failed benchmark"}
+        alignment = management.project_execution_alignment(project, [live], "2026-08-10")
+        self.assertFalse(alignment["acknowledged"])
+        self.assertEqual(alignment["tasks"], [live])
+        self.assertEqual(len(management.portfolio_execution_alignment_queue([project], [live], "2026-08-10")), 1)
+
+        project["executionAlignmentSignature"] = alignment["signature"]
+        self.assertEqual(management.portfolio_execution_alignment_queue([project], [live], "2026-08-10"), [])
+        changed_live = {**live, "title": "Validate corrected benchmark"}
+        self.assertEqual(len(management.portfolio_execution_alignment_queue([project], [changed_live], "2026-08-10")), 1)
+        self.assertIsNone(management.project_execution_alignment(project, [{**live, "archivedAt": "2026-08-10T12:00:00"}], "2026-08-10"))
+
+    def test_execution_alignment_confirmation_has_a_truthful_audit_summary(self):
+        project = {"id": "runtime", "savedId": "stable", "name": "Release", "nextStep": "Run verification"}
+        tasks = [{"title": "Investigate failed benchmark"}, {"title": "Update fixtures"}]
+        entry = management.build_project_alignment_entry(project, tasks, "2026-08-10T12:00:00", "alignment-1")
+        self.assertEqual((entry["kind"], entry["source"], entry["projectId"]), ("alignment", "alignment", "stable"))
+        summary = management.format_project_decision_summary(entry)
+        self.assertIn("保留下一步", summary)
+        self.assertIn("Investigate failed benchmark", summary)
+
     def test_decision_diff_ignores_cosmetic_whitespace(self):
         before = {"objective": "Validate   the model", "health": "on_track"}
         after = {"objective": " Validate the model ", "health": "attention"}

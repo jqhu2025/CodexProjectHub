@@ -56,6 +56,7 @@ PROJECT_DECISION_SOURCES = {
     "created": "建立项目",
     "category": "分类调整",
     "review": "状态复核",
+    "alignment": "执行对齐",
 }
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 
@@ -545,6 +546,29 @@ def build_project_review_entry(project, occurred_at, entry_id=None):
     }
 
 
+def build_project_alignment_entry(project, tasks, occurred_at, entry_id=None):
+    """Audit a deliberate choice to keep the declared next step despite live work."""
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    if not stable_project_id:
+        return None
+    task_titles = [normalized_decision_value((task or {}).get("title")) for task in tasks or []]
+    task_titles = [title for title in task_titles if title]
+    return {
+        "id": entry_id or str(uuid.uuid4()),
+        "projectId": stable_project_id,
+        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "at": str(occurred_at or ""),
+        "source": "alignment",
+        "kind": "alignment",
+        "changes": [],
+        "snapshot": {
+            "nextStep": normalized_decision_value((project or {}).get("nextStep")),
+            "activeTasks": task_titles,
+            "resolution": "keep",
+        },
+    }
+
+
 def compact_project_decision_value(field, value, limit=36):
     text = display_project_decision_value(field, value)
     return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "…"
@@ -557,6 +581,15 @@ def format_project_decision_summary(entry, max_changes=2):
         health = display_project_decision_value("health", snapshot.get("health"))
         next_step = compact_project_decision_value("nextStep", snapshot.get("nextStep"), 30)
         return f"确认{stage}阶段 · {health} · 下一步：{next_step}"
+    if (entry or {}).get("kind") == "alignment":
+        snapshot = (entry or {}).get("snapshot") or {}
+        next_step = compact_project_decision_value("nextStep", snapshot.get("nextStep"), 30)
+        active = [normalized_decision_value(value) for value in snapshot.get("activeTasks") or []]
+        active = [value for value in active if value]
+        active_text = "、".join(active[:2]) or "未记录"
+        if len(active) > 2:
+            active_text += f" 等 {len(active)} 项"
+        return f"确认保留下一步：{next_step} · 当前执行：{active_text}"
     changes = (entry or {}).get("changes") or []
     parts = [
         f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："
@@ -579,6 +612,67 @@ def format_project_decision_time(value, compact=False):
 
 def normalized_action_text(value):
     return " ".join(str(value or "").split()).casefold()
+
+
+def project_execution_alignment(project, tasks, target_date):
+    """Describe a real divergence between a project's declared and live next action.
+
+    The result is intentionally neutral: a different live task can be valid.  A
+    saved signature records that the user deliberately reviewed the exact pair
+    of declared direction and live tasks, and becomes stale as soon as either
+    side changes.
+    """
+    project = project or {}
+    if project.get("status", "active") != "active":
+        return None
+    declared = str(project.get("nextStep") or "").strip()
+    declared_key = normalized_action_text(declared)
+    if not declared_key:
+        return None
+    references = {
+        str(value)
+        for value in (project.get("id"), project.get("savedId"), project.get("codexProjectId"))
+        if value
+    }
+    live_tasks = [
+        task for task in tasks or []
+        if isinstance(task, dict)
+        and not task_is_archived(task)
+        and str(task.get("date") or "") == str(target_date or "")
+        and task.get("status", "planned") == "doing"
+        and str(task.get("projectId") or "") in references
+    ]
+    if not live_tasks or any(normalized_action_text(task.get("title")) == declared_key for task in live_tasks):
+        return None
+    task_parts = sorted(
+        f"{str(task.get('id') or '')}:{normalized_action_text(task.get('title'))}"
+        for task in live_tasks
+    )
+    signature = "|".join([str(target_date or ""), declared_key, *task_parts])
+    return {
+        "project": project,
+        "tasks": live_tasks,
+        "declaredNextStep": declared,
+        "signature": signature,
+        "acknowledged": str(project.get("executionAlignmentSignature") or "") == signature,
+    }
+
+
+def portfolio_execution_alignment_queue(projects, tasks, target_date):
+    """Return only unreviewed execution-direction divergences."""
+    queue = []
+    for project in projects or []:
+        alignment = project_execution_alignment(project, tasks, target_date)
+        if alignment is not None and not alignment["acknowledged"]:
+            queue.append(alignment)
+    priority_order = {"focus": 0, "normal": 1, "later": 2}
+    return sorted(
+        queue,
+        key=lambda item: (
+            priority_order.get((item.get("project") or {}).get("priority"), 1),
+            str((item.get("project") or {}).get("name") or "").casefold(),
+        ),
+    )
 
 
 def project_next_step_completion_update(project, task, completed_at):

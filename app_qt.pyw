@@ -39,6 +39,7 @@ from codex_hub.management import (
     archive_project_layout,
     archived_task_records,
     build_project_decision_entry,
+    build_project_alignment_entry,
     build_project_decision_rollback,
     build_project_review_entry,
     clear_task_completion_outcome,
@@ -52,7 +53,9 @@ from codex_hub.management import (
     normalized_decision_value,
     ordered_board_tasks,
     project_decision_changes,
+    project_execution_alignment,
     project_governance_gaps,
+    portfolio_execution_alignment_queue,
     project_review_status,
     project_management_validation_error,
     project_next_step_completion_update,
@@ -3209,7 +3212,7 @@ class ProjectDecisionHistoryDialog(QDialog):
                 rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
                 rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback)
             card_layout.addLayout(header)
-            if entry.get("kind") == "review":
+            if entry.get("kind") in {"review", "alignment"}:
                 review_line = QLabel(format_project_decision_summary(entry)); review_line.setWordWrap(True)
                 review_line.setStyleSheet("color: #526071; background: #f7f9fc; border: none; border-radius: 7px; padding: 7px 9px; font-size: 12px;"); card_layout.addWidget(review_line)
             for change in entry.get("changes") or []:
@@ -3401,6 +3404,144 @@ class PortfolioReviewDialog(QDialog):
         self.pending.pop(0)
         self.reviewed_count += 1
         self.render_current()
+
+
+class ExecutionAlignmentDialog(QDialog):
+    """Reconcile declared project direction with work that is actually in progress."""
+    def __init__(self, parent, alignments):
+        super().__init__(parent)
+        self.window = parent
+        self.pending = list(alignments or [])
+        self.processed_count = 0
+        self.skipped_count = 0
+        self.setWindowTitle("执行方向校准")
+        self.setObjectName("executionAlignmentDialog")
+        self.setMinimumSize(740, 500)
+        self.resize(800, 550)
+        self.setStyleSheet(STYLE + """
+            QDialog#executionAlignmentDialog QLabel[sectionLabel='true'] { color: #66758a; font-size: 11px; font-weight: 650; }
+            QFrame#alignmentDirection { background: #f8fafc; border: 1px solid #dfe6ef; border-radius: 11px; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE8A7", color="#1d4ed8", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("校准项目方向与真实执行"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("逐项确认正在做的工作是否应成为项目下一步；系统不会自动覆盖你的决策")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
+        self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
+        root.addLayout(heading)
+
+        self.card = QFrame(); self.card.setObjectName("alignmentCard")
+        self.card.setStyleSheet("QFrame#alignmentCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 13px; } QFrame#alignmentCard QLabel { background: transparent; border: none; }")
+        self.card_layout = QVBoxLayout(self.card); self.card_layout.setContentsMargins(20, 18, 20, 20); self.card_layout.setSpacing(12); root.addWidget(self.card, 1)
+        self.feedback = QLabel(); self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close); actions.addStretch()
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.defer_button = QPushButton("稍后处理"); self.defer_button.clicked.connect(self.defer_current); actions.addWidget(self.defer_button)
+        self.keep_button = QPushButton("保留原下一步"); self.keep_button.clicked.connect(self.keep_current); actions.addWidget(self.keep_button)
+        self.adopt_button = QPushButton("采用正在执行的任务"); self.adopt_button.setObjectName("primary"); self.adopt_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.adopt_button.setIconSize(QSize(14, 14)); self.adopt_button.clicked.connect(self.adopt_current); actions.addWidget(self.adopt_button)
+        root.addLayout(actions); self.render_current()
+
+    def clear_card(self):
+        def clear_layout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                child_layout = item.layout()
+                if widget is not None:
+                    widget.hide(); widget.setParent(None); widget.deleteLater()
+                elif child_layout is not None:
+                    clear_layout(child_layout); child_layout.deleteLater()
+        clear_layout(self.card_layout)
+
+    def current_alignment(self):
+        return self.pending[0] if self.pending else None
+
+    def render_current(self):
+        self.clear_card(); remaining = len(self.pending); total = self.processed_count + self.skipped_count + remaining
+        self.counter.setText(f"{self.processed_count + self.skipped_count + 1} / {total}" if remaining else f"已处理 {self.processed_count}")
+        for button in (self.open_button, self.defer_button, self.keep_button): button.setVisible(bool(remaining))
+        self.adopt_button.setText("采用正在执行的任务" if remaining else "关闭")
+        if not remaining:
+            icon = QLabel(); icon.setFixedSize(56, 56); icon.setAlignment(Qt.AlignCenter)
+            icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=29).pixmap(QSize(29, 29))); icon.setStyleSheet("background: #e8f7ef; border-radius: 16px;")
+            self.card_layout.addStretch(); self.card_layout.addWidget(icon, 0, Qt.AlignCenter)
+            title = QLabel("本轮执行方向校准已完成"); title.setAlignment(Qt.AlignCenter); title.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(title)
+            detail = QLabel(f"已确认 {self.processed_count} 个项目" + (f"，另有 {self.skipped_count} 个留待稍后处理" if self.skipped_count else ""))
+            detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
+            self.card_layout.addStretch(); self.feedback.setText("已确认的选择已写入项目决策记录；未处理项目仍会留在主页。")
+            self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+
+        alignment = self.current_alignment(); project = alignment.get("project") or {}; tasks = alignment.get("tasks") or []
+        name_row = QHBoxLayout(); name_row.setSpacing(9)
+        name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
+        category = QLabel(project.get("category") or "未分类"); category.setAlignment(Qt.AlignCenter)
+        category.setStyleSheet("color: #315f9b; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(category); self.card_layout.addLayout(name_row)
+        reason = QLabel("今日已有任务进入“进行中”，但它与项目档案中的“明确下一步”不同。两者都可能合理，请确认项目层面的真实方向。")
+        reason.setWordWrap(True); reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
+
+        directions = QHBoxLayout(); directions.setSpacing(10)
+        declared = QFrame(); declared.setObjectName("alignmentDirection"); declared_layout = QVBoxLayout(declared); declared_layout.setContentsMargins(13, 11, 13, 13); declared_layout.setSpacing(6)
+        declared_label = QLabel("项目档案中的下一步"); declared_label.setProperty("sectionLabel", True); declared_layout.addWidget(declared_label)
+        declared_text = QLabel(alignment.get("declaredNextStep") or "未设置"); declared_text.setWordWrap(True); declared_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        declared_text.setStyleSheet("color: #34445c; font-size: 13px; font-weight: 650;"); declared_layout.addWidget(declared_text); declared_layout.addStretch(); directions.addWidget(declared, 1)
+
+        live = QFrame(); live.setObjectName("alignmentDirection"); live_layout = QVBoxLayout(live); live_layout.setContentsMargins(13, 11, 13, 13); live_layout.setSpacing(6)
+        live_label = QLabel("今日正在执行"); live_label.setProperty("sectionLabel", True); live_layout.addWidget(live_label)
+        self.task_field = QComboBox(); self.task_field.setFixedHeight(38); self.task_field.setAccessibleName("选择要采用的进行中任务")
+        for task in tasks: self.task_field.addItem(str(task.get("title") or "未命名任务"), str(task.get("id") or ""))
+        live_layout.addWidget(self.task_field)
+        selected = tasks[0] if tasks else {}
+        self.live_task_meta = QLabel(str(selected.get("conversationTitle") or "未关联 Codex 对话")); self.live_task_meta.setWordWrap(True); self.live_task_meta.setStyleSheet("color: #748094; font-size: 10px;"); live_layout.addWidget(self.live_task_meta)
+        self.task_field.currentIndexChanged.connect(self.update_live_task_meta); directions.addWidget(live, 1)
+        self.card_layout.addLayout(directions)
+        self.feedback.setText("“采用”会更新项目下一步并留下字段变更记录；“保留”只确认当前差异是有意安排，不改动任务或项目方向。")
+        self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
+
+    def selected_task(self):
+        alignment = self.current_alignment() or {}
+        task_id = str(self.task_field.currentData() or "") if hasattr(self, "task_field") else ""
+        return next((task for task in alignment.get("tasks") or [] if str(task.get("id") or "") == task_id), None)
+
+    def update_live_task_meta(self):
+        task = self.selected_task() or {}
+        if hasattr(self, "live_task_meta"):
+            self.live_task_meta.setText(str(task.get("conversationTitle") or "未关联 Codex 对话"))
+
+    def open_current(self):
+        alignment = self.current_alignment()
+        if not alignment: return
+        self.accept(); self.window.open_project_workspace(alignment.get("project") or {})
+
+    def defer_current(self):
+        if not self.pending: return
+        self.pending.pop(0); self.skipped_count += 1; self.render_current()
+
+    def keep_current(self):
+        alignment = self.current_alignment()
+        if not alignment: return
+        if not self.window.acknowledge_execution_alignment(alignment):
+            self.feedback.setText("当前执行方向已发生变化，请关闭后重新打开校准队列。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;"); return
+        self.pending.pop(0); self.processed_count += 1; self.render_current()
+
+    def adopt_current(self):
+        alignment = self.current_alignment()
+        if not alignment:
+            self.accept(); return
+        task = self.selected_task()
+        if task is None or not self.window.adopt_execution_alignment(alignment, task):
+            self.feedback.setText("没有成功更新项目下一步，请确认项目和任务仍然存在。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;"); return
+        self.pending.pop(0); self.processed_count += 1; self.render_current()
 
 
 class ProjectWorkbenchDialog(QDialog):
@@ -3953,6 +4094,24 @@ class MainWindow(QMainWindow):
             decision_layout.addWidget(card, 1)
         layout.addWidget(decision_panel)
 
+        self.execution_alignment_panel = ClickableFrame(); self.execution_alignment_panel.setObjectName("executionAlignmentPanel"); self.execution_alignment_panel.setMinimumHeight(54)
+        self.execution_alignment_panel.setToolTip("逐项确认项目保存的下一步与今日实际执行是否一致")
+        self.execution_alignment_panel.setStyleSheet(
+            "QFrame#executionAlignmentPanel { background: #f7faff; border: 1px solid #c9d8ee; border-left: 4px solid #2563eb; border-radius: 10px; }"
+            "QFrame#executionAlignmentPanel:hover, QFrame#executionAlignmentPanel:focus { background: #ffffff; border-color: #7ea4db; border-left-color: #1d4ed8; }"
+        )
+        self.execution_alignment_panel.clicked.connect(self.show_execution_alignment_queue)
+        alignment_layout = QHBoxLayout(self.execution_alignment_panel); alignment_layout.setContentsMargins(13, 8, 12, 8); alignment_layout.setSpacing(10)
+        alignment_icon = QLabel(); alignment_icon.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_icon.setFixedSize(30, 30); alignment_icon.setAlignment(Qt.AlignCenter)
+        alignment_icon.setPixmap(fluent_icon("\uE8A7", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); alignment_icon.setStyleSheet("background: #e7effc; border-radius: 8px;"); alignment_layout.addWidget(alignment_icon)
+        alignment_text_box = QVBoxLayout(); alignment_text_box.setSpacing(1)
+        alignment_title = QLabel("执行方向待确认"); alignment_title.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_title.setStyleSheet("color: #253247; font-size: 13px; font-weight: 700;"); alignment_text_box.addWidget(alignment_title)
+        self.execution_alignment_summary = ElidedLabel(); self.execution_alignment_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.execution_alignment_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); alignment_text_box.addWidget(self.execution_alignment_summary); alignment_layout.addLayout(alignment_text_box, 1)
+        self.execution_alignment_count = QLabel("0"); self.execution_alignment_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.execution_alignment_count.setAlignment(Qt.AlignCenter); self.execution_alignment_count.setFixedSize(30, 26)
+        self.execution_alignment_count.setStyleSheet("color: #1d4ed8; background: #e8f0ff; border-radius: 8px; font-size: 12px; font-weight: 750;"); alignment_layout.addWidget(self.execution_alignment_count)
+        alignment_action = QLabel("逐项校准  →"); alignment_action.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_action.setStyleSheet("color: #1d4ed8; font-size: 11px; font-weight: 700;"); alignment_layout.addWidget(alignment_action)
+        self.execution_alignment_panel.hide(); layout.addWidget(self.execution_alignment_panel)
+
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
@@ -4017,6 +4176,17 @@ class MainWindow(QMainWindow):
             return
         PortfolioReviewDialog(self, projects).exec_()
 
+    def execution_alignment_queue(self):
+        today = QDate.currentDate().toString(Qt.ISODate)
+        return portfolio_execution_alignment_queue(self.projects, self.today_tasks, today)
+
+    def show_execution_alignment_queue(self):
+        alignments = self.execution_alignment_queue()
+        if not alignments:
+            QMessageBox.information(self, "执行方向已对齐", "当前进行中的任务与项目下一步没有待确认差异。")
+            return
+        ExecutionAlignmentDialog(self, alignments).exec_()
+
     def render_portfolio_decisions(self):
         if not hasattr(self, "portfolio_decision_cards"):
             return
@@ -4039,6 +4209,20 @@ class MainWindow(QMainWindow):
             controls["preview"].setToolTip(tooltip)
             controls["frame"].setToolTip(tooltip)
             controls["frame"].setAccessibleName(f"{controls['caption']}，{len(projects)} 个项目。{summary}")
+        if hasattr(self, "execution_alignment_panel"):
+            alignments = self.execution_alignment_queue()
+            self.execution_alignment_panel.setVisible(bool(alignments))
+            if alignments:
+                names = [str((item.get("project") or {}).get("name") or "未命名项目") for item in alignments]
+                preview = "、".join(names[:3])
+                if len(names) > 3:
+                    preview += f" 等 {len(names)} 项"
+                summary = f"{len(names)} 个项目的今日执行与已保存下一步不同：{preview}"
+                tooltip = "执行方向待确认\n" + "\n".join(f"• {name}" for name in names)
+                self.execution_alignment_count.setText(str(len(names)))
+                self.execution_alignment_summary.setText(summary); self.execution_alignment_summary.setToolTip(tooltip)
+                self.execution_alignment_panel.setToolTip(tooltip)
+                self.execution_alignment_panel.setAccessibleName(f"执行方向待确认，{len(names)} 个项目。{summary}")
 
     def refresh(self, silent=False, scan=True):
         categories = load_categories()
@@ -4089,6 +4273,7 @@ class MainWindow(QMainWindow):
                 project.get("id"), project.get("name"), project.get("path"), project.get("category"),
                 project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
                 project.get("objective"), project.get("nextStep"), project.get("blocker"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
+                project.get("executionAlignmentSignature"), project.get("executionAlignmentReviewedAt"),
                 project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
                     (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
@@ -4413,6 +4598,63 @@ class MainWindow(QMainWindow):
         cadence = project_review_status(project)[2]
         self.statusBar().showMessage(f"已确认当前项目状态；{cadence} 天后自动进入待复核", 4200)
         return entry or True
+
+    def acknowledge_execution_alignment(self, alignment):
+        """Keep the declared next step and audit that the live divergence was reviewed."""
+        project = (alignment or {}).get("project") or {}
+        today = QDate.currentDate().toString(Qt.ISODate)
+        current = project_execution_alignment(project, self.today_tasks, today)
+        if current is None or current.get("signature") != (alignment or {}).get("signature"):
+            return False
+        occurred_at = datetime.now().isoformat(timespec="seconds")
+        target = self.saved_record_for_project(project)
+        target["executionAlignmentSignature"] = current["signature"]
+        target["executionAlignmentReviewedAt"] = occurred_at
+        project["executionAlignmentSignature"] = current["signature"]
+        project["executionAlignmentReviewedAt"] = occurred_at
+        entry = build_project_alignment_entry(project, current.get("tasks"), occurred_at)
+        if entry is not None:
+            self.project_decisions.append(entry)
+            if len(self.project_decisions) > 2000:
+                self.project_decisions = self.project_decisions[-2000:]
+            save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        save_json(PROJECTS_FILE, self.saved_projects)
+        self.view_signature = None; self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage("已保留项目原下一步，并记录本次执行方向确认", 3600)
+        return True
+
+    def adopt_execution_alignment(self, alignment, task):
+        """Promote selected live work to the project's declared next step."""
+        project = (alignment or {}).get("project") or {}
+        today = QDate.currentDate().toString(Qt.ISODate)
+        current = project_execution_alignment(project, self.today_tasks, today)
+        if current is None or current.get("signature") != (alignment or {}).get("signature"):
+            return False
+        task_id = str((task or {}).get("id") or "")
+        selected = next((item for item in current.get("tasks") or [] if str(item.get("id") or "") == task_id), None)
+        if selected is None or not str(selected.get("title") or "").strip():
+            return False
+        data = {
+            "priority": project_priority_key(project),
+            "stage": project_stage_key(project),
+            "health": project_health_key(project),
+            "status": project.get("status", "active"),
+            "category": project.get("category", "未分类"),
+            "objective": project.get("objective", ""),
+            "nextStep": str(selected.get("title") or "").strip(),
+            "blocker": project.get("blocker", ""),
+        }
+        if self.update_project_management(project, data, notify=False, source="alignment") is None:
+            return False
+        linked_task = next((item for item in self.today_tasks if str(item.get("id") or "") == task_id), None)
+        if linked_task is not None:
+            linked_task["origin"] = "project_next_step"
+            linked_task["projectNextStep"] = data["nextStep"]
+            linked_task["updatedAt"] = datetime.now().isoformat(timespec="seconds")
+            save_json(TASKS_FILE, self.today_tasks)
+            self.view_signature = None; self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage("已将正在执行的任务设为项目下一步，并写入决策记录", 3800)
+        return True
 
     def sync_project_workload(self):
         """Attach today's task counts so portfolio focus reflects work that is actually moving."""

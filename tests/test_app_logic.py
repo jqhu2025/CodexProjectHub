@@ -478,6 +478,52 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertEqual(save.call_count, 2)
         window.refresh.assert_called_once_with(silent=True, scan=False)
 
+    def test_keep_execution_direction_records_signature_and_audit_event(self):
+        today = datetime.now().date().isoformat()
+        project = {"id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "nextStep": "Ship candidate"}
+        task = {"id": "task-1", "projectId": "stable", "date": today, "status": "doing", "title": "Repair benchmark"}
+        target = {"id": "stable", "name": "Release", "nextStep": "Ship candidate"}
+        alignment = APP.project_execution_alignment(project, [task], today)
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], saved_projects=[target], project_decisions=[], view_signature="old",
+            saved_record_for_project=lambda _project: target,
+            refresh=Mock(), statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json") as save:
+            changed = APP.MainWindow.acknowledge_execution_alignment(window, alignment)
+        self.assertTrue(changed)
+        self.assertEqual(target["executionAlignmentSignature"], alignment["signature"])
+        self.assertEqual(window.project_decisions[-1]["kind"], "alignment")
+        self.assertEqual(save.call_count, 2)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+
+    def test_adopt_live_task_updates_only_project_next_step_through_decision_path(self):
+        today = datetime.now().date().isoformat()
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "category": "Lab",
+            "priority": "normal", "stage": "validation", "health": "on_track", "objective": "Ship", "nextStep": "Ship candidate", "blocker": "",
+        }
+        task = {"id": "task-1", "projectId": "stable", "date": today, "status": "doing", "title": "Repair benchmark"}
+        alignment = APP.project_execution_alignment(project, [task], today)
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], update_project_management=Mock(return_value={"nextStep": "Repair benchmark"}),
+            statusBar=lambda: status_bar, view_signature="old", refresh=Mock(),
+        )
+        with patch.object(APP, "save_json") as save:
+            changed = APP.MainWindow.adopt_execution_alignment(window, alignment, task)
+        self.assertTrue(changed)
+        _project, data = window.update_project_management.call_args.args[:2]
+        self.assertEqual(data["nextStep"], "Repair benchmark")
+        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "alignment")
+        self.assertEqual((task["origin"], task["projectNextStep"]), ("project_next_step", "Repair benchmark"))
+        save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+        handoff = APP.project_next_step_completion_update({**project, "nextStep": "Repair benchmark"}, task, "2026-08-10T13:00:00")
+        self.assertEqual((handoff or {}).get("nextStep"), "")
+        self.assertTrue((handoff or {}).get("nextStepReviewNeeded"))
+
 
 class TaskStatusHistoryTests(unittest.TestCase):
     def test_status_history_records_real_transitions_and_sources(self):
