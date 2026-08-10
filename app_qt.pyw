@@ -115,6 +115,7 @@ from codex_hub.portfolio import (
     wip_deferral_recommendations,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
+from codex_hub.storage import consume_json_recovery_events, load_json, save_json
 
 ROOT = Path(__file__).resolve().parent
 PROJECTS_FILE = ROOT / "data" / "projects.json"
@@ -165,13 +166,6 @@ QMenu::item:selected { background: #e8f0ff; color: #1d4ed8; }
 QDialog { background: #f7f9fc; }
 QStatusBar { background: #fafbfd; color: #607087; border-top: 1px solid #dbe3ee; font-size: 12px; }
 """
-
-
-def load_json(path, default):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default
 
 
 def daily_summary_thread_id():
@@ -227,14 +221,6 @@ def save_task_wip_limit(value):
     return settings["taskWipLimit"]
 
 
-def save_json(path, data):
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=path.parent, suffix=".tmp") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-        temp = file.name
-    os.replace(temp, path)
-
-
 def load_categories():
     stored = load_json(CATEGORIES_FILE, None)
     source = stored if isinstance(stored, list) else DEFAULT_CATEGORIES
@@ -258,6 +244,22 @@ def load_project_layout():
         if isinstance(values, list)
     }
     return {"hiddenProjectIds": hidden, "categoryOrders": orders}
+
+
+def storage_recovery_notice(events):
+    """Build a concise, one-time status message for local data failures."""
+
+    recovered_files = sorted({event.filename for event in events if event.recovered})
+    unreadable_files = sorted({event.filename for event in events if not event.recovered})
+    if unreadable_files:
+        names = "、".join(unreadable_files[:3])
+        suffix = f"等 {len(unreadable_files)} 个文件" if len(unreadable_files) > 3 else ""
+        return f"本地数据无法读取：{names}{suffix}；原文件仍保留，请检查数据目录", 9000
+    if recovered_files:
+        names = "、".join(recovered_files[:3])
+        suffix = f"等 {len(recovered_files)} 个文件" if len(recovered_files) > 3 else ""
+        return f"已从本地安全副本恢复：{names}{suffix}", 7000
+    return None
 
 
 def normalized_path(value):
@@ -306,7 +308,7 @@ def matched_project(projects, folder):
 
 
 def codex_global_state():
-    return load_json(CODEX_GLOBAL_STATE, {})
+    return load_json(CODEX_GLOBAL_STATE, {}, use_backup=False, report_failure=False)
 
 
 def codex_display_names():
@@ -5919,7 +5921,10 @@ class MainWindow(QMainWindow):
             self.sync.setText(f"●  已同步 {datetime.now().strftime('%H:%M')}")
         if scan:
             self.start_session_scan()
-        if automatic_link_repairs:
+        storage_notice = storage_recovery_notice(consume_json_recovery_events())
+        if storage_notice:
+            self.statusBar().showMessage(*storage_notice)
+        elif automatic_link_repairs:
             self.statusBar().showMessage(f"已依据唯一 Codex 对话自动恢复 {len(automatic_link_repairs)} 条任务项目关联", 4500)
         elif rollover_count:
             self.statusBar().showMessage(f"已将 {rollover_count} 个进行中任务延续到下一天，并保留原日期记录", 4500)

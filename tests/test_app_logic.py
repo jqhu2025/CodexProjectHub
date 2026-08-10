@@ -15,6 +15,33 @@ APP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(APP)
 
 
+class StorageRecoveryNoticeTests(unittest.TestCase):
+    def test_recovered_files_get_a_calm_status_notice(self):
+        events = [SimpleNamespace(filename="today_tasks.json", recovered=True)]
+
+        message, duration = APP.storage_recovery_notice(events)
+
+        self.assertIn("已从本地安全副本恢复", message)
+        self.assertIn("today_tasks.json", message)
+        self.assertEqual(duration, 7000)
+
+    def test_unrecovered_failure_takes_priority_over_recovery(self):
+        events = [
+            SimpleNamespace(filename="projects.json", recovered=True),
+            SimpleNamespace(filename="categories.json", recovered=False),
+        ]
+
+        message, duration = APP.storage_recovery_notice(events)
+
+        self.assertIn("本地数据无法读取", message)
+        self.assertIn("categories.json", message)
+        self.assertNotIn("projects.json", message)
+        self.assertEqual(duration, 9000)
+
+    def test_no_events_need_no_status_notice(self):
+        self.assertIsNone(APP.storage_recovery_notice([]))
+
+
 class ConversationMappingTests(unittest.TestCase):
     def test_path_fallback_runs_for_each_unmapped_thread(self):
         projects = [

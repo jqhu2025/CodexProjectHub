@@ -8,6 +8,7 @@ venv/
 # Local Codex Project Hub data (may contain paths and conversation IDs)
 data/*.json
 !data/*.example.json
+data/.backups/
 
 # Local design/audit artifacts
 .audit/

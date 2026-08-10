@@ -116,6 +116,13 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Combine dated planning records with every user Codex conversation that was actually active that day, using per-record timestamps instead of a conversation's latest-modified date.
 - Show the number of covered work items, planning tasks, Codex conversations, and user turns before the review.
 
+### Local reliability
+
+- Save every project, task, layout, review, and decision document with an atomic same-directory replacement, so an interrupted write never leaves a half-written primary file.
+- Keep the previous valid version as a rolling local safety copy under `data/.backups`.
+- Fall back to that known-good copy when a primary JSON document is missing or malformed, and show one concise recovery notice in the application.
+- Surface an explicit data warning when neither copy is readable instead of silently presenting an empty workspace.
+
 The application reads Codex metadata and session activity. It never edits Codex databases directly. The optional daily-summary feature sends one prompt to the conversation ID configured by the user.
 
 ## Requirements
@@ -214,6 +221,8 @@ Runtime data is stored in the `data` directory:
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 
+Before replacing an existing valid document, the application stores its previous version in `data/.backups`. These safety copies are local, ignored by Git, and intended for single-file recovery rather than cloud synchronization or long-term version history.
+
 The application does not start a web server or listen on a network port. When daily summaries are enabled, the previous day's task packet is sent to the user-selected Codex conversation; other runtime data remains local.
 
 ## Project structure
@@ -226,7 +235,8 @@ CodexProjectHub/
 │  ├─ management.py
 │  ├─ portfolio.py
 │  ├─ runtime.py
-│  └─ desktop_bridge.py
+│  ├─ desktop_bridge.py
+│  └─ storage.py
 ├─ data/
 ├─ docs/images/
 ├─ tests/
@@ -243,7 +253,7 @@ python -m py_compile app_qt.pyw
 python -m unittest discover -s tests -v
 ```
 
-Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Portfolio focus, next-action commitment, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`.
+Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Portfolio focus, next-action commitment, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`. Atomic JSON persistence and rolling recovery copies live in the Qt-independent `codex_hub/storage.py` module.
 
 The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 
