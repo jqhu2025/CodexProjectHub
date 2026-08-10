@@ -164,4 +164,3 @@ def save_json(path: str | os.PathLike[str], data: Any) -> None:
     if previous_payload is not None:
         _atomic_write(json_backup_path(destination), previous_payload)
     _atomic_write(destination, payload)
-
