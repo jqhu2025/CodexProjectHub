@@ -232,16 +232,19 @@ class ProjectManagementInteractionTests(unittest.TestCase):
     def test_portfolio_decision_groups_surface_actions_without_forcing_exclusivity(self):
         active_attention = {
             "name": "Active risk", "status": "active", "health": "attention",
-            "activeTaskCount": 1, "nextStep": "Review",
+            "activeTaskCount": 1, "nextStep": "Review", "reviewedAt": datetime.now().isoformat(timespec="seconds"),
         }
         blocked = {"name": "Blocked", "status": "active", "blocker": "Missing input", "nextStep": "Wait"}
         needs_next = {"name": "Needs next", "status": "active", "nextStep": ""}
+        legacy_review = {"name": "Needs review", "status": "active", "health": "attention", "nextStep": "Confirm"}
         paused = {"name": "Paused", "status": "paused", "nextStep": ""}
-        groups = APP.portfolio_decision_groups([active_attention, blocked, needs_next, paused])
+        groups = APP.portfolio_decision_groups([active_attention, blocked, needs_next, legacy_review, paused])
         self.assertIn(active_attention, groups["focus"])
         self.assertIn(active_attention, groups["attention"])
-        self.assertIn(active_attention, groups["review"])
+        self.assertNotIn(active_attention, groups["review"])
         self.assertIn(blocked, groups["attention"])
+        self.assertIn(legacy_review, groups["review"])
+        self.assertNotIn(legacy_review, groups["attention"])
         self.assertEqual(groups["needs_next"], [needs_next])
 
     def test_project_insight_requires_an_existing_project_folder(self):
@@ -320,12 +323,17 @@ class ProjectManagementInteractionTests(unittest.TestCase):
 
     def test_management_scope_surfaces_attention_and_blocked_projects(self):
         blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
-        attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
+        attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Confirm"}
         healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        due_review = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test", "reviewedAt": "2000-01-01T00:00:00"}
         self.assertTrue(APP.project_management_scope_matches(blocked, "blocked"))
         self.assertTrue(APP.project_management_scope_matches(blocked, "attention"))
         self.assertTrue(APP.project_management_scope_matches(attention, "attention"))
+        self.assertFalse(APP.project_management_scope_matches(legacy_attention, "attention"))
+        self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertFalse(APP.project_management_scope_matches(healthy, "attention"))
+        self.assertTrue(APP.project_management_scope_matches(due_review, "review"))
 
     def test_focus_projects_sort_before_regular_projects(self):
         projects = [

@@ -39,7 +39,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
 - Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning.
 - Resolve the live focus portfolio automatically from manual priority, today's in-progress tasks, and running Codex conversations.
-- Surface a compact home decision queue for live focus, attention-needed, and missing-next-action projects; every card opens the exact portfolio filter.
+- Surface a compact home decision queue for live focus, confirmed risk or blockage, neutral review reminders, and missing-next-action projects; every card opens the exact portfolio filter, and review debt is never presented as operational risk.
 - Keep task links stable when Codex refreshes a project's current identifier.
 - Promote a project's concrete next action into today's plan with one click, with duplicate protection and automatic handoff back to the next project decision when the task is completed.
 - Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.

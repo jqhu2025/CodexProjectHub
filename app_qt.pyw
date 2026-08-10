@@ -1090,7 +1090,12 @@ def project_management_scope_matches(project, scope):
     if scope == "needs_next":
         return project.get("status", "active") == "active" and not str(project.get("nextStep") or "").strip()
     if scope == "attention":
-        return project_control_state(project)[0] in {"review", "attention", "blocked"}
+        blocker = str((project or {}).get("blocker") or "").strip()
+        if (project or {}).get("status", "active") != "active":
+            return False
+        if project_health_key(project) == "blocked" or blocker:
+            return True
+        return project_health_key(project) == "attention" and bool(str((project or {}).get("reviewedAt") or "").strip())
     if scope == "review":
         return project_control_state(project)[0] == "review"
     if scope == "blocked":
@@ -1117,7 +1122,7 @@ def portfolio_decision_groups(projects):
         "focus": [project for project in ordered if project_focus_state(project)[0]],
         "attention": [
             project for project in ordered
-            if project_control_state(project)[0] in {"review", "attention", "blocked"}
+            if project_management_scope_matches(project, "attention")
         ],
         "review": [project for project in ordered if project_control_state(project)[0] == "review"],
         "needs_next": [
@@ -3571,7 +3576,7 @@ class MainWindow(QMainWindow):
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
         self.scope_filter.setToolTip("“当前重点”包含人工重点、今日进行中任务和运行中的 Codex 对话")
-        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("待复核", "review"), ("风险与复核", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("待复核", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -3634,7 +3639,8 @@ class MainWindow(QMainWindow):
         self.portfolio_decision_cards = {}
         decision_specs = (
             ("focus", "正在推进", "#1d4ed8", "#f2f6ff", "#cfdbf1"),
-            ("attention", "风险与复核", "#315f9b", "#f4f7fb", "#d5e0ec"),
+            ("attention", "风险与阻塞", "#b54708", "#fff8ed", "#efd7b4"),
+            ("review", "待复核", "#315f9b", "#f4f7fb", "#d5e0ec"),
             ("needs_next", "待定下一步", "#6d3fc0", "#f6f3fb", "#dfd5f1"),
         )
         for scope, caption, color, background, border in decision_specs:
@@ -3696,7 +3702,7 @@ class MainWindow(QMainWindow):
             self.render_nav()
 
     def open_project_scope(self, scope):
-        if scope not in {"focus", "attention", "needs_next"}:
+        if scope not in {"focus", "attention", "review", "needs_next"}:
             return
         self.category = "全部"
         for control in (self.search, self.status_filter, self.scope_filter):
@@ -3713,7 +3719,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "portfolio_decision_cards"):
             return
         groups = portfolio_decision_groups(self.projects)
-        prefixes = {"focus": "今日推进", "attention": "优先复核", "needs_next": "等待决策"}
+        prefixes = {"focus": "今日推进", "attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
         for scope, controls in self.portfolio_decision_cards.items():
             projects = groups.get(scope, [])
             controls["count"].setText(str(len(projects)))
