@@ -380,6 +380,8 @@ def project_activity_evidence(project, tasks, now=None):
         candidates = []
         history = task.get("statusHistory") if isinstance(task.get("statusHistory"), list) else []
         candidates.extend(event.get("at") for event in history if isinstance(event, dict))
+        schedule_history = task.get("scheduleHistory") if isinstance(task.get("scheduleHistory"), list) else []
+        candidates.extend(event.get("at") for event in schedule_history if isinstance(event, dict))
         candidates.extend((task.get("updatedAt"), task.get("createdAt")))
         parsed = [parsed_portfolio_evidence_time(value) for value in candidates]
         parsed = [value for value in parsed if value is not None]

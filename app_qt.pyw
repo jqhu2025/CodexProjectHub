@@ -34,6 +34,7 @@ from codex_hub.management import (
     STATUS_TEXT,
     TASK_COLORS,
     TASK_EVENT_SOURCES,
+    TASK_SCHEDULE_SOURCES,
     TASK_STATUS,
     active_task_records,
     archive_task_record,
@@ -58,6 +59,7 @@ from codex_hub.management import (
     normalized_action_text,
     normalized_decision_value,
     ordered_board_tasks,
+    overdue_planned_tasks,
     project_decision_changes,
     project_execution_alignment,
     project_governance_gaps,
@@ -72,12 +74,15 @@ from codex_hub.management import (
     record_task_completion_outcome,
     record_project_completion_outcome,
     record_task_status_event,
+    record_task_schedule_event,
     reconcile_project_blocker_lifecycle,
     reorder_task_board,
+    reschedule_task_date,
     rollover_in_progress_tasks,
     restore_project_layout,
     restore_task_record,
     task_status_events,
+    task_schedule_events,
     task_status_transition_allowed,
     task_is_archived,
     task_is_superseded_daily_record,
@@ -1234,7 +1239,7 @@ def portfolio_decision_groups(projects):
     }
 
 
-def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None, focus_commitments=None):
+def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None, focus_commitments=None, overdue_tasks=None):
     """Choose one calm, evidence-based management decision from competing queues."""
     groups = groups or {}
     capacity_state = capacity_state or {}
@@ -1242,6 +1247,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
     lifecycle_items = list(lifecycle_items or [])
     wip_state = wip_state or {}
     focus_commitments = list(focus_commitments or [])
+    overdue_tasks = list(overdue_tasks or [])
 
     def names_for(items, nested=False):
         projects = [(item.get("project") or {}) if nested else item for item in items]
@@ -1259,6 +1265,8 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             secondary.append(f"生命周期 {len(lifecycle_items)}")
         if focus_commitments and decision["scope"] != "focus_commitment":
             secondary.append(f"重点落地 {len(focus_commitments)}")
+        if overdue_tasks and decision["scope"] != "plan_backlog":
+            secondary.append(f"待安排计划 {len(overdue_tasks)}")
         decision["secondary"] = " · ".join(secondary)
         return decision
 
@@ -1290,6 +1298,15 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "alignment", "count": len(alignments), "title": "校准实际执行方向",
             "summary": f"今日执行与项目已保存的下一步不一致：{preview(names)}",
             "names": names, "action": "逐项校准",
+        })
+
+    if overdue_tasks:
+        names = [str(task.get("title") or "未命名任务") for task in overdue_tasks]
+        oldest = str(overdue_tasks[0].get("date") or "日期未知")
+        return finalize({
+            "scope": "plan_backlog", "count": len(overdue_tasks), "title": "重新安排历史计划",
+            "summary": f"过去日期仍有未启动任务，最早来自 {oldest}：{preview(names)}",
+            "names": names, "action": "逐项安排",
         })
 
     needs_next = list(groups.get("needs_next") or [])
@@ -1369,6 +1386,15 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
             }
             for event in reversed(task_status_events([task])[:8])
         ]
+        schedule_changes = [
+            {
+                "at": str(event.get("at") or ""),
+                "from": str(event.get("from") or ""),
+                "to": str(event.get("to") or ""),
+                "source": TASK_SCHEDULE_SOURCES.get(event.get("source"), "手动调整"),
+            }
+            for event in reversed(task_schedule_events([task])[:8])
+        ]
         selected_tasks.append({
             "title": str(task.get("title") or "未命名任务"),
             "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
@@ -1378,6 +1404,7 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
             "completionOutcome": task_completion_outcome(task),
             "conversation": str(task.get("conversationTitle") or "").strip(),
             "statusTransitions": transitions,
+            "scheduleChanges": schedule_changes,
         })
 
     local_timezone = datetime.now().astimezone().tzinfo
@@ -1562,6 +1589,7 @@ def daily_summary_prompt(payload, visible=False):
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
         "任务中的 completionOutcome 是人工确认的实际完成成果，应作为 completed 的首要证据；notes 只是计划说明，不能单独证明工作已完成。"
         "已完成任务若没有 completionOutcome，只能谨慎描述状态，不得补造结果。\n"
+        "任务中的 scheduleChanges 只表示计划日期经过人工调整，不代表任务已开始或完成；可以用于说明重新安排，但不能写入 completed。\n"
         "projectDecisions 是人工确认的项目管理活动，可用于说明方向、阶段、风险和下一步发生了什么变化。只有 kind 为‘项目收尾’且 isCompletionEvidence 为 true 的记录，才是整个项目完成的人工确认成果；普通复核、字段变更、归档和重新打开都不能写入 completed。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
         "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
@@ -3456,6 +3484,23 @@ class TaskAuditDialog(QDialog):
             )
         body.addWidget(event_section)
 
+        schedule_events = task_schedule_events([self.task])[:30]
+        if schedule_events:
+            schedule_section, schedule_layout = self._section("计划日期调整", "\uE787", "#9a6700")
+            for event in schedule_events:
+                previous = QDate.fromString(str(event.get("from") or ""), Qt.ISODate)
+                target = QDate.fromString(str(event.get("to") or ""), Qt.ISODate)
+                previous_text = previous.toString("yyyy年MM月dd日") if previous.isValid() else str(event.get("from") or "日期未知")
+                target_text = target.toString("yyyy年MM月dd日") if target.isValid() else str(event.get("to") or "日期未知")
+                source = TASK_SCHEDULE_SOURCES.get(str(event.get("source") or ""), "手动调整")
+                self._add_event_row(
+                    schedule_layout,
+                    f"{previous_text}  →  {target_text}",
+                    f"{source}  ·  {format_project_decision_time(event.get('at'))}",
+                    "#9a6700",
+                )
+            body.addWidget(schedule_section)
+
         link_events = task_project_link_events(self.task)
         if link_events:
             link_section, link_layout = self._section("项目关联修复", "\uE71B", "#315f9b")
@@ -3575,7 +3620,7 @@ class TaskHistoryDialog(QDialog):
         icon = QLabel(); icon.setFixedSize(28, 28); icon.setPixmap(fluent_icon("\uE81C", color="#2563eb", size=22).pixmap(QSize(22, 22))); icon.setAlignment(Qt.AlignCenter); title_row.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
         title = QLabel("每日任务记录"); title.setStyleSheet("font-size: 22px; font-weight: 600; color: #172033;"); title_box.addWidget(title)
-        subtitle = QLabel("保留每天的计划、进行中和已完成状态；进行中任务会延续到下一天")
+        subtitle = QLabel("保留每天的计划、进行中和已完成状态；进行中自动延续，未启动计划进入重新安排队列")
         subtitle.setStyleSheet("color: #718096; font-size: 11px;"); title_box.addWidget(subtitle); title_row.addLayout(title_box); title_row.addStretch(); layout.addLayout(title_row)
 
         filters = QHBoxLayout(); filters.setSpacing(8)
@@ -4074,6 +4119,94 @@ class TaskWipDialog(QDialog):
         conversation = self.window.conversation_by_id(task.get("sessionId"))
         if conversation is not None:
             self.window.open_codex_conversation(conversation)
+
+
+class PlanningBacklogDialog(QDialog):
+    """Review unstarted plans from past dates without silently moving them."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.window = parent
+        self.today = QDate.currentDate()
+        self.setWindowTitle("历史计划重新安排")
+        self.setObjectName("planningBacklogDialog")
+        self.setMinimumSize(760, 520)
+        self.resize(820, 620)
+        self.setStyleSheet(STYLE + """
+            QDialog#planningBacklogDialog { background: #f5f7fb; }
+            QFrame#planningBacklogHero { background: #fffaf0; border: 1px solid #ead7ad; border-radius: 13px; }
+            QFrame#planningBacklogRow { background: #ffffff; border: 1px solid #dce4ee; border-left: 4px solid #d69e2e; border-radius: 10px; }
+            QFrame#planningBacklogRow:hover { border-color: #d4b56d; background: #fffdf8; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE787", color="#9a6700", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #f7ebcf; border: 1px solid #ead7ad; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("重新安排未启动的历史计划"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("过去日期中的计划不会被自动改期；逐项确认后移到今天，并保留原日期记录")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.count = QLabel(); self.count.setAlignment(Qt.AlignCenter); self.count.setFixedHeight(30)
+        self.count.setStyleSheet("color: #8a5b00; background: #fff4d8; border: 1px solid #ead7ad; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 700;"); heading.addWidget(self.count)
+        root.addLayout(heading)
+
+        hero = QFrame(); hero.setObjectName("planningBacklogHero")
+        hero_layout = QHBoxLayout(hero); hero_layout.setContentsMargins(14, 10, 14, 10); hero_layout.setSpacing(9)
+        hero_icon = QLabel(); hero_icon.setFixedSize(26, 26); hero_icon.setAlignment(Qt.AlignCenter); hero_icon.setPixmap(fluent_icon("\uE7BA", color="#9a6700", size=14).pixmap(QSize(14, 14))); hero_layout.addWidget(hero_icon)
+        guidance = QLabel("这不是逾期告警，而是一次计划真实性复核：仍值得做的移到今天，不再需要的可打开编辑或移入回收站。")
+        guidance.setWordWrap(True); guidance.setStyleSheet("color: #6f5218; font-size: 11px;"); hero_layout.addWidget(guidance, 1); root.addWidget(hero)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        self.rows_widget = QWidget(); self.rows_widget.setObjectName("planningBacklogRows"); self.rows_widget.setStyleSheet("QWidget#planningBacklogRows { background: #f7f9fc; }")
+        self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_tasks()
+
+    def render_tasks(self):
+        MainWindow._clear_layout(self.rows_layout)
+        tasks = self.window.planning_backlog()
+        self.count.setText(f"{len(tasks)} 项待安排")
+        if not tasks:
+            empty = QWidget(); empty_layout = QVBoxLayout(empty); empty_layout.setAlignment(Qt.AlignCenter)
+            icon = QLabel(); icon.setAlignment(Qt.AlignCenter); icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); empty_layout.addWidget(icon)
+            text = QLabel("历史计划已经处理完毕"); text.setAlignment(Qt.AlignCenter); text.setStyleSheet("color: #34445c; font-size: 14px; font-weight: 650; margin-top: 8px;"); empty_layout.addWidget(text)
+            detail = QLabel("今天的任务板只保留经过确认的计划"); detail.setAlignment(Qt.AlignCenter); detail.setStyleSheet("color: #748094; font-size: 11px;"); empty_layout.addWidget(detail)
+            self.rows_layout.addWidget(empty, 1); return
+        for task in tasks:
+            self.rows_layout.addWidget(self.task_row(task))
+        self.rows_layout.addStretch()
+
+    def task_row(self, task):
+        row = QFrame(); row.setObjectName("planningBacklogRow"); row.setMinimumHeight(74)
+        layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
+        text = QVBoxLayout(); text.setSpacing(3)
+        title = ElidedLabel(str(task.get("title") or "未命名任务")); title.setToolTip(str(task.get("title") or "")); title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(title)
+        project = self.window.project_by_id(task.get("projectId")) or {}
+        original = QDate.fromString(str(task.get("date") or ""), Qt.ISODate)
+        original_text = original.toString("yyyy年MM月dd日") if original.isValid() else str(task.get("date") or "日期未知")
+        age = original.daysTo(self.today) if original.isValid() else 0
+        meta_text = f"{task_project_identity(task, project)['name']}  ·  原计划 {original_text}" + (f"  ·  已过去 {age} 天" if age > 0 else "")
+        meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta)
+        notes = ElidedLabel(str(task.get("notes") or "尚无计划说明")); notes.setToolTip(str(task.get("notes") or "")); notes.setStyleSheet("color: #7a8798; font-size: 10px;"); text.addWidget(notes); layout.addLayout(text, 1)
+        view = QToolButton(); view.setFixedSize(34, 34); view.setIcon(fluent_icon("\uE81C", color="#315f9b", size=14)); view.setIconSize(QSize(14, 14)); view.setToolTip("查看任务档案")
+        view.clicked.connect(lambda _checked=False, value=task: self.window.show_task_audit(value)); layout.addWidget(view)
+        edit = QPushButton("编辑"); edit.setFixedSize(64, 34); edit.setToolTip("调整任务内容、状态、项目或日期")
+        edit.clicked.connect(lambda _checked=False, value=task: self.edit_task(value)); layout.addWidget(edit)
+        move = QPushButton("移到今天"); move.setFixedSize(94, 34); move.setIcon(fluent_icon("\uE72A", color="#8a5b00", size=13)); move.setIconSize(QSize(13, 13))
+        move.setStyleSheet("QPushButton { color: #8a5b00; background: #fff8e8; border: 1px solid #dfc581; border-radius: 8px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #fff1cd; border-color: #c79c3a; }")
+        move.clicked.connect(lambda _checked=False, value=task: self.move_to_today(value)); layout.addWidget(move)
+        return row
+
+    def move_to_today(self, task):
+        if self.window.reschedule_planned_task(task, self.today.toString(Qt.ISODate)):
+            self.render_tasks()
+
+    def edit_task(self, task):
+        self.window.edit_today_task(task)
+        self.render_tasks()
 
 
 class LifecycleCalibrationDialog(QDialog):
@@ -5759,6 +5892,39 @@ class MainWindow(QMainWindow):
         target_date = QDate.currentDate().toString(Qt.ISODate)
         TaskWipDialog(self, target_date).exec_()
 
+    def planning_backlog(self):
+        today = QDate.currentDate().toString(Qt.ISODate)
+        return overdue_planned_tasks(self.today_tasks, today)
+
+    def show_planning_backlog(self):
+        tasks = self.planning_backlog()
+        if not tasks:
+            QMessageBox.information(self, "计划已清晰", "当前没有遗留在过去日期的未启动计划。")
+            return
+        PlanningBacklogDialog(self).exec_()
+
+    def reschedule_planned_task(self, task, target_date=None):
+        current = next(
+            (item for item in self.today_tasks if str(item.get("id") or "") == str((task or {}).get("id") or "")),
+            None,
+        )
+        target = target_date or QDate.currentDate().toString(Qt.ISODate)
+        occurred_at = datetime.now().isoformat(timespec="seconds")
+        movement = reschedule_task_date(
+            self.today_tasks, (current or {}).get("id"), target, occurred_at, "planning_review"
+        )
+        if not movement.get("changed"):
+            self.statusBar().showMessage("任务已经发生变化，无法按原计划重新安排", 3400)
+            return False
+        save_json(TASKS_FILE, self.today_tasks)
+        target_qdate = QDate.fromString(target, Qt.ISODate)
+        if target_qdate.isValid() and hasattr(self, "board_date_field"):
+            self.board_date_field.setDate(target_qdate)
+        self.view_signature = None
+        self.render_today_tasks(); self.render_portfolio_decisions()
+        self.statusBar().showMessage(f"“{current.get('title') or '任务'}”已移到今天，并保留原计划日期", 3800)
+        return True
+
     def update_task_wip_limit(self, value):
         limit = save_task_wip_limit(value)
         self.render_today_tasks()
@@ -5831,6 +5997,8 @@ class MainWindow(QMainWindow):
         scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
         if scope == "task_wip":
             self.show_task_wip()
+        elif scope == "plan_backlog":
+            self.show_planning_backlog()
         elif scope == "alignment":
             self.show_execution_alignment_queue()
         elif scope == "lifecycle":
@@ -5926,9 +6094,10 @@ class MainWindow(QMainWindow):
             alignments = self.execution_alignment_queue()
             lifecycle_items = self.lifecycle_calibration_queue()
             wip_state = self.task_wip_state(QDate.currentDate().toString(Qt.ISODate))
+            overdue_tasks = self.planning_backlog()
             decision = portfolio_priority_decision(
                 groups, capacity_state, alignments, lifecycle_items,
-                wip_state=wip_state, focus_commitments=focus_commitments,
+                wip_state=wip_state, focus_commitments=focus_commitments, overdue_tasks=overdue_tasks,
             )
             self.portfolio_priority_panel.setVisible(decision is not None)
             self._portfolio_priority_scope = (decision or {}).get("scope", "")
@@ -5937,6 +6106,7 @@ class MainWindow(QMainWindow):
                 palette = {
                     "attention": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE7BA"),
                     "task_wip": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE8EF"),
+                    "plan_backlog": ("#9a6700", "#fffaf0", "#ead7ad", "#f7ebcf", "\uE787"),
                     "alignment": ("#1d4ed8", "#f5f8ff", "#c9d8ee", "#e7effc", "\uE8A7"),
                     "needs_next": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE72A"),
                     "focus_commitment": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE9D2"),
@@ -6129,6 +6299,12 @@ class MainWindow(QMainWindow):
                 "running", "查看运行中的 Codex 对话", f"当前有 {self.running_count} 个对话正在执行",
                 "运行 工作区", 8, 6,
             ))
+        backlog_count = len(self.planning_backlog())
+        if backlog_count:
+            actions.append(self._command_action(
+                "plan_backlog", "重新安排历史计划", f"{backlog_count} 项未启动计划需要确认日期",
+                "改期 遗留 过期 计划债务", 7, 7,
+            ))
         today = QDate.currentDate().toString(Qt.ISODate)
         return actions + build_navigation_entries(self.projects, active_task_records(self.today_tasks), today=today)
 
@@ -6159,6 +6335,7 @@ class MainWindow(QMainWindow):
             "home": lambda: self.select_section("home"),
             "projects": lambda: self.select_section("projects"),
             "running": self.show_running_conversations,
+            "plan_backlog": self.show_planning_backlog,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -6876,6 +7053,8 @@ class MainWindow(QMainWindow):
                     task[key] = draft[key]
             self.today_tasks.append(task)
         task.update(data); task["updatedAt"] = now
+        if not created and previous_date != task.get("date"):
+            record_task_schedule_event(task, previous_date, task.get("date"), now, "editor")
         current_status = task.get("status", "planned")
         if not created and (previous_status != current_status or previous_date != task.get("date")):
             task["status"] = previous_status

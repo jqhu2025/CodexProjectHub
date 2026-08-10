@@ -25,6 +25,12 @@ TASK_EVENT_SOURCES = {
     "undo": "撤销操作",
     "legacy": "历史记录",
 }
+TASK_SCHEDULE_SOURCES = {
+    "editor": "任务编辑",
+    "planning_review": "计划复核",
+    "manual": "手动调整",
+    "legacy": "历史记录",
+}
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}
 PROJECT_REVIEW_CADENCE_DAYS = {"focus": 3, "normal": 7, "later": 14}
 PROJECT_STAGE = {
@@ -392,6 +398,48 @@ def task_status_events(tasks):
     return sorted(events, key=lambda event: str(event.get("at") or ""), reverse=True)
 
 
+def record_task_schedule_event(task, previous_date, target_date, occurred_at, source="manual"):
+    """Record one real task-date change without inventing a status transition."""
+
+    if not isinstance(task, dict):
+        return False
+    previous = str(previous_date or "").strip()
+    target = str(target_date or "").strip()
+    try:
+        datetime.strptime(previous, "%Y-%m-%d")
+        datetime.strptime(target, "%Y-%m-%d")
+    except ValueError:
+        return False
+    if previous == target:
+        return False
+    history = task.get("scheduleHistory")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "at": str(occurred_at or ""),
+        "from": previous,
+        "to": target,
+        "source": source if source in TASK_SCHEDULE_SOURCES else "manual",
+    })
+    task["scheduleHistory"] = history[-80:]
+    return True
+
+
+def task_schedule_events(tasks):
+    """Flatten explicit task-date changes into a newest-first audit stream."""
+
+    events = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        history = task.get("scheduleHistory") if isinstance(task.get("scheduleHistory"), list) else []
+        for event in history:
+            if not isinstance(event, dict) or not event.get("from") or not event.get("to"):
+                continue
+            events.append({**event, "task": task})
+    return sorted(events, key=lambda event: str(event.get("at") or ""), reverse=True)
+
+
 def task_board_sort_key(task):
     """Keep deliberate board order ahead of the stable creation-time fallback."""
     value = (task or {}).get("boardOrder")
@@ -460,6 +508,68 @@ def reorder_task_board(tasks, task_id, target_status, target_index=None):
         "previousIndex": previous_index,
         "targetStatus": target_status,
         "targetIndex": target_index,
+    }
+
+
+def overdue_planned_tasks(tasks, today=None):
+    """Return unstarted plans from earlier valid dates without moving them."""
+
+    target = str(today or datetime.now().date().isoformat())
+    try:
+        target_date = datetime.strptime(target, "%Y-%m-%d").date()
+    except ValueError:
+        return []
+    overdue = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        if task_is_archived(task) or task_is_superseded_daily_record(task):
+            continue
+        if task.get("status", "planned") != "planned":
+            continue
+        try:
+            task_date = datetime.strptime(str(task.get("date") or ""), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if task_date < target_date:
+            overdue.append(task)
+    return sorted(overdue, key=lambda task: (str(task.get("date") or ""), task_board_sort_key(task)))
+
+
+def reschedule_task_date(tasks, task_id, target_date, occurred_at, source="planning_review"):
+    """Move one planned task to a new date and preserve both board orders and audit."""
+
+    target = str(target_date or "").strip()
+    try:
+        datetime.strptime(target, "%Y-%m-%d")
+    except ValueError:
+        return {"changed": False}
+    task = next((item for item in (tasks or []) if str(item.get("id") or "") == str(task_id or "")), None)
+    if (
+        task is None
+        or task_is_archived(task)
+        or task_is_superseded_daily_record(task)
+        or task.get("status", "planned") != "planned"
+    ):
+        return {"changed": False}
+    previous = str(task.get("date") or "")
+    if previous == target or not record_task_schedule_event(task, previous, target, occurred_at, source):
+        return {"changed": False}
+
+    source_board = [item for item in ordered_board_tasks(tasks, previous, "planned") if item is not task]
+    target_board = [item for item in ordered_board_tasks(tasks, target, "planned") if item is not task]
+    for index, item in enumerate(source_board):
+        item["boardOrder"] = index
+    task["date"] = target
+    task["updatedAt"] = str(occurred_at or task.get("updatedAt") or "")
+    target_board.append(task)
+    for index, item in enumerate(target_board):
+        item["boardOrder"] = index
+    return {
+        "changed": True,
+        "previousDate": previous,
+        "targetDate": target,
+        "targetIndex": len(target_board) - 1,
     }
 
 

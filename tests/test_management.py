@@ -269,6 +269,63 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-10", "doing")], ["planned-b", "doing-a"])
         self.assertEqual([task["boardOrder"] for task in management.ordered_board_tasks(tasks, "2026-08-10", "doing")], [0, 1])
 
+    def test_overdue_plans_are_detected_without_moving_or_guessing(self):
+        tasks = [
+            {"id": "overdue", "date": "2026-08-08", "status": "planned"},
+            {"id": "today", "date": "2026-08-10", "status": "planned"},
+            {"id": "future", "date": "2026-08-11", "status": "planned"},
+            {"id": "doing", "date": "2026-08-08", "status": "doing"},
+            {"id": "done", "date": "2026-08-08", "status": "done"},
+            {"id": "archived", "date": "2026-08-08", "status": "planned", "archivedAt": "2026-08-09T10:00:00"},
+            {"id": "history", "date": "2026-08-08", "status": "planned", "carriedToTaskId": "today"},
+            {"id": "invalid", "date": "not-a-date", "status": "planned"},
+        ]
+
+        result = management.overdue_planned_tasks(tasks, "2026-08-10")
+
+        self.assertEqual([task["id"] for task in result], ["overdue"])
+        self.assertEqual(tasks[0]["date"], "2026-08-08")
+
+    def test_reschedule_preserves_source_and_target_board_order_and_audit(self):
+        tasks = [
+            {"id": "old-first", "date": "2026-08-08", "status": "planned", "boardOrder": 0},
+            {"id": "move", "date": "2026-08-08", "status": "planned", "boardOrder": 1},
+            {"id": "today-first", "date": "2026-08-10", "status": "planned", "boardOrder": 0},
+        ]
+
+        result = management.reschedule_task_date(
+            tasks, "move", "2026-08-10", "2026-08-10T09:00:00", "planning_review"
+        )
+
+        self.assertTrue(result["changed"])
+        self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-08", "planned")], ["old-first"])
+        self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-10", "planned")], ["today-first", "move"])
+        moved = tasks[1]
+        self.assertEqual(moved["date"], "2026-08-10")
+        self.assertEqual(moved["status"], "planned")
+        self.assertNotIn("statusHistory", moved)
+        self.assertEqual(moved["scheduleHistory"], [{
+            "at": "2026-08-10T09:00:00", "from": "2026-08-08", "to": "2026-08-10", "source": "planning_review",
+        }])
+
+    def test_reschedule_rejects_noop_nonplanned_and_invalid_dates(self):
+        planned = {"id": "planned", "date": "2026-08-08", "status": "planned"}
+        doing = {"id": "doing", "date": "2026-08-08", "status": "doing"}
+        tasks = [planned, doing]
+
+        self.assertFalse(management.reschedule_task_date(tasks, "planned", "2026-08-08", "now")["changed"])
+        self.assertFalse(management.reschedule_task_date(tasks, "doing", "2026-08-10", "now")["changed"])
+        self.assertFalse(management.reschedule_task_date(tasks, "planned", "invalid", "now")["changed"])
+        self.assertNotIn("scheduleHistory", planned)
+
+    def test_schedule_events_are_separate_from_status_transitions(self):
+        task = {"id": "task", "date": "2026-08-10", "status": "planned"}
+
+        self.assertTrue(management.record_task_schedule_event(task, "2026-08-08", "2026-08-10", "2026-08-10T09:00:00", "editor"))
+
+        self.assertEqual(management.task_status_events([task])[0]["source"], "legacy")
+        self.assertEqual(management.task_schedule_events([task])[0]["source"], "editor")
+
     def test_task_board_legacy_order_is_stable_until_user_reorders(self):
         tasks = [
             {"id": "later", "date": "2026-08-10", "status": "doing", "createdAt": "2026-08-10T10:00:00"},

@@ -57,6 +57,20 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(evidence["taskCount"], 1)
         self.assertEqual(evidence["conversationCount"], 1)
 
+    def test_rescheduling_is_real_project_activity_evidence(self):
+        project = {"id": "runtime", "savedId": "stable", "reviewedAt": "2026-08-06T09:00:00", "conversations": []}
+        tasks = [{
+            "projectId": "stable", "date": "2026-08-10", "status": "planned",
+            "scheduleHistory": [{
+                "at": "2026-08-10T11:00:00", "from": "2026-08-08", "to": "2026-08-10", "source": "planning_review",
+            }],
+        }]
+
+        evidence = portfolio.project_activity_evidence(project, tasks, datetime(2026, 8, 11, 12, 0, 0))
+
+        self.assertEqual(evidence["source"], "任务记录")
+        self.assertEqual(evidence["ageDays"], 1)
+
     def test_project_review_evidence_combines_today_work_codex_activity_and_direction(self):
         project = {
             "id": "runtime", "savedId": "stable", "status": "active",

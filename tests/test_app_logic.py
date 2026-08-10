@@ -48,7 +48,7 @@ class GlobalCommandPaletteTests(unittest.TestCase):
             today_tasks=[{"id": "task-1", "title": "Validate", "status": "doing"}],
             open_project_workspace=Mock(), show_task_audit=Mock(), open_codex_conversation=Mock(),
             new_today_task=Mock(), edit_project=Mock(), show_task_history=Mock(), refresh=Mock(),
-            select_section=Mock(), show_running_conversations=Mock(),
+            select_section=Mock(), show_running_conversations=Mock(), show_planning_backlog=Mock(),
         )
 
     def test_project_task_and_conversation_results_return_to_existing_workflows(self):
@@ -74,6 +74,31 @@ class GlobalCommandPaletteTests(unittest.TestCase):
 
         self.assertTrue(handled)
         window.refresh.assert_called_once_with()
+
+    def test_planning_backlog_action_opens_the_review_queue(self):
+        window = self.command_window()
+
+        handled = APP.MainWindow.execute_command_entry(
+            window, {"kind": "action", "payload": {"action": "plan_backlog"}}
+        )
+
+        self.assertTrue(handled)
+        window.show_planning_backlog.assert_called_once_with()
+
+    def test_command_catalog_surfaces_planning_backlog_only_when_actionable(self):
+        window = SimpleNamespace(
+            running_count=0,
+            planning_backlog=lambda: [{"id": "task-1", "title": "Validate", "date": "2026-08-08"}],
+            projects=[],
+            today_tasks=[],
+            _command_action=APP.MainWindow._command_action,
+        )
+
+        entries = APP.MainWindow.command_catalog(window)
+
+        backlog = next(entry for entry in entries if entry.get("key") == "action:plan_backlog")
+        self.assertIn("1 项", backlog["subtitle"])
+        self.assertEqual(backlog["payload"]["action"], "plan_backlog")
 
     def test_unknown_command_is_safely_ignored(self):
         window = self.command_window()
@@ -891,6 +916,13 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         alignment_decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
         self.assertEqual(alignment_decision["scope"], "alignment")
         self.assertEqual(alignment_decision["secondary"], "生命周期 1")
+        backlog = [{"title": "Recheck experiment", "date": "2026-08-07"}]
+        backlog_decision = APP.portfolio_priority_decision(
+            groups, capacity, [], [lifecycle], overdue_tasks=backlog
+        )
+        self.assertEqual(backlog_decision["scope"], "plan_backlog")
+        self.assertIn("2026-08-07", backlog_decision["summary"])
+        self.assertEqual(backlog_decision["secondary"], "生命周期 1")
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "needs_next")
 
         groups["needs_next"] = []
@@ -921,6 +953,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window.show_task_wip = Mock()
         APP.MainWindow.open_portfolio_priority_decision(window)
         window.show_task_wip.assert_called_once_with()
+
+        window._portfolio_priority_scope = "plan_backlog"
+        window.show_planning_backlog = Mock()
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_planning_backlog.assert_called_once_with()
 
         window._portfolio_priority_scope = "review"
         APP.MainWindow.open_portfolio_priority_decision(window)
@@ -1507,6 +1544,25 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertNotIn("boardOrder", carried)
         self.assertFalse(any(task.get("carriedFromTaskId") == "archived-old" for task in rolled))
 
+    def test_planning_review_reschedules_without_faking_a_status_change(self):
+        task = {"id": "task-1", "title": "Validate release", "date": "2026-08-08", "status": "planned", "boardOrder": 0}
+        status_bar = Mock(); date_field = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], board_date_field=date_field, view_signature="old",
+            render_today_tasks=Mock(), render_portfolio_decisions=Mock(), statusBar=lambda: status_bar,
+        )
+
+        with patch.object(APP, "save_json") as save:
+            changed = APP.MainWindow.reschedule_planned_task(window, task, "2026-08-10")
+
+        self.assertTrue(changed)
+        self.assertEqual((task["date"], task["status"]), ("2026-08-10", "planned"))
+        self.assertEqual(task["scheduleHistory"][0]["source"], "planning_review")
+        self.assertNotIn("statusHistory", task)
+        save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
+        self.assertEqual(date_field.setDate.call_args.args[0].toString(APP.Qt.ISODate), "2026-08-10")
+        window.render_portfolio_decisions.assert_called_once_with()
+
     def test_manual_status_move_offers_an_undo_without_bypassing_the_normal_engine(self):
         task = {"id": "task-1", "status": "planned", "statusHistory": []}
         status_bar = Mock()
@@ -1803,6 +1859,21 @@ class DailySummaryTests(unittest.TestCase):
         transitions = payload["tasks"][0]["statusTransitions"]
         self.assertEqual([item["to"] for item in transitions], ["计划", "进行中", "已完成"])
         self.assertEqual(transitions[-1]["source"], "看板拖放")
+
+    def test_payload_keeps_rescheduling_separate_from_execution_evidence(self):
+        tasks = [{
+            "date": "2026-08-08", "title": "Validate", "status": "planned", "projectId": "p1",
+            "scheduleHistory": [{
+                "at": "2026-08-08T08:30:00", "from": "2026-08-07", "to": "2026-08-08", "source": "planning_review",
+            }],
+        }]
+
+        payload = APP.build_daily_summary_payload(tasks, [{"id": "p1", "name": "Denoising"}], "2026-08-08")
+
+        self.assertEqual(payload["tasks"][0]["scheduleChanges"][0]["source"], "计划复核")
+        prompt = APP.daily_summary_prompt(payload)
+        self.assertIn("scheduleChanges 只表示计划日期", prompt)
+        self.assertIn("不能写入 completed", prompt)
 
     def test_payload_resolves_tasks_saved_with_a_stable_project_id(self):
         tasks = [{"date": "2026-08-08", "title": "Validate", "status": "doing", "projectId": "stable-id"}]
