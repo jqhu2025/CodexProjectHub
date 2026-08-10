@@ -212,6 +212,7 @@ CodexProjectHub/
 ├─ assets/
 ├─ codex_hub/
 │  ├─ management.py
+│  ├─ portfolio.py
 │  ├─ runtime.py
 │  └─ desktop_bridge.py
 ├─ data/
@@ -230,7 +231,7 @@ python -m py_compile app_qt.pyw
 python -m unittest discover -s tests -v
 ```
 
-Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`.
+Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Portfolio focus, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`.
 
 The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 
