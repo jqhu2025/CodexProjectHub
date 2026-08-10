@@ -36,6 +36,35 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(evidence["taskCount"], 1)
         self.assertEqual(evidence["conversationCount"], 1)
 
+    def test_project_review_evidence_combines_today_work_codex_activity_and_direction(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "status": "active",
+            "nextStep": "Declared direction",
+            "conversations": [{"at": "2026-08-10T11:00:00", "state": "working"}],
+        }
+        tasks = [
+            {"id": "planned", "projectId": "stable", "date": "2026-08-10", "status": "planned"},
+            {"id": "doing", "projectId": "runtime", "date": "2026-08-10", "status": "doing", "title": "Different work"},
+            {"id": "done", "projectId": "stable", "date": "2026-08-10", "status": "done"},
+            {"id": "archived", "projectId": "stable", "date": "2026-08-10", "status": "doing", "archivedAt": "2026-08-10T12:00:00"},
+            {"id": "history", "projectId": "stable", "date": "2026-08-10", "status": "doing", "carriedToTaskId": "doing"},
+            {"id": "other", "projectId": "other", "date": "2026-08-10", "status": "doing"},
+        ]
+        evidence = portfolio.project_review_evidence(
+            project, tasks, "2026-08-10", datetime(2026, 8, 10, 12, 0, 0)
+        )
+        self.assertEqual(
+            (evidence["taskCount"], evidence["plannedCount"], evidence["doingCount"], evidence["doneCount"]),
+            (3, 1, 1, 1),
+        )
+        self.assertEqual(evidence["runningConversationCount"], 1)
+        self.assertEqual(evidence["alignmentState"], "divergent")
+        self.assertEqual(evidence["activity"]["ageDays"], 0)
+
+        project["executionAlignmentSignature"] = evidence["alignment"]["signature"]
+        acknowledged = portfolio.project_review_evidence(project, tasks, "2026-08-10")
+        self.assertEqual(acknowledged["alignmentState"], "acknowledged")
+
     def test_task_project_identity_distinguishes_current_historical_orphan_and_unlinked(self):
         task = {"projectId": "old", "projectNameSnapshot": "Original project"}
         self.assertEqual(portfolio.task_project_identity(task, {"name": "Renamed project"}), {"name": "Renamed project", "state": "current"})

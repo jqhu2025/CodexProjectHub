@@ -2,7 +2,15 @@
 
 from datetime import datetime
 
-from .management import PROJECT_HEALTH, PROJECT_PRIORITY, STATUS_TEXT, ordered_board_tasks, task_is_archived
+from .management import (
+    PROJECT_HEALTH,
+    PROJECT_PRIORITY,
+    STATUS_TEXT,
+    ordered_board_tasks,
+    project_execution_alignment,
+    task_is_archived,
+    task_is_superseded_daily_record,
+)
 from .runtime import activity_state
 
 
@@ -332,6 +340,42 @@ def project_activity_evidence(project, tasks, now=None):
         "ageDays": age_days,
         "taskCount": len(linked_tasks),
         "conversationCount": len(conversations),
+    }
+
+
+def project_review_evidence(project, tasks, target_date, now=None):
+    """Summarize current execution evidence before a project review is confirmed."""
+    today_tasks = [
+        task for task in (tasks or [])
+        if task_matches_project(task, project)
+        and not task_is_archived(task)
+        and not task_is_superseded_daily_record(task)
+        and str(task.get("date") or "") == str(target_date or "")
+    ]
+    counts = {
+        status: sum(task.get("status", "planned") == status for task in today_tasks)
+        for status in ("planned", "doing", "done")
+    }
+    running_conversations = sum(
+        activity_state(conversation) == "running"
+        for conversation in (project or {}).get("conversations") or []
+    )
+    alignment = project_execution_alignment(project, tasks, target_date)
+    if alignment is not None:
+        alignment_state = "acknowledged" if alignment.get("acknowledged") else "divergent"
+    elif counts["doing"] or running_conversations:
+        alignment_state = "aligned"
+    else:
+        alignment_state = "idle"
+    return {
+        "taskCount": len(today_tasks),
+        "plannedCount": counts["planned"],
+        "doingCount": counts["doing"],
+        "doneCount": counts["done"],
+        "runningConversationCount": running_conversations,
+        "alignmentState": alignment_state,
+        "alignment": alignment,
+        "activity": project_activity_evidence(project, tasks, now),
     }
 
 

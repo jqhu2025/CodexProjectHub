@@ -948,10 +948,34 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window.show_project_governance.assert_called_once_with([project])
         window.open_project_workspace.assert_not_called()
 
+    def test_stale_review_routes_to_execution_alignment_before_confirmation(self):
+        today = datetime.now().date().isoformat()
+        project = {
+            "id": "project", "savedId": "stable", "status": "active",
+            "objective": "Ship", "nextStep": "Validate release",
+            "stage": "validation", "health": "on_track",
+        }
+        task = {
+            "id": "task", "projectId": "stable", "date": today,
+            "status": "doing", "title": "Repair benchmark",
+        }
+        window = SimpleNamespace(today_tasks=[task], record_project_review=Mock())
+        dialog = SimpleNamespace(current_project=lambda: project, accept=Mock(), window=window)
+        with patch.object(APP, "ExecutionAlignmentDialog") as alignment_dialog:
+            APP.PortfolioReviewDialog.confirm_current(dialog)
+        dialog.accept.assert_called_once_with()
+        alignment_dialog.assert_called_once()
+        self.assertEqual(alignment_dialog.call_args.args[1][0]["project"], project)
+        alignment_dialog.return_value.exec_.assert_called_once_with()
+        window.record_project_review.assert_not_called()
+
     def test_review_queue_prioritizes_incomplete_governance_records(self):
         ready = {"id": "ready", "status": "active", "objective": "Ship", "nextStep": "Test", "stage": "execution", "health": "on_track"}
         incomplete = {**ready, "id": "incomplete", "objective": ""}
-        window = SimpleNamespace(projects=[ready, incomplete], lifecycle_calibration_queue=Mock(return_value=[]))
+        window = SimpleNamespace(
+            projects=[ready, incomplete], lifecycle_calibration_queue=Mock(return_value=[]),
+            execution_alignment_queue=Mock(return_value=[]),
+        )
         with patch.object(APP, "portfolio_decision_groups", return_value={"review": [ready, incomplete]}):
             queue = APP.MainWindow.portfolio_review_queue(window)
         self.assertEqual(queue, [incomplete, ready])
@@ -1015,16 +1039,18 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
         window.refresh.assert_called_once_with(silent=True, scan=False)
 
-    def test_review_queue_defers_to_the_more_specific_lifecycle_decision(self):
+    def test_review_queue_defers_to_more_specific_alignment_and_lifecycle_decisions(self):
         normal = {"id": "normal", "status": "active"}
         quiet = {"id": "quiet", "status": "active"}
+        ready = {"id": "ready", "status": "active"}
         window = SimpleNamespace(
-            projects=[normal, quiet],
+            projects=[normal, quiet, ready],
+            execution_alignment_queue=Mock(return_value=[{"project": normal}]),
             lifecycle_calibration_queue=Mock(return_value=[{"project": quiet, "state": {"due": True}}]),
         )
-        with patch.object(APP, "portfolio_decision_groups", return_value={"review": [normal, quiet]}):
+        with patch.object(APP, "portfolio_decision_groups", return_value={"review": [normal, quiet, ready]}):
             queue = APP.MainWindow.portfolio_review_queue(window)
-        self.assertEqual(queue, [normal])
+        self.assertEqual(queue, [ready])
 
     def test_management_scope_surfaces_attention_and_blocked_projects(self):
         blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
@@ -1249,7 +1275,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         target = {"id": "stable", "name": "Release"}
         status_bar = Mock()
         window = SimpleNamespace(
-            saved_projects=[target], project_decisions=[], view_signature="old",
+            saved_projects=[target], project_decisions=[], view_signature="old", today_tasks=[],
             saved_record_for_project=lambda _project: target,
             refresh=Mock(), statusBar=lambda: status_bar,
         )
@@ -1270,11 +1296,32 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
             "objective": "", "nextStep": "Verify",
         }
         status_bar = Mock()
-        window = SimpleNamespace(saved_record_for_project=Mock(), statusBar=lambda: status_bar)
+        window = SimpleNamespace(today_tasks=[], saved_record_for_project=Mock(), statusBar=lambda: status_bar)
         result = APP.MainWindow.record_project_review(window, project)
         self.assertFalse(result)
         window.saved_record_for_project.assert_not_called()
         status_bar.showMessage.assert_called_once()
+
+    def test_project_review_rejects_unresolved_live_direction_drift(self):
+        today = datetime.now().date().isoformat()
+        project = {
+            "id": "runtime", "savedId": "stable", "status": "active",
+            "stage": "validation", "health": "on_track", "objective": "Ship",
+            "nextStep": "Validate release",
+        }
+        task = {
+            "id": "task-1", "projectId": "stable", "date": today,
+            "status": "doing", "title": "Repair benchmark",
+        }
+        status_bar = Mock(); saved_lookup = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], saved_record_for_project=saved_lookup,
+            statusBar=lambda: status_bar,
+        )
+        result = APP.MainWindow.record_project_review(window, project)
+        self.assertFalse(result)
+        saved_lookup.assert_not_called()
+        self.assertIn("执行方向", status_bar.showMessage.call_args.args[0])
 
     def test_keep_execution_direction_records_signature_and_audit_event(self):
         today = datetime.now().date().isoformat()

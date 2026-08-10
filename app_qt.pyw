@@ -96,6 +96,7 @@ from codex_hub.portfolio import (
     portfolio_focus_capacity_state,
     portfolio_lifecycle_calibration_queue,
     project_activity_evidence,
+    project_review_evidence,
     project_lifecycle_calibration_state,
     project_live_work_state,
     project_reference_ids,
@@ -4282,8 +4283,8 @@ class PortfolioReviewDialog(QDialog):
         self.reviewed_count = 0
         self.setWindowTitle("项目复核")
         self.setObjectName("portfolioReviewDialog")
-        self.setMinimumSize(720, 520)
-        self.resize(780, 570)
+        self.setMinimumSize(720, 560)
+        self.resize(780, 620)
         self.setStyleSheet(STYLE + """
             QDialog#portfolioReviewDialog QLabel[sectionLabel='true'] { color: #66758a; font-size: 11px; font-weight: 650; }
         """)
@@ -4366,6 +4367,9 @@ class PortfolioReviewDialog(QDialog):
         gaps = project_governance_gaps(project)
         gap_text = project_governance_gap_text(project)
         has_project_folder = Path(str(project.get("path") or "")).is_dir()
+        today = QDate.currentDate().toString(Qt.ISODate)
+        review_evidence = project_review_evidence(project, self.window.today_tasks, today)
+        alignment_pending = review_evidence["alignmentState"] == "divergent"
         if gaps:
             self.confirm_button.setText("Codex 补全缺项" if has_project_folder else "打开项目补全")
             self.confirm_button.setIcon(fluent_icon("\uE945" if has_project_folder else "\uE72A", color="#ffffff", size=14))
@@ -4374,6 +4378,10 @@ class PortfolioReviewDialog(QDialog):
                 if has_project_folder else
                 "当前没有有效项目文件夹，请在项目面板中手动补齐"
             )
+        elif alignment_pending:
+            self.confirm_button.setText("先校准执行方向")
+            self.confirm_button.setIcon(fluent_icon("\uE8A7", color="#ffffff", size=14))
+            self.confirm_button.setToolTip("今日实际执行与已保存下一步不同；请先确认哪一个应作为项目方向")
         else:
             self.confirm_button.setText("确认现状")
             self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
@@ -4408,6 +4416,39 @@ class PortfolioReviewDialog(QDialog):
             text = ElidedLabel(value); text.setToolTip(value); text.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); metric_layout.addWidget(text); metrics.addWidget(metric, 1)
         self.card_layout.addLayout(metrics)
 
+        evidence_frame = QFrame(); evidence_frame.setObjectName("reviewEvidence")
+        evidence_frame.setStyleSheet("QFrame#reviewEvidence { background: #f6f9fd; border: 1px solid #d9e4f0; border-radius: 9px; } QFrame#reviewEvidence QLabel { background: transparent; border: none; }")
+        evidence_layout = QHBoxLayout(evidence_frame); evidence_layout.setContentsMargins(11, 8, 10, 8); evidence_layout.setSpacing(9)
+        evidence_icon = QLabel(); evidence_icon.setFixedSize(28, 28); evidence_icon.setAlignment(Qt.AlignCenter)
+        evidence_icon.setPixmap(fluent_icon("\uE9D9", color="#315f9b", size=15).pixmap(QSize(15, 15))); evidence_icon.setStyleSheet("background: #e7eef7; border-radius: 8px;"); evidence_layout.addWidget(evidence_icon)
+        evidence_text = QVBoxLayout(); evidence_text.setSpacing(1)
+        evidence_title = QLabel("实时执行证据"); evidence_title.setStyleSheet("color: #315f9b; font-size: 11px; font-weight: 700;"); evidence_text.addWidget(evidence_title)
+        activity = review_evidence["activity"]
+        age_days = activity.get("ageDays")
+        if age_days is None:
+            recent = "暂无历史活动"
+        elif age_days == 0:
+            recent = f"今天 · {activity.get('source') or '活动记录'}"
+        elif age_days == 1:
+            recent = f"昨天 · {activity.get('source') or '活动记录'}"
+        else:
+            recent = f"{age_days} 天前 · {activity.get('source') or '活动记录'}"
+        evidence_detail_text = (
+            f"今日 {review_evidence['taskCount']} 项（计划 {review_evidence['plannedCount']} / 进行 {review_evidence['doingCount']} / 完成 {review_evidence['doneCount']}）"
+            f"  ·  Codex {review_evidence['runningConversationCount']} 运行  ·  最近活动 {recent}"
+        )
+        evidence_detail = ElidedLabel(evidence_detail_text); evidence_detail.setToolTip(evidence_detail_text); evidence_detail.setStyleSheet("color: #66758a; font-size: 10px;"); evidence_text.addWidget(evidence_detail); evidence_layout.addLayout(evidence_text, 1)
+        alignment_labels = {
+            "divergent": ("执行方向待校准", "#9a3412", "#fff1dc"),
+            "acknowledged": ("执行差异已确认", "#315f9b", "#e7eef7"),
+            "aligned": ("执行方向一致", "#087443", "#e7f7ef"),
+            "idle": ("暂无在制任务", "#66758a", "#eef2f6"),
+        }
+        alignment_text, alignment_color, alignment_background = alignment_labels[review_evidence["alignmentState"]]
+        alignment_badge = QLabel(alignment_text); alignment_badge.setAlignment(Qt.AlignCenter); alignment_badge.setFixedHeight(26)
+        alignment_badge.setStyleSheet(f"color: {alignment_color}; background: {alignment_background}; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"); evidence_layout.addWidget(alignment_badge)
+        self.card_layout.addWidget(evidence_frame)
+
         for caption, value, fallback in (
             ("项目目标", project.get("objective"), "尚未明确项目目标"),
             ("当前下一步", project.get("nextStep"), "尚未设置下一步"),
@@ -4424,6 +4465,9 @@ class PortfolioReviewDialog(QDialog):
                 "当前未关联有效项目文件夹，请打开项目面板手动补齐；资料不完整时不会写入复核基线。"
             )
             self.feedback.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+        elif alignment_pending:
+            self.feedback.setText("今日实际执行与项目已保存的下一步不同；请先校准执行方向，再建立或刷新复核基线。")
+            self.feedback.setStyleSheet("color: #9a3412; background: #fff3e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         elif legacy_attention:
             self.feedback.setText("当前保存的是历史“需关注”状态：若风险仍存在，可确认现状；若已恢复正常，请先打开项目面板修改健康度。")
             self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
@@ -4459,6 +4503,12 @@ class PortfolioReviewDialog(QDialog):
                 self.window.show_project_governance([project])
             else:
                 self.window.open_project_workspace(project)
+            return
+        today = QDate.currentDate().toString(Qt.ISODate)
+        evidence = project_review_evidence(project, self.window.today_tasks, today)
+        if evidence["alignmentState"] == "divergent":
+            self.accept()
+            ExecutionAlignmentDialog(self.window, [evidence["alignment"]]).exec_()
             return
         if not self.window.record_project_review(project):
             self.feedback.setText("没有成功写入复核记录，请保留当前项目并稍后重试。")
@@ -5342,14 +5392,16 @@ class MainWindow(QMainWindow):
         self.render_nav(); self.render()
 
     def portfolio_review_queue(self):
-        """Keep one project in one decision queue, preferring lifecycle calibration."""
+        """Keep one project in one queue, preferring live alignment and lifecycle decisions."""
         projects = portfolio_decision_groups(self.projects).get("review", [])
-        lifecycle_refs = set()
+        specific_refs = set()
+        for item in self.execution_alignment_queue():
+            specific_refs.update(project_reference_ids(item.get("project") or {}))
         for item in self.lifecycle_calibration_queue():
-            lifecycle_refs.update(project_reference_ids(item.get("project") or {}))
+            specific_refs.update(project_reference_ids(item.get("project") or {}))
         filtered = [
             project for project in projects
-            if not (project_reference_ids(project) & lifecycle_refs)
+            if not (project_reference_ids(project) & specific_refs)
         ]
         return sorted(filtered, key=lambda project: 0 if project_governance_gaps(project) else 1)
 
@@ -6119,6 +6171,11 @@ class MainWindow(QMainWindow):
         gap_text = project_governance_gap_text(project)
         if gap_text:
             self.statusBar().showMessage(f"项目资料尚未完整，请先补齐：{gap_text}", 4200)
+            return False
+        today = QDate.currentDate().toString(Qt.ISODate)
+        alignment = project_execution_alignment(project, self.today_tasks, today)
+        if alignment is not None and not alignment.get("acknowledged"):
+            self.statusBar().showMessage("实际执行与已保存下一步不同，请先完成执行方向校准", 4200)
             return False
         reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
         target = self.saved_record_for_project(project)
