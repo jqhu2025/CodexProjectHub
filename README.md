@@ -36,6 +36,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Create, edit, archive, restore, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
+- Give a Codex-synchronized project a local display name without changing its Codex source identity, folder, or conversations. The original Codex name remains recoverable from the editor, and every explicit rename or restore is recorded in project decision history and can be rolled back.
 - Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
 - Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning.
 - Separate **strategic focus** from **actual execution**: the former is a deliberate portfolio decision, while the latter is detected from today's in-progress tasks and running Codex conversations.
@@ -203,7 +204,7 @@ Runtime data is stored in the `data` directory:
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
 | `data/settings.json` | Local configuration, including the optional summary conversation ID, strategic-focus capacity, active-portfolio inactivity threshold, and daily task WIP limit. |
 | `data/project_layout.json` | Project order and recoverable archive settings. |
-| `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
+| `data/project_decisions.json` | Local audit trail for real project-name, objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 

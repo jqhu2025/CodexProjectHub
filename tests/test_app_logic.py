@@ -35,6 +35,48 @@ class ConversationMappingTests(unittest.TestCase):
         self.assertEqual(result["new-thread"], "project-a")
 
 
+class ProjectIdentityTests(unittest.TestCase):
+    def test_codex_source_name_wins_until_an_explicit_local_override_exists(self):
+        state = {
+            "local-projects": {
+                "codex-project": {
+                    "name": "Codex source name",
+                    "rootPaths": ["C:\\workspace\\project"],
+                },
+            },
+            "project-order": ["codex-project"],
+        }
+        saved = [{
+            "id": "saved-project",
+            "name": "Legacy cached name",
+            "path": "C:\\workspace\\project",
+        }]
+        with patch.object(APP, "codex_global_state", return_value=state):
+            project = APP.codex_sidebar_projects(saved)[0]
+        self.assertEqual(project["name"], "Codex source name")
+        self.assertEqual(project["sourceName"], "Codex source name")
+
+        saved[0]["nameOverride"] = "Portfolio display name"
+        with patch.object(APP, "codex_global_state", return_value=state):
+            project = APP.codex_sidebar_projects(saved)[0]
+        self.assertEqual(project["name"], "Portfolio display name")
+        self.assertEqual(project["sourceName"], "Codex source name")
+
+    def test_display_name_override_can_be_restored_to_the_codex_source(self):
+        project = {
+            "codexProjectId": "codex-project",
+            "name": "Portfolio display name",
+            "sourceName": "Codex source name",
+        }
+        target = {"name": "Portfolio display name", "nameOverride": "Portfolio display name"}
+        self.assertTrue(APP.apply_project_display_name(target, project, "Codex source name"))
+        self.assertEqual(target["name"], "Codex source name")
+        self.assertNotIn("nameOverride", target)
+
+        self.assertTrue(APP.apply_project_display_name(target, project, "Executive portfolio"))
+        self.assertEqual(target["nameOverride"], "Executive portfolio")
+
+
 class ProjectArchiveTests(unittest.TestCase):
     def test_archived_manual_project_keeps_its_complete_management_record(self):
         saved = [{
@@ -811,6 +853,52 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertEqual(entry["projectId"], "stable-id")
         self.assertEqual(entry["source"], "codex")
         self.assertEqual(entry["id"], "decision-1")
+
+    def test_management_updates_preserve_alias_and_rename_rollback_restores_source(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "codexProjectId": "codex-project",
+            "name": "Portfolio display name", "sourceName": "Codex source name",
+            "status": "active", "category": "Research", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        target = {
+            **project, "id": "stable", "name": "Portfolio display name",
+            "nameOverride": "Portfolio display name",
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(
+            categories=["全部", "Research"], project_layout={"categoryOrders": {}},
+            saved_projects=[target], project_decisions=[], view_signature="old",
+            saved_record_for_project=lambda _project: target,
+            apply_project_completion_lifecycle=Mock(return_value=True),
+            refresh=Mock(), statusBar=lambda: status_bar,
+        )
+
+        def record_decision(identity, before, after, source, occurred_at):
+            entry = APP.build_project_decision_entry(identity, before, after, source, occurred_at)
+            if entry:
+                window.project_decisions.append(entry)
+            return entry
+
+        window.record_project_decision = Mock(side_effect=record_decision)
+        management = {
+            "priority": "normal", "stage": "validation", "health": "attention",
+            "status": "active", "category": "Research", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        with patch.object(APP, "save_json"):
+            APP.MainWindow.update_project_management(window, project, management, notify=False, source="focus")
+        self.assertEqual((target["name"], target["nameOverride"]), ("Portfolio display name", "Portfolio display name"))
+        self.assertEqual([change["field"] for change in window.project_decisions[-1]["changes"]], ["health"])
+
+        with patch.object(APP, "save_json"):
+            saved = APP.MainWindow.update_project_management(
+                window, project, {**management, "name": "Codex source name"}, notify=False, source="undo"
+            )
+        self.assertEqual((saved["name"], project["name"]), ("Codex source name", "Codex source name"))
+        self.assertNotIn("nameOverride", saved)
+        self.assertEqual([change["field"] for change in window.project_decisions[-1]["changes"]], ["name"])
 
     def test_entry_is_not_created_when_nothing_changed(self):
         entry = APP.build_project_decision_entry(

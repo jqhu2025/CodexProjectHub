@@ -440,6 +440,34 @@ class ManagementModuleTests(unittest.TestCase):
         changes = management.project_decision_changes(before, after)
         self.assertEqual([change["field"] for change in changes], ["health"])
 
+    def test_project_rename_is_audited_with_the_new_identity_and_can_be_rolled_back(self):
+        project = {"id": "stable", "name": "Old portfolio name"}
+        entry = management.build_project_decision_entry(
+            project,
+            {"name": "Old portfolio name", "health": "on_track"},
+            {"name": "New portfolio name", "health": "on_track"},
+            "editor",
+            "2026-08-10T10:00:00",
+            "rename",
+        )
+        self.assertEqual(entry["projectName"], "New portfolio name")
+        self.assertEqual([change["field"] for change in entry["changes"]], ["name"])
+        self.assertIn("项目名称：Old portfolio name → New portfolio name", management.format_project_decision_summary(entry))
+
+        requested, affected, conflicts = management.build_project_decision_rollback(
+            {"name": "New portfolio name", "health": "on_track"}, entry
+        )
+        self.assertEqual(requested["name"], "Old portfolio name")
+        self.assertEqual([item["field"] for item in affected], ["name"])
+        self.assertEqual(conflicts, [])
+
+    def test_partial_decision_patch_does_not_clear_an_omitted_project_name(self):
+        changes = management.project_decision_changes(
+            {"name": "Stable identity", "health": "on_track"},
+            {"health": "attention"},
+        )
+        self.assertEqual([change["field"] for change in changes], ["health"])
+
     def test_blocker_decision_history_explains_start_update_and_resolution(self):
         project = {"id": "stable", "name": "Release"}
         started_after = {"blocker": "Waiting for input", "blockedAt": "2026-08-10T09:00:00"}

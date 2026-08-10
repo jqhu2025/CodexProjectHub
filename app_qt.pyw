@@ -255,6 +255,32 @@ def normalized_path(value):
     return path.rstrip("\\").lower()
 
 
+def project_display_name(saved, source_name, fallback=""):
+    """Resolve the visible name without mistaking legacy saved data for an override."""
+    saved = saved or {}
+    override = normalized_decision_value(saved.get("nameOverride"))
+    source = normalized_decision_value(source_name)
+    stored = normalized_decision_value(saved.get("name"))
+    return override or source or stored or normalized_decision_value(fallback) or "未命名项目"
+
+
+def apply_project_display_name(target, project, requested_name):
+    """Persist an explicit local alias while retaining Codex's source identity."""
+    requested = normalized_decision_value(requested_name)
+    if not requested:
+        return False
+    previous_name = normalized_decision_value((target or {}).get("name"))
+    previous_override = normalized_decision_value((target or {}).get("nameOverride"))
+    source_name = normalized_decision_value((project or {}).get("sourceName"))
+    is_codex_project = bool((project or {}).get("codexProjectId") and source_name)
+    target["name"] = requested
+    if is_codex_project and requested.casefold() != source_name.casefold():
+        target["nameOverride"] = requested
+    else:
+        target.pop("nameOverride", None)
+    return previous_name != requested or previous_override != normalized_decision_value(target.get("nameOverride"))
+
+
 def matched_project(projects, folder):
     target = normalized_path(folder)
     matches = []
@@ -322,12 +348,14 @@ def codex_sidebar_projects(saved_projects):
         if not roots:
             continue
         saved = next((saved_by_path.get(normalized_path(path)) for path in roots if normalized_path(path) in saved_by_path), None) or {}
+        source_name = source.get("name") or Path(roots[0]).name
         projects.append({
             **saved,
             "id": project_id,
             "savedId": saved.get("id"),
             "codexProjectId": project_id,
-            "name": source.get("name") or saved.get("name") or Path(roots[0]).name,
+            "name": project_display_name(saved, source_name, Path(roots[0]).name),
+            "sourceName": source_name,
             "path": roots[0],
             "rootPaths": roots,
             "category": saved.get("category", "未分类"),
@@ -354,6 +382,7 @@ def visible_project_catalog(saved_projects, layout):
             "savedId": saved.get("id"),
             "codexProjectId": None,
             "name": saved.get("name") or Path(path).name,
+            "sourceName": "",
             "path": path,
             "rootPaths": [path],
             "category": saved.get("category", "未分类"),
@@ -1588,6 +1617,9 @@ class ProjectEditor(QDialog):
         subtitle.setStyleSheet("color: #718096; font-size: 12px;"); layout.addWidget(subtitle)
         self.fields = {}
         name = QLineEdit(item.get("name", "")); name.setFixedHeight(40); name.setPlaceholderText("例如：Desktop Analytics App"); name.setAccessibleName("项目名称"); self.fields["name"] = name
+        self.source_name = normalized_decision_value(item.get("sourceName"))
+        if self.source_name:
+            name.setToolTip("这是项目中心的本地显示名，不会修改 Codex 中的项目来源或本地文件夹")
         category = QComboBox(); category.setFixedHeight(40); category.setAccessibleName("类别")
         for category_name in (categories or load_categories())[1:]: category.addItem(category_name, category_name)
         category.setCurrentIndex(max(0, category.findData(item.get("category", "未分类")))); self.fields["category"] = category
@@ -1610,7 +1642,16 @@ class ProjectEditor(QDialog):
 
         form = QGridLayout(); form.setHorizontalSpacing(10); form.setVerticalSpacing(6)
         for column in range(6): form.setColumnStretch(column, 1)
-        form.addWidget(field_label("项目名称"), 0, 0, 1, 6); form.addWidget(name, 1, 0, 1, 6)
+        form.addWidget(field_label("项目名称（本地显示）" if self.source_name else "项目名称"), 0, 0, 1, 6)
+        name_holder = QWidget(); name_layout = QHBoxLayout(name_holder); name_layout.setContentsMargins(0, 0, 0, 0); name_layout.setSpacing(7); name_layout.addWidget(name, 1)
+        self.restore_source_name = QPushButton("使用 Codex 原名"); self.restore_source_name.setFixedHeight(40)
+        self.restore_source_name.setToolTip(f"恢复来源名称：{self.source_name}" if self.source_name else "")
+        self.restore_source_name.clicked.connect(lambda: name.setText(self.source_name)); name_layout.addWidget(self.restore_source_name)
+        def sync_source_name_action(value):
+            differs = bool(self.source_name and normalized_decision_value(value).casefold() != self.source_name.casefold())
+            self.restore_source_name.setVisible(differs)
+        name.textChanged.connect(sync_source_name_action); sync_source_name_action(name.text())
+        form.addWidget(name_holder, 1, 0, 1, 6)
         form.addWidget(field_label("类别"), 2, 0, 1, 3); form.addWidget(field_label("项目状态"), 2, 3, 1, 3)
         form.addWidget(category, 3, 0, 1, 3); form.addWidget(status, 3, 3, 1, 3)
         form.addWidget(field_label("本地路径"), 4, 0, 1, 6)
@@ -6382,6 +6423,7 @@ class MainWindow(QMainWindow):
         before = dict(project)
         occurred_at = datetime.now().isoformat(timespec="seconds")
         data, normalization_notes = normalize_project_management_decision(project, data)
+        name_requested = "name" in data
         validation_error = project_management_validation_error(data)
         if validation_error:
             if notify:
@@ -6412,6 +6454,8 @@ class MainWindow(QMainWindow):
             "nextStep": str(data.get("nextStep") or "").strip(),
             "blocker": str(data.get("blocker") or "").strip(),
         })
+        if name_requested:
+            apply_project_display_name(target, project, data.get("name"))
         blocker_event = reconcile_project_blocker_lifecycle(before, target, occurred_at)
         if not self.apply_project_completion_lifecycle(project, before, target, data, occurred_at, source):
             if notify:
@@ -6427,11 +6471,20 @@ class MainWindow(QMainWindow):
                 orders[new_category].append(project.get("id"))
         for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionAcceptedAt", *PROJECT_BLOCKER_LIFECYCLE_FIELDS):
             project[key] = target.get(key)
+        if name_requested:
+            project["name"] = target.get("name")
+            if target.get("nameOverride"):
+                project["nameOverride"] = target.get("nameOverride")
+            else:
+                project.pop("nameOverride", None)
         for key in ("completionSummary", "completedAt", "completionObjectiveSnapshot", "completionAcceptedAt", "blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
             if key not in target:
                 project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
-        entry = self.record_project_decision(project, before, target, decision_source, occurred_at)
+        decision_after = dict(target)
+        if not name_requested:
+            decision_after["name"] = project.get("name") or target.get("name")
+        entry = self.record_project_decision(project, before, decision_after, decision_source, occurred_at)
         if project_change_establishes_review(target, decision_source, entry is not None):
             target["reviewedAt"] = occurred_at
             project["reviewedAt"] = occurred_at
@@ -6866,7 +6919,8 @@ class MainWindow(QMainWindow):
         if project:
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
-            target.update({key: value for key, value in data.items() if key not in {"completionSummary", "completedAt", "completionHistory"}})
+            target.update({key: value for key, value in data.items() if key not in {"name", "completionSummary", "completedAt", "completionHistory"}})
+            apply_project_display_name(target, project, data.get("name"))
             if target.get("nextStep"):
                 target["nextStepReviewNeeded"] = False
             if data.get("category") != previous_category:
@@ -6884,6 +6938,7 @@ class MainWindow(QMainWindow):
             codex_match = next((item for item in codex_projects if normalized_path(item.get("path")) == normalized_path(data.get("path"))), None)
             target["manualProject"] = codex_match is None
             if codex_match:
+                apply_project_display_name(target, codex_match, data.get("name"))
                 hidden = self.project_layout.setdefault("hiddenProjectIds", [])
                 self.project_layout["hiddenProjectIds"] = [value for value in hidden if value != codex_match.get("id")]
         decision_project = project or {**target, "savedId": target.get("id")}

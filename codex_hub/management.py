@@ -37,6 +37,7 @@ PROJECT_STAGE = {
 }
 PROJECT_HEALTH = {"on_track": "正常", "attention": "需关注", "blocked": "阻塞"}
 PROJECT_DECISION_FIELDS = {
+    "name": "项目名称",
     "priority": "管理优先级",
     "status": "项目状态",
     "category": "项目分类",
@@ -727,7 +728,10 @@ def project_decision_changes(before, after):
     after = after or {}
     for field, label in PROJECT_DECISION_FIELDS.items():
         old_value = normalized_decision_value(before.get(field))
-        new_value = normalized_decision_value(after.get(field))
+        # Decision callers may provide a full snapshot or a partial patch. An
+        # omitted field means "unchanged"; an explicit empty value still means
+        # "clear it". This is especially important for project identity.
+        new_value = normalized_decision_value(after.get(field, before.get(field)))
         if old_value != new_value:
             changes.append({"field": field, "label": label, "before": old_value, "after": new_value})
     return changes
@@ -768,7 +772,7 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
     entry = {
         "id": entry_id or str(uuid.uuid4()),
         "projectId": stable_project_id,
-        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "projectName": str((after or {}).get("name") or (project or {}).get("name") or "未命名项目"),
         "at": occurred_at,
         "source": source if source in PROJECT_DECISION_SOURCES else "manual",
         "changes": changes,
