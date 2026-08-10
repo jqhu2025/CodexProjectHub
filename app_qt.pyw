@@ -1136,7 +1136,7 @@ def portfolio_decision_groups(projects):
     }
 
 
-def build_daily_summary_payload(tasks, projects, target_date):
+def build_daily_summary_payload(tasks, projects, target_date, project_decisions=None):
     """Create a compact, factual source packet for the fixed Codex summary task."""
     project_index = {
         reference: project
@@ -1182,7 +1182,39 @@ def build_daily_summary_payload(tasks, projects, target_date):
                 "state": codex_state(conversation)[1],
                 "summary": str(conversation.get("summary") or "").strip(),
             })
-    return {"date": target_date, "tasks": selected_tasks, "codexActivities": activities}
+
+    decisions = []
+    for entry in project_decisions or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            point = datetime.fromisoformat(str(entry.get("at") or "").replace("Z", "+00:00"))
+            if point.tzinfo is not None:
+                point = point.astimezone(local_timezone)
+            if point.date().isoformat() != target_date:
+                continue
+        except ValueError:
+            continue
+        project = project_index.get(str(entry.get("projectId") or ""), {})
+        kind = str(entry.get("kind") or "decision")
+        decisions.append({
+            "project": str(entry.get("projectName") or project.get("name") or "未命名项目"),
+            "at": str(entry.get("at") or ""),
+            "kind": {"review": "项目复核", "alignment": "执行方向确认"}.get(kind, "项目决策"),
+            "source": PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策"),
+            "summary": format_project_decision_summary(entry),
+            "changes": [
+                {
+                    "field": str(change.get("label") or PROJECT_DECISION_FIELDS.get(change.get("field"), "项目字段")),
+                    "before": display_project_decision_value(change.get("field"), change.get("before")),
+                    "after": display_project_decision_value(change.get("field"), change.get("after")),
+                }
+                for change in entry.get("changes") or []
+                if isinstance(change, dict)
+            ],
+        })
+    decisions.sort(key=lambda item: item.get("at", ""))
+    return {"date": target_date, "tasks": selected_tasks, "codexActivities": activities, "projectDecisions": decisions[-40:]}
 
 
 def _reverse_jsonl_lines(path):
@@ -1307,15 +1339,17 @@ def daily_summary_prompt(payload, visible=False):
     source = json.dumps(payload, ensure_ascii=False, indent=2)
     task_count = len(payload.get("tasks") or [])
     activity_count = len(payload.get("codexActivities") or [])
+    decision_count = len(payload.get("projectDecisions") or [])
     turn_count = sum(int(item.get("userTurns") or 0) for item in payload.get("codexActivities") or [])
-    work_item_count = task_count + activity_count
+    work_item_count = task_count + activity_count + decision_count
     rules = (
         "你是固定的每日工作总结助手。请只根据下面提供的昨日记录总结，不要虚构完成情况。\n"
-        f"本次共覆盖 {work_item_count} 个工作项：{task_count} 项昨日计划任务、{activity_count} 个实际活跃的 Codex 对话（{turn_count} 次用户提问）。必须综合全部记录后再总结。\n"
+        f"本次共覆盖 {work_item_count} 个工作项：{task_count} 项昨日计划任务、{activity_count} 个实际活跃的 Codex 对话（{turn_count} 次用户提问）、{decision_count} 项项目管理决策。必须综合全部记录后再总结。\n"
         "要求：overview 用自然、简洁的 2-3 句话说明昨天主要做了什么和当前结果，不超过 180 个汉字；"
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
         "任务中的 completionOutcome 是人工确认的实际完成成果，应作为 completed 的首要证据；notes 只是计划说明，不能单独证明工作已完成。"
         "已完成任务若没有 completionOutcome，只能谨慎描述状态，不得补造结果。\n"
+        "projectDecisions 是人工确认的项目管理活动，可用于说明方向、阶段、风险和下一步发生了什么变化；它本身不等于交付成果，不能仅凭复核或字段变更写入 completed。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
         "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
         "nextFocus 不只是重复未完成项，要结合现状给出具体、可执行的下一步进化建议，例如更可靠的验证、拆分或决策动作。\n"
@@ -1323,7 +1357,7 @@ def daily_summary_prompt(payload, visible=False):
     schema = '{"overview":"...","completed":["..."],"inProgress":["..."],"nextFocus":["..."]}'
     if visible:
         output = (
-            f"先注明“本次覆盖：{work_item_count} 个工作项 · {task_count} 项计划任务 · {activity_count} 个 Codex 对话 · {turn_count} 次提问”，再用“工作概览 / 完成成果 / 仍在推进 / 下一步进化建议”四个简短部分输出便于阅读的中文总结。"
+            f"先注明“本次覆盖：{work_item_count} 个工作项 · {task_count} 项计划任务 · {activity_count} 个 Codex 对话 · {decision_count} 项项目决策 · {turn_count} 次提问”，再用“工作概览 / 完成成果 / 仍在推进 / 下一步进化建议”四个简短部分输出便于阅读的中文总结。"
             "最后单独一行输出一个 Markdown HTML 注释，注释内部先写 CODEX_HUB_JSON:，再紧跟用于软件写回的 JSON 对象，结构必须是："
             f"{schema}。格式示例：<!-- CODEX_HUB_JSON: {schema} -->。不要在该注释后添加内容。\n\n"
         )
@@ -1357,6 +1391,7 @@ def parse_daily_summary_response(raw, payload, thread_id):
         "sourceCounts": {
             "tasks": len(payload.get("tasks") or []),
             "codexActivities": len(payload.get("codexActivities") or []),
+            "projectDecisions": len(payload.get("projectDecisions") or []),
             "codexTurns": sum(int(item.get("userTurns") or 0) for item in payload.get("codexActivities") or []),
         },
     })
@@ -3130,9 +3165,10 @@ class DailySummaryDialog(QDialog):
         source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
         task_count = int(source_counts.get("tasks") or 0)
         activity_count = int(source_counts.get("codexActivities") or 0)
+        decision_count = int(source_counts.get("projectDecisions") or 0)
         turn_count = int(source_counts.get("codexTurns") or 0)
-        work_item_count = task_count + activity_count
-        subtitle = QLabel(f"{summary.get('date', '')} · 覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{turn_count} 次提问")
+        work_item_count = task_count + activity_count + decision_count
+        subtitle = QLabel(f"{summary.get('date', '')} · 覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{decision_count} 项项目决策、{turn_count} 次提问")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
         generated = QLabel("已写回工作台"); generated.setAlignment(Qt.AlignCenter); generated.setFixedHeight(28)
         generated.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; padding: 2px 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(generated)
@@ -4461,8 +4497,9 @@ class MainWindow(QMainWindow):
         source_counts = summary.get("sourceCounts") if isinstance(summary.get("sourceCounts"), dict) else {}
         task_count = int(source_counts.get("tasks") or 0)
         activity_count = int(source_counts.get("codexActivities") or 0)
+        decision_count = int(source_counts.get("projectDecisions") or 0)
         turn_count = int(source_counts.get("codexTurns") or 0)
-        work_item_count = task_count + activity_count
+        work_item_count = task_count + activity_count + decision_count
         generated_at = str(summary.get("generatedAt") or "")
         updated_text = ""
         try:
@@ -4470,7 +4507,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
         self.daily_summary_meta.setText(
-            f"覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{turn_count} 次提问 · 完成 {counts[0]} · 进行中 {counts[1]} · 建议 {counts[2]}{updated_text}"
+            f"覆盖 {work_item_count} 个工作项：{task_count} 项计划任务、{activity_count} 个 Codex 对话、{decision_count} 项项目决策、{turn_count} 次提问 · 完成 {counts[0]} · 进行中 {counts[1]} · 建议 {counts[2]}{updated_text}"
         )
 
     def start_daily_summary(self, force=False):
@@ -4484,7 +4521,7 @@ class MainWindow(QMainWindow):
             return
         self.summary_attempt_date = target_date
         self.daily_summary_error = ""
-        payload = build_daily_summary_payload(self.today_tasks, self.projects, target_date)
+        payload = build_daily_summary_payload(self.today_tasks, self.projects, target_date, self.project_decisions)
         worker = DailySummaryWorker(payload, self.projects, self, visible=force)
         worker.generated.connect(self.on_daily_summary_generated)
         worker.finished.connect(lambda: self.finish_daily_summary(worker))

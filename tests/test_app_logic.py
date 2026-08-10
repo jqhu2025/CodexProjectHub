@@ -743,6 +743,23 @@ class DailySummaryTests(unittest.TestCase):
         payload = APP.build_daily_summary_payload(tasks, projects, "2026-08-08")
         self.assertEqual(payload["tasks"][0]["project"], "Denoising")
 
+    def test_payload_includes_only_that_days_audited_project_decisions(self):
+        projects = [{"id": "current-id", "savedId": "stable-id", "name": "Denoising", "conversations": []}]
+        decisions = [
+            {
+                "at": "2026-08-08T09:00:00", "projectId": "stable-id", "projectName": "Denoising", "source": "editor",
+                "changes": [{"field": "stage", "label": "当前阶段", "before": "planning", "after": "validation"}],
+            },
+            APP.build_project_review_entry({"savedId": "stable-id", "name": "Denoising", "stage": "validation", "health": "on_track", "nextStep": "Verify"}, "2026-08-08T10:00:00", "review-1"),
+            APP.build_project_alignment_entry({"savedId": "stable-id", "name": "Denoising", "nextStep": "Verify"}, [{"title": "Repair benchmark"}], "2026-08-08T11:00:00", "alignment-1"),
+            {"at": "2026-08-09T09:00:00", "projectId": "stable-id", "source": "editor", "changes": []},
+        ]
+        payload = APP.build_daily_summary_payload([], projects, "2026-08-08", decisions)
+        self.assertEqual(len(payload["projectDecisions"]), 3)
+        self.assertEqual([item["kind"] for item in payload["projectDecisions"]], ["项目决策", "项目复核", "执行方向确认"])
+        self.assertEqual(payload["projectDecisions"][0]["changes"][0]["after"], "验证")
+        self.assertIn("保留下一步", payload["projectDecisions"][-1]["summary"])
+
     def test_prompt_requires_specific_structured_output(self):
         prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [], "codexActivities": []})
         self.assertIn('"overview"', prompt)
@@ -750,10 +767,11 @@ class DailySummaryTests(unittest.TestCase):
         self.assertIn("不要虚构完成情况", prompt)
         self.assertIn("下一步进化建议", prompt)
         self.assertIn("completionOutcome 是人工确认的实际完成成果", prompt)
+        self.assertIn("projectDecisions 是人工确认的项目管理活动", prompt)
 
     def test_visible_prompt_is_readable_and_has_writeback_marker(self):
-        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{"userTurns": 3}]}, visible=True)
-        self.assertIn("本次覆盖：3 个工作项 · 2 项计划任务 · 1 个 Codex 对话 · 3 次提问", prompt)
+        prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{"userTurns": 3}], "projectDecisions": [{}, {}]}, visible=True)
+        self.assertIn("本次覆盖：5 个工作项 · 2 项计划任务 · 1 个 Codex 对话 · 2 项项目决策 · 3 次提问", prompt)
         self.assertIn("工作概览 / 完成成果 / 仍在推进 / 下一步进化建议", prompt)
         self.assertIn("CODEX_HUB_JSON:", prompt)
 
@@ -765,12 +783,31 @@ class DailySummaryTests(unittest.TestCase):
         )
         result = APP.parse_daily_summary_response(
             raw,
-            {"date": "2026-08-08", "tasks": [{}], "codexActivities": []},
+            {"date": "2026-08-08", "tasks": [{}], "codexActivities": [], "projectDecisions": [{}, {}]},
             "summary-thread",
         )
         self.assertEqual(result["overview"], "已完成检查。")
         self.assertEqual(result["nextFocus"], ["项目：增加回归验证"])
         self.assertEqual(result["sourceCounts"]["tasks"], 1)
+        self.assertEqual(result["sourceCounts"]["projectDecisions"], 2)
+
+    def test_summary_generation_passes_project_decision_history_into_payload(self):
+        worker = SimpleNamespace(
+            generated=SimpleNamespace(connect=Mock()),
+            finished=SimpleNamespace(connect=Mock()),
+            start=Mock(),
+        )
+        status_bar = Mock()
+        window = SimpleNamespace(
+            daily_summary_worker=None, summary_attempt_date=None, daily_summary_error="",
+            today_tasks=[{"id": "task-1"}], projects=[{"id": "project-1"}], project_decisions=[{"id": "decision-1"}],
+            daily_summary_target_date=lambda: "2026-08-08", daily_summary_for_date=lambda _date: None,
+            render_daily_summary=Mock(), on_daily_summary_generated=Mock(), finish_daily_summary=Mock(), statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "build_daily_summary_payload", return_value={"date": "2026-08-08"}) as build, patch.object(APP, "DailySummaryWorker", return_value=worker):
+            APP.MainWindow.start_daily_summary(window, force=False)
+        build.assert_called_once_with(window.today_tasks, window.projects, "2026-08-08", window.project_decisions)
+        worker.start.assert_called_once()
 
     def test_codex_activity_scan_uses_real_record_timestamps(self):
         with tempfile.TemporaryDirectory() as folder:

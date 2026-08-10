@@ -77,6 +77,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Move unwanted tasks to a recoverable recycle bin instead of deleting their daily record; archived tasks retain their original date, three-state status, ordering context, and complete transition history while remaining excluded from boards, workload counts, and generated reviews.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
+- Include audited project reviews, direction reconciliations, and real objective/stage/health/next-action changes in the daily evidence packet. Management decisions are counted separately from tasks and conversations and are never treated as completion evidence by themselves.
 - Keep the home review compact and open the full completed / in-progress / next-focus breakdown on click.
 - Show immediate progress and failure feedback when a review is regenerated, then write the structured result back into the workspace.
 
