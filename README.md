@@ -38,8 +38,9 @@ All screenshots use fictional sample data. They do not contain real project path
 - Move projects between categories.
 - Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
 - Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning.
-- Resolve the live focus portfolio automatically from manual priority, today's in-progress tasks, and running Codex conversations.
-- Surface a compact home decision queue for live focus, confirmed risk or blockage, neutral review reminders, and missing-next-action projects; every card opens the exact portfolio filter, and review debt is never presented as operational risk.
+- Separate **strategic focus** from **actual execution**: the former is a deliberate portfolio decision, while the latter is detected from today's in-progress tasks and running Codex conversations.
+- Keep a configurable one-to-nine-project focus capacity. The home decision queue shows focus usage and real parallel work together, while a dedicated calibration panel can promote or demote projects without silently changing priorities; every change enters the normal project-decision audit trail.
+- Surface a compact home decision queue for focus capacity, confirmed risk or blockage, neutral review reminders, and missing-next-action projects; every card opens the exact decision flow, and review debt is never presented as operational risk.
 - Keep task links stable when Codex refreshes a project's current identifier.
 - Promote a project's concrete next action into today's plan with one click, with duplicate protection and automatic handoff back to the next project decision when the task is completed.
 - Detect when today's in-progress work diverges from the project's declared next action without mislabelling the difference as risk. A guided reconciliation queue can adopt the live task as the new project direction—binding its completion to the next project handoff—or explicitly retain the existing direction; both choices remain human-controlled and auditable, and the reminder returns only when the underlying work changes again.
@@ -56,7 +57,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Close a project with an explicit, human-confirmed delivery outcome instead of a status flag alone. The closeout stores the original completion time, supports outcome revisions, appears in the project workbench and handoff context, and enters the unified audit history. Reopening retires the current completion claim while preserving the previous outcome as historical evidence.
 - Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, linked open tasks remain untouched for deliberate follow-up, and completed projects cannot schedule new work until they are reopened.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
-- Filter the portfolio by current focus, missing next action, or paused/idea state.
+- Filter the portfolio by strategic focus or actual live execution, missing next action, or paused/idea state.
 - Filter projects by running, completed, linked, or unlinked state.
 - Expand a project to view its linked Codex conversations.
 - Continue a project by copying its handoff context and opening the running or most recent Codex conversation.
@@ -151,7 +152,8 @@ Copy-Item data\settings.example.json data\settings.json
 
 ```json
 {
-  "dailySummaryThreadId": "your-codex-thread-id"
+  "dailySummaryThreadId": "your-codex-thread-id",
+  "portfolioFocusCapacity": 3
 }
 ```
 
@@ -190,7 +192,7 @@ Runtime data is stored in the `data` directory:
 | `data/categories.json` | Custom category names and order. |
 | `data/today_tasks.json` | Daily tasks and optional conversation references. |
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
-| `data/settings.json` | Local configuration, including the optional summary conversation ID. |
+| `data/settings.json` | Local configuration, including the optional summary conversation ID and strategic-focus capacity. |
 | `data/project_layout.json` | Project order and recoverable archive settings. |
 | `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
 

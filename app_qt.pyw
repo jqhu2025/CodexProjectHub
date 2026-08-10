@@ -96,6 +96,7 @@ CODEX_SESSIONS = CODEX_HOME / "sessions"
 CODEX_GLOBAL_STATE = CODEX_HOME / ".codex-global-state.json"
 CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 DEFAULT_CATEGORIES = ["Product Development", "Research Lab", "Operations", "External Projects", "未分类"]
+DEFAULT_PORTFOLIO_FOCUS_CAPACITY = 3
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -146,6 +147,29 @@ def daily_summary_thread_id():
         return configured
     settings = load_json(SETTINGS_FILE, {})
     return str(settings.get("dailySummaryThreadId") or "").strip() if isinstance(settings, dict) else ""
+
+
+def normalized_portfolio_focus_capacity(value):
+    try:
+        capacity = int(value)
+    except (TypeError, ValueError):
+        capacity = DEFAULT_PORTFOLIO_FOCUS_CAPACITY
+    return max(1, min(9, capacity))
+
+
+def portfolio_focus_capacity():
+    settings = load_json(SETTINGS_FILE, {})
+    value = settings.get("portfolioFocusCapacity") if isinstance(settings, dict) else None
+    return normalized_portfolio_focus_capacity(value)
+
+
+def save_portfolio_focus_capacity(value):
+    settings = load_json(SETTINGS_FILE, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    settings["portfolioFocusCapacity"] = normalized_portfolio_focus_capacity(value)
+    save_json(SETTINGS_FILE, settings)
+    return settings["portfolioFocusCapacity"]
 
 
 def save_json(path, data):
@@ -1027,13 +1051,11 @@ def open_project_tasks(tasks, project):
     ]
 
 
-def project_focus_state(project):
-    """Resolve the live portfolio focus from deliberate priority and actual work."""
+def project_live_work_state(project):
+    """Return live execution evidence without conflating it with strategic priority."""
     if (project or {}).get("status", "active") != "active":
         status_text = STATUS_TEXT.get((project or {}).get("status"), "非活动")
-        return False, "", f"项目状态为{status_text}，不计入当前重点", "#66758a", "#eef2f6"
-    if project_priority_key(project) == "focus":
-        return True, "重点", "已手动设为当前重点", "#7c3aed", "#f1eaff"
+        return False, f"项目状态为{status_text}，当前不执行", 0, 0
     active_tasks = int((project or {}).get("activeTaskCount") or 0)
     running_conversations = sum(
         codex_state(conversation)[0] == "running"
@@ -1043,10 +1065,48 @@ def project_focus_state(project):
         reason = f"今日 {active_tasks} 项任务进行中"
         if running_conversations:
             reason += f"，{running_conversations} 个 Codex 对话运行中"
-        return True, "推进中", reason, "#1d4ed8", "#e8f0ff"
+        return True, reason, active_tasks, running_conversations
     if running_conversations:
-        return True, "推进中", f"{running_conversations} 个 Codex 对话运行中", "#087443", "#e7f7ef"
+        return True, f"{running_conversations} 个 Codex 对话运行中", active_tasks, running_conversations
+    return False, "当前没有进行中的任务或 Codex 对话", 0, 0
+
+
+def project_focus_state(project):
+    """Resolve the combined project badge while preserving priority semantics elsewhere."""
+    if (project or {}).get("status", "active") != "active":
+        status_text = STATUS_TEXT.get((project or {}).get("status"), "非活动")
+        return False, "", f"项目状态为{status_text}，不计入重点与推进", "#66758a", "#eef2f6"
+    if project_priority_key(project) == "focus":
+        return True, "重点", "已手动设为战略重点", "#7c3aed", "#f1eaff"
+    live, reason, _active_tasks, running_conversations = project_live_work_state(project)
+    if live:
+        return True, "推进中", reason, "#087443" if running_conversations else "#1d4ed8", "#e7f7ef" if running_conversations else "#e8f0ff"
     return False, "", "当前没有进行中的任务或 Codex 对话", "#66758a", "#eef2f6"
+
+
+def portfolio_focus_capacity_state(projects, capacity=DEFAULT_PORTFOLIO_FOCUS_CAPACITY):
+    """Separate declared strategic focus from work that happens to be live today."""
+    capacity = normalized_portfolio_focus_capacity(capacity)
+    active = [project for project in (projects or []) if (project or {}).get("status", "active") == "active"]
+    strategic = [project for project in active if project_priority_key(project) == "focus"]
+    executing = [project for project in active if project_live_work_state(project)[0]]
+    strategic_ids = {str(project.get("id") or project.get("savedId") or id(project)) for project in strategic}
+    executing_ids = {str(project.get("id") or project.get("savedId") or id(project)) for project in executing}
+    return {
+        "capacity": capacity,
+        "strategic": strategic,
+        "executing": executing,
+        "executionOutsideFocus": [
+            project for project in executing
+            if str(project.get("id") or project.get("savedId") or id(project)) not in strategic_ids
+        ],
+        "focusWithoutExecution": [
+            project for project in strategic
+            if str(project.get("id") or project.get("savedId") or id(project)) not in executing_ids
+        ],
+        "remaining": max(0, capacity - len(strategic)),
+        "overBy": max(0, len(strategic) - capacity),
+    }
 
 
 def project_stage_key(project):
@@ -3412,6 +3472,138 @@ class ProjectDecisionHistoryDialog(QDialog):
             self.accept()
 
 
+class FocusCapacityDialog(QDialog):
+    """Manage a small strategic focus set without hiding live execution evidence."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.window = parent
+        self.setWindowTitle("重点容量")
+        self.setObjectName("focusCapacityDialog")
+        self.setMinimumSize(760, 540)
+        self.resize(820, 620)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE945", color="#6d3fc0", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #f1eaff; border: 1px solid #d9c9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("校准战略重点与真实执行"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("重点由你决定；实际推进来自今日进行中任务和运行中的 Codex 对话")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.capacity_button = QPushButton(); self.capacity_button.setFixedHeight(36)
+        self.capacity_button.setIcon(fluent_icon("\uE70F", color="#6d3fc0", size=13)); self.capacity_button.setIconSize(QSize(13, 13))
+        self.capacity_button.setToolTip("调整同时保留的战略重点数量"); self.capacity_button.clicked.connect(self.change_capacity); heading.addWidget(self.capacity_button)
+        root.addLayout(heading)
+
+        self.summary = QFrame(); self.summary.setObjectName("focusCapacitySummary")
+        self.summary.setStyleSheet("QFrame#focusCapacitySummary { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; } QFrame#focusCapacitySummary QLabel { background: transparent; border: none; }")
+        summary_layout = QHBoxLayout(self.summary); summary_layout.setContentsMargins(18, 13, 18, 13); summary_layout.setSpacing(22)
+        self.focus_metric = self.metric_widget("战略重点", "0", "#6d3fc0"); summary_layout.addWidget(self.focus_metric[0], 1)
+        divider = QFrame(); divider.setFrameShape(QFrame.VLine); divider.setStyleSheet("color: #dfe6ef;"); summary_layout.addWidget(divider)
+        self.execution_metric = self.metric_widget("实际推进", "0", "#087443"); summary_layout.addWidget(self.execution_metric[0], 1)
+        divider = QFrame(); divider.setFrameShape(QFrame.VLine); divider.setStyleSheet("color: #dfe6ef;"); summary_layout.addWidget(divider)
+        self.alignment_metric = self.metric_widget("组合判断", "待校准", "#315f9b"); summary_layout.addWidget(self.alignment_metric[0], 2)
+        root.addWidget(self.summary)
+
+        hint = QLabel("建议只把真正需要管理注意力的项目设为重点。正在执行但尚未列入重点的项目会保留绿色执行信号，不会被系统自动改级。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        self.rows_widget = QWidget(); self.rows_widget.setObjectName("focusRows"); self.rows_widget.setStyleSheet("QWidget#focusRows { background: #f7f9fc; }")
+        self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.addStretch()
+        close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_state()
+
+    @staticmethod
+    def metric_widget(caption, value, color):
+        frame = QWidget(); layout = QVBoxLayout(frame); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(1)
+        value_label = QLabel(value); value_label.setStyleSheet(f"color: {color}; font-size: 21px; font-weight: 760;"); layout.addWidget(value_label)
+        caption_label = QLabel(caption); caption_label.setStyleSheet("color: #748094; font-size: 10px; font-weight: 600;"); layout.addWidget(caption_label)
+        return frame, value_label, caption_label
+
+    def clear_rows(self):
+        while self.rows_layout.count():
+            item = self.rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide(); widget.setParent(None); widget.deleteLater()
+
+    def render_state(self):
+        self.clear_rows()
+        capacity = portfolio_focus_capacity()
+        state = portfolio_focus_capacity_state(self.window.projects, capacity)
+        strategic_count = len(state["strategic"]); execution_count = len(state["executing"])
+        self.capacity_button.setText(f"重点容量 {capacity}")
+        self.focus_metric[1].setText(f"{strategic_count} / {capacity}")
+        self.execution_metric[1].setText(str(execution_count))
+        if state["overBy"]:
+            alignment = f"超出容量 {state['overBy']} 项"
+            color, background = "#b54708", "#fff8ed"
+        elif state["executionOutsideFocus"]:
+            alignment = f"{len(state['executionOutsideFocus'])} 项执行未纳入重点"
+            color, background = "#315f9b", "#edf4ff"
+        elif strategic_count:
+            alignment = f"尚可增加 {state['remaining']} 项"
+            color, background = "#087443", "#e8f7ef"
+        else:
+            alignment = "尚未选择重点"
+            color, background = "#66758a", "#eef2f6"
+        self.alignment_metric[1].setText(alignment)
+        self.alignment_metric[1].setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 720;")
+        self.summary.setStyleSheet(f"QFrame#focusCapacitySummary {{ background: {background}; border: 1px solid #d8e1eb; border-radius: 12px; }} QFrame#focusCapacitySummary QLabel {{ background: transparent; border: none; }}")
+
+        active = [project for project in self.window.projects if project.get("status", "active") == "active"]
+        active.sort(key=lambda project: (
+            0 if project_priority_key(project) == "focus" else 1,
+            0 if project_live_work_state(project)[0] else 1,
+            str(project.get("name") or "").casefold(),
+        ))
+        if not active:
+            empty = QLabel("当前没有活跃项目"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;")
+            self.rows_layout.addWidget(empty)
+        for project in active:
+            self.rows_layout.addWidget(self.project_row(project))
+        self.rows_layout.addStretch()
+
+    def project_row(self, project):
+        is_focus = project_priority_key(project) == "focus"
+        live, live_reason, _task_count, _running_count = project_live_work_state(project)
+        row = QFrame(); row.setObjectName("focusProjectRow")
+        accent = "#7c3aed" if is_focus else "#10a361" if live else "#d5dee9"
+        row.setStyleSheet(f"QFrame#focusProjectRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#focusProjectRow QLabel {{ background: transparent; border: none; }}")
+        layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
+        text = QVBoxLayout(); text.setSpacing(3)
+        name = ElidedLabel(project.get("name") or "未命名项目"); name.setToolTip(project.get("name") or "未命名项目"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(name)
+        meta = ElidedLabel(f"{project.get('category') or '未分类'}  ·  {live_reason if live else '当前无实时执行'}")
+        meta.setToolTip(meta.text()); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
+        if live:
+            execution = QLabel("● 实际推进"); execution.setAlignment(Qt.AlignCenter); execution.setFixedSize(78, 26)
+            execution.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(execution)
+        focus = QLabel("战略重点" if is_focus else "常规项目"); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(70, 26)
+        focus.setStyleSheet(("color: #6d3fc0; background: #f1eaff;" if is_focus else "color: #66758a; background: #eef2f6;") + " border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(focus)
+        action = QPushButton("移出重点" if is_focus else "设为重点"); action.setFixedSize(92, 34)
+        if not is_focus:
+            action.setStyleSheet("QPushButton { color: #6d3fc0; background: #f7f2ff; border: 1px solid #d7c6f3; border-radius: 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #eee4ff; border-color: #ab87df; }")
+        action.clicked.connect(lambda _checked=False, value=project, enabled=not is_focus: self.set_focus(value, enabled)); layout.addWidget(action)
+        return row
+
+    def set_focus(self, project, enabled):
+        if self.window.set_project_focus_priority(project, enabled):
+            self.render_state()
+
+    def change_capacity(self):
+        current = portfolio_focus_capacity()
+        value, accepted = QInputDialog.getInt(self, "调整重点容量", "同时保留多少个战略重点？", current, 1, 9, 1)
+        if accepted:
+            self.window.update_portfolio_focus_capacity(value)
+            self.render_state()
+
+
 class PortfolioReviewDialog(QDialog):
     """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
     def __init__(self, parent, projects):
@@ -4259,8 +4451,8 @@ class MainWindow(QMainWindow):
             self.status_filter.addItem(label, value)
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
-        self.scope_filter.setToolTip("“当前重点”包含人工重点、今日进行中任务和运行中的 Codex 对话")
-        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("待复核", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        self.scope_filter.setToolTip("“重点与推进”同时呈现人工战略重点和当前真实执行；两种信号在重点容量面板中分别管理")
+        for label, value in (("全部项目", "all"), ("重点与推进", "focus"), ("待复核", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -4322,7 +4514,7 @@ class MainWindow(QMainWindow):
         decision_hint = QLabel("点击直达处理队列"); decision_hint.setAttribute(Qt.WA_TransparentForMouseEvents); decision_hint.setStyleSheet("color: #748094; font-size: 10px;"); intro_text.addWidget(decision_hint); intro_layout.addLayout(intro_text); decision_layout.addWidget(decision_intro)
         self.portfolio_decision_cards = {}
         decision_specs = (
-            ("focus", "正在推进", "#1d4ed8", "#f2f6ff", "#cfdbf1"),
+            ("focus_capacity", "重点容量", "#6d3fc0", "#f7f2ff", "#dfd0f5"),
             ("attention", "风险与阻塞", "#b54708", "#fff8ed", "#efd7b4"),
             ("review", "待复核", "#315f9b", "#f4f7fb", "#d5e0ec"),
             ("needs_next", "待定下一步", "#6d3fc0", "#f6f3fb", "#dfd5f1"),
@@ -4335,7 +4527,7 @@ class MainWindow(QMainWindow):
             )
             card.clicked.connect(lambda value=scope: self.open_project_scope(value))
             card_layout = QHBoxLayout(card); card_layout.setContentsMargins(12, 8, 10, 8); card_layout.setSpacing(9)
-            count = QLabel("0"); count.setAttribute(Qt.WA_TransparentForMouseEvents); count.setFixedSize(34, 34); count.setAlignment(Qt.AlignCenter)
+            count = QLabel("0"); count.setAttribute(Qt.WA_TransparentForMouseEvents); count.setFixedSize(42 if scope == "focus_capacity" else 34, 34); count.setAlignment(Qt.AlignCenter)
             count.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid {border}; border-radius: 9px; font-size: 16px; font-weight: 750;"); card_layout.addWidget(count)
             card_text = QVBoxLayout(); card_text.setSpacing(1)
             card_title = QLabel(caption); card_title.setAttribute(Qt.WA_TransparentForMouseEvents); card_title.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: 700;"); card_text.addWidget(card_title)
@@ -4404,6 +4596,9 @@ class MainWindow(QMainWindow):
             self.render_nav()
 
     def open_project_scope(self, scope):
+        if scope == "focus_capacity":
+            self.show_focus_capacity()
+            return
         if scope == "review":
             self.show_portfolio_review_queue()
             return
@@ -4427,6 +4622,34 @@ class MainWindow(QMainWindow):
             return
         PortfolioReviewDialog(self, projects).exec_()
 
+    def show_focus_capacity(self):
+        FocusCapacityDialog(self).exec_()
+
+    def update_portfolio_focus_capacity(self, value):
+        capacity = save_portfolio_focus_capacity(value)
+        self.render_portfolio_decisions()
+        self.statusBar().showMessage(f"战略重点容量已调整为 {capacity} 项", 3200)
+        return capacity
+
+    def set_project_focus_priority(self, project, enabled):
+        data = {
+            "priority": "focus" if enabled else "normal",
+            "stage": project_stage_key(project),
+            "health": project_health_key(project),
+            "status": project.get("status", "active"),
+            "category": project.get("category", "未分类"),
+            "objective": project.get("objective", ""),
+            "nextStep": project.get("nextStep", ""),
+            "blocker": project.get("blocker", ""),
+        }
+        result = self.update_project_management(project, data, notify=False, source="manual")
+        if result is None:
+            self.statusBar().showMessage("没有成功调整项目重点，请确认项目仍然存在", 3600)
+            return False
+        action = "设为战略重点" if enabled else "移出战略重点"
+        self.statusBar().showMessage(f"{project.get('name') or '项目'}已{action}，并写入决策记录", 3600)
+        return True
+
     def execution_alignment_queue(self):
         today = QDate.currentDate().toString(Qt.ISODate)
         return portfolio_execution_alignment_queue(self.projects, self.today_tasks, today)
@@ -4442,8 +4665,31 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "portfolio_decision_cards"):
             return
         groups = portfolio_decision_groups(self.projects)
-        prefixes = {"focus": "今日推进", "attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
+        prefixes = {"attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
+        capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
         for scope, controls in self.portfolio_decision_cards.items():
+            if scope == "focus_capacity":
+                strategic = capacity_state["strategic"]
+                executing = capacity_state["executing"]
+                controls["count"].setText(f"{len(strategic)}/{capacity_state['capacity']}")
+                if capacity_state["overBy"]:
+                    summary = f"超出 {capacity_state['overBy']} 项 · {len(executing)} 项实际推进"
+                elif capacity_state["executionOutsideFocus"]:
+                    summary = f"{len(capacity_state['executionOutsideFocus'])} 项执行未纳入重点"
+                elif strategic:
+                    summary = f"尚可增加 {capacity_state['remaining']} 项 · {len(executing)} 项实际推进"
+                else:
+                    summary = f"尚未选择重点 · {len(executing)} 项实际推进"
+                strategic_names = [str(project.get("name") or "未命名项目") for project in strategic]
+                executing_names = [str(project.get("name") or "未命名项目") for project in executing]
+                tooltip_lines = [f"战略重点 {len(strategic)} / {capacity_state['capacity']}"]
+                tooltip_lines.extend(f"• {name}" for name in strategic_names[:8])
+                tooltip_lines.append(f"实际推进 {len(executing)} 项")
+                tooltip_lines.extend(f"• {name}" for name in executing_names[:8])
+                tooltip = "\n".join(tooltip_lines)
+                controls["preview"].setText(summary); controls["preview"].setToolTip(tooltip); controls["frame"].setToolTip(tooltip)
+                controls["frame"].setAccessibleName(f"重点容量，{len(strategic)} / {capacity_state['capacity']}；{len(executing)} 项实际推进。{summary}")
+                continue
             projects = groups.get(scope, [])
             controls["count"].setText(str(len(projects)))
             if projects:

@@ -224,6 +224,42 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(task_focus, "focus"))
         self.assertTrue(APP.project_management_scope_matches(codex_focus, "focus"))
 
+    def test_focus_capacity_separates_declared_priority_from_live_execution(self):
+        focused_idle = {"id": "focus", "status": "active", "priority": "focus", "activeTaskCount": 0, "conversations": []}
+        focused_live = {"id": "both", "status": "active", "priority": "focus", "activeTaskCount": 1, "conversations": []}
+        live_regular = {"id": "live", "status": "active", "priority": "normal", "activeTaskCount": 0, "conversations": [{"state": "working"}]}
+        paused_focus = {"id": "paused", "status": "paused", "priority": "focus", "activeTaskCount": 1, "conversations": []}
+        state = APP.portfolio_focus_capacity_state([focused_idle, focused_live, live_regular, paused_focus], 3)
+        self.assertEqual([project["id"] for project in state["strategic"]], ["focus", "both"])
+        self.assertEqual([project["id"] for project in state["executing"]], ["both", "live"])
+        self.assertEqual([project["id"] for project in state["executionOutsideFocus"]], ["live"])
+        self.assertEqual([project["id"] for project in state["focusWithoutExecution"]], ["focus"])
+        self.assertEqual(state["remaining"], 1)
+        self.assertEqual(state["overBy"], 0)
+
+    def test_focus_capacity_is_bounded_and_reports_overcommitment(self):
+        projects = [{"id": str(index), "status": "active", "priority": "focus"} for index in range(4)]
+        state = APP.portfolio_focus_capacity_state(projects, 2)
+        self.assertEqual(state["overBy"], 2)
+        self.assertEqual(state["remaining"], 0)
+        self.assertEqual(APP.normalized_portfolio_focus_capacity(0), 1)
+        self.assertEqual(APP.normalized_portfolio_focus_capacity(20), 9)
+        self.assertEqual(APP.normalized_portfolio_focus_capacity("bad"), APP.DEFAULT_PORTFOLIO_FOCUS_CAPACITY)
+
+    def test_focus_priority_action_uses_audited_management_update(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "execution", "health": "on_track", "category": "Research", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(update_project_management=Mock(return_value={"priority": "focus"}), statusBar=lambda: status_bar)
+        changed = APP.MainWindow.set_project_focus_priority(window, project, True)
+        self.assertTrue(changed)
+        update = window.update_project_management.call_args.args[1]
+        self.assertEqual(update["priority"], "focus")
+        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
+
     def test_non_active_project_never_leaks_into_current_focus(self):
         completed = {"status": "completed", "priority": "focus", "activeTaskCount": 1, "conversations": [{"state": "working"}]}
         self.assertFalse(APP.project_focus_state(completed)[0])
