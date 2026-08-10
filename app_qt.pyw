@@ -1057,6 +1057,8 @@ def project_control_state(project):
     if health == "blocked" or blocker:
         return "blocked", "阻塞", "#b42318", "#fff0ee", blocker or "项目已标记阻塞"
     review_due, review_age, review_cadence = project_review_status(project)
+    if health == "attention" and (not review_due or review_age is not None):
+        return "attention", "需关注", "#b54708", "#fff4e5", "已确认关注；请处理风险并按复核节奏更新"
     if review_due:
         reason = (
             f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
@@ -1064,8 +1066,6 @@ def project_control_state(project):
             "历史关注状态尚未经过当前复核"
         )
         return "review", "待复核", "#315f9b", "#edf4ff", reason
-    if health == "attention":
-        return "attention", "需关注", "#b54708", "#fff4e5", "需要复核当前进展"
     if not str(project.get("nextStep") or "").strip():
         reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
         return "on_track", "正常", "#087443", "#e7f7ef", reason
@@ -1097,7 +1097,7 @@ def project_management_scope_matches(project, scope):
             return True
         return project_health_key(project) == "attention" and bool(str((project or {}).get("reviewedAt") or "").strip())
     if scope == "review":
-        return project_control_state(project)[0] == "review"
+        return project_review_status(project)[0] and project_control_state(project)[0] != "blocked"
     if scope == "blocked":
         return project_control_state(project)[0] == "blocked"
     if scope == "paused":
@@ -1107,7 +1107,7 @@ def project_management_scope_matches(project, scope):
 
 def project_management_sort_key(project):
     priority_order = {"focus": 0, "normal": 1, "later": 2}
-    control_order = {"blocked": 0, "review": 1, "attention": 2, "on_track": 3, "paused": 4, "completed": 5}
+    control_order = {"blocked": 0, "attention": 1, "review": 2, "on_track": 3, "paused": 4, "completed": 5}
     return (
         control_order.get(project_control_state(project)[0], 2),
         0 if project_focus_state(project)[0] else priority_order.get(project_priority_key(project), 1) + 1,
@@ -1124,7 +1124,7 @@ def portfolio_decision_groups(projects):
             project for project in ordered
             if project_management_scope_matches(project, "attention")
         ],
-        "review": [project for project in ordered if project_control_state(project)[0] == "review"],
+        "review": [project for project in ordered if project_management_scope_matches(project, "review")],
         "needs_next": [
             project for project in ordered
             if project_management_scope_matches(project, "needs_next")
@@ -2296,7 +2296,7 @@ class ProjectMindMap(QGraphicsView):
         focus_count = sum(project_focus_state(project)[0] for project in projects)
         blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
         attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
-        review_count = sum(project_control_state(project)[0] == "review" for project in projects)
+        review_count = sum(project_management_scope_matches(project, "review") for project in projects)
         summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个风险  ·  {review_count} 个待复核")
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         overview_layout.addWidget(summary)
@@ -3111,6 +3111,155 @@ class ProjectDecisionHistoryDialog(QDialog):
             self.accept()
 
 
+class PortfolioReviewDialog(QDialog):
+    """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
+    def __init__(self, parent, projects):
+        super().__init__(parent)
+        self.window = parent
+        self.pending = list(projects or [])
+        self.reviewed_count = 0
+        self.setWindowTitle("项目复核")
+        self.setObjectName("portfolioReviewDialog")
+        self.setMinimumSize(720, 520)
+        self.resize(780, 570)
+        self.setStyleSheet(STYLE + """
+            QDialog#portfolioReviewDialog QLabel[sectionLabel='true'] { color: #66758a; font-size: 11px; font-weight: 650; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(40, 40); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE73E", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("核对目标、健康度和下一步；只有点击“确认现状”才会写入审计记录")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
+        self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
+        root.addLayout(heading)
+
+        self.review_card = QFrame(); self.review_card.setObjectName("portfolioReviewCard")
+        self.review_card.setStyleSheet("QFrame#portfolioReviewCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 13px; } QFrame#portfolioReviewCard QLabel { background: transparent; border: none; }")
+        self.card_layout = QVBoxLayout(self.review_card); self.card_layout.setContentsMargins(20, 18, 20, 20); self.card_layout.setSpacing(12)
+        root.addWidget(self.review_card, 1)
+
+        self.feedback = QLabel(); self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close)
+        actions.addStretch()
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.skip_button = QPushButton("稍后处理"); self.skip_button.clicked.connect(self.skip_current); actions.addWidget(self.skip_button)
+        self.confirm_button = QPushButton("确认现状"); self.confirm_button.setObjectName("primary"); self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.confirm_button.setIconSize(QSize(14, 14)); self.confirm_button.clicked.connect(self.confirm_current); actions.addWidget(self.confirm_button)
+        root.addLayout(actions)
+        self.render_current()
+
+    def clear_card(self):
+        def clear_layout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                child_layout = item.layout()
+                if widget is not None:
+                    widget.hide()
+                    widget.setParent(None)
+                    widget.deleteLater()
+                elif child_layout is not None:
+                    clear_layout(child_layout)
+                    child_layout.deleteLater()
+        clear_layout(self.card_layout)
+
+    def current_project(self):
+        return self.pending[0] if self.pending else None
+
+    def render_current(self):
+        self.clear_card()
+        remaining = len(self.pending)
+        total = self.reviewed_count + remaining
+        self.counter.setText(f"{self.reviewed_count + 1} / {total}" if remaining else f"已完成 {self.reviewed_count}")
+        self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1)
+        self.confirm_button.setText("确认现状" if remaining else "关闭")
+        if not remaining:
+            done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
+            done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 15px;")
+            self.card_layout.addStretch(); self.card_layout.addWidget(done_icon, 0, Qt.AlignCenter)
+            done = QLabel("本轮项目复核已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
+            detail = QLabel(f"已确认 {self.reviewed_count} 个项目；新的复核日期和周期已经写入决策记录")
+            detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
+            self.card_layout.addStretch(); self.feedback.setText("主页和项目页的待复核数量已同步更新。")
+            self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+
+        project = self.current_project()
+        _review_due, review_age, review_cadence = project_review_status(project)
+        review_reason = (
+            f"距离上次复核已 {review_age} 天，已到 {review_cadence} 天复核周期"
+            if review_age is not None else
+            "历史关注状态尚未经过当前复核"
+        )
+        name_row = QHBoxLayout(); name_row.setSpacing(9)
+        name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
+        priority = QLabel(PROJECT_PRIORITY.get(project_priority_key(project), "常规推进")); priority.setAlignment(Qt.AlignCenter)
+        priority.setStyleSheet("color: #1d4ed8; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(priority)
+        self.card_layout.addLayout(name_row)
+        reason = QLabel(f"待复核原因 · {review_reason}"); reason.setWordWrap(True)
+        reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
+
+        metrics = QHBoxLayout(); metrics.setSpacing(9)
+        metric_values = (
+            ("当前阶段", PROJECT_STAGE.get(project_stage_key(project), "执行")),
+            ("健康度", PROJECT_HEALTH.get(project_health_key(project), "正常")),
+            ("复核节奏", project_review_summary(project)),
+        )
+        for caption, value in metric_values:
+            metric = QFrame(); metric.setObjectName("reviewMetric"); metric.setStyleSheet("QFrame#reviewMetric { background: #f7f9fc; border: 1px solid #e0e7ef; border-radius: 9px; }")
+            metric_layout = QVBoxLayout(metric); metric_layout.setContentsMargins(11, 8, 11, 9); metric_layout.setSpacing(2)
+            label = QLabel(caption); label.setProperty("sectionLabel", True); metric_layout.addWidget(label)
+            text = ElidedLabel(value); text.setToolTip(value); text.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); metric_layout.addWidget(text); metrics.addWidget(metric, 1)
+        self.card_layout.addLayout(metrics)
+
+        for caption, value, fallback in (
+            ("项目目标", project.get("objective"), "尚未明确项目目标"),
+            ("当前下一步", project.get("nextStep"), "尚未设置下一步"),
+        ):
+            label = QLabel(caption); label.setProperty("sectionLabel", True); self.card_layout.addWidget(label)
+            text = QLabel(str(value or fallback)); text.setWordWrap(True)
+            text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
+
+        legacy_attention = project_health_key(project) == "attention" and not str(project.get("reviewedAt") or "").strip()
+        if legacy_attention:
+            self.feedback.setText("当前保存的是历史“需关注”状态：若风险仍存在，可确认现状；若已恢复正常，请先打开项目面板修改健康度。")
+            self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+        else:
+            self.feedback.setText("确认后将按项目优先级重新计算下一次复核日期，不会修改目标、健康度或下一步。")
+            self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
+
+    def skip_current(self):
+        if len(self.pending) <= 1:
+            return
+        self.pending.append(self.pending.pop(0))
+        self.render_current()
+
+    def open_current(self):
+        project = self.current_project()
+        if project is None:
+            return
+        self.accept()
+        self.window.open_project_workspace(project)
+
+    def confirm_current(self):
+        project = self.current_project()
+        if project is None:
+            self.accept(); return
+        if not self.window.record_project_review(project):
+            self.feedback.setText("没有成功写入复核记录，请保留当前项目并稍后重试。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+        self.pending.pop(0)
+        self.reviewed_count += 1
+        self.render_current()
+
+
 class ProjectWorkbenchDialog(QDialog):
     def __init__(self, parent, project):
         super().__init__(parent)
@@ -3702,6 +3851,9 @@ class MainWindow(QMainWindow):
             self.render_nav()
 
     def open_project_scope(self, scope):
+        if scope == "review":
+            self.show_portfolio_review_queue()
+            return
         if scope not in {"focus", "attention", "review", "needs_next"}:
             return
         self.category = "全部"
@@ -3714,6 +3866,13 @@ class MainWindow(QMainWindow):
             control.blockSignals(False)
         self.select_section("projects")
         self.render_nav(); self.render()
+
+    def show_portfolio_review_queue(self):
+        projects = portfolio_decision_groups(self.projects).get("review", [])
+        if not projects:
+            QMessageBox.information(self, "无需复核", "当前没有到期或尚未确认的项目。")
+            return
+        PortfolioReviewDialog(self, projects).exec_()
 
     def render_portfolio_decisions(self):
         if not hasattr(self, "portfolio_decision_cards"):

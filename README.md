@@ -47,6 +47,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
 - Keep a local, source-labelled history of real project-decision changes, including manual edits, Codex suggestions, category moves, and completed next-action handoffs.
 - Confirm a project's current state without inventing a field change. Reviews are audited, use a 3/7/14-day cadence for focus/normal/later priorities, and re-enter a neutral review queue when due.
+- Process that review queue one project at a time from the home workspace: inspect the saved objective, stage, health, cadence, and next action; confirm deliberately, defer without mutating data, or open the full project workbench to correct the decision first.
 - Treat unverified legacy attention flags as **Needs Review**, not as current risk; only a confirmed attention decision is surfaced as a live portfolio warning.
 - Restore any recorded project decision selectively: only fields touched by that event are rolled back, newer conflicting edits are disclosed before confirmation, and the rollback is preserved as a new audit event.
 - Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links.

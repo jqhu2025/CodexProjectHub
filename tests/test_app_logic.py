@@ -276,9 +276,12 @@ class ProjectManagementInteractionTests(unittest.TestCase):
     def test_legacy_attention_becomes_review_instead_of_current_risk(self):
         legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
         fresh_attention = {**legacy_attention, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        overdue_attention = {**legacy_attention, "reviewedAt": "2000-01-01T00:00:00"}
         self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待复核"))
         self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertEqual(APP.project_control_state(fresh_attention)[:2], ("attention", "需关注"))
+        self.assertEqual(APP.project_control_state(overdue_attention)[:2], ("attention", "需关注"))
+        self.assertTrue(APP.project_management_scope_matches(overdue_attention, "review"))
 
     def test_search_matches_conversation_title_and_status(self):
         search = SimpleNamespace(text=lambda: "benchmark")
@@ -321,6 +324,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(paused, "paused"))
         self.assertFalse(APP.project_management_scope_matches(paused, "needs_next"))
 
+    def test_home_review_queue_uses_guided_review_instead_of_a_plain_filter(self):
+        window = SimpleNamespace(show_portfolio_review_queue=Mock())
+        APP.MainWindow.open_project_scope(window, "review")
+        window.show_portfolio_review_queue.assert_called_once_with()
+
     def test_management_scope_surfaces_attention_and_blocked_projects(self):
         blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
         attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
@@ -358,6 +366,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         ]
         projects.sort(key=APP.project_management_sort_key)
         self.assertEqual([item["name"] for item in projects], ["Blocked", "Focus"])
+
+    def test_confirmed_attention_sorts_before_neutral_review(self):
+        projects = [
+            {"name": "Review", "status": "active", "health": "attention", "nextStep": "Confirm"},
+            {"name": "Risk", "status": "active", "health": "attention", "nextStep": "Mitigate", "reviewedAt": datetime.now().isoformat(timespec="seconds")},
+        ]
+        projects.sort(key=APP.project_management_sort_key)
+        self.assertEqual([item["name"] for item in projects], ["Risk", "Review"])
 
 
 class ProjectDecisionHistoryTests(unittest.TestCase):
