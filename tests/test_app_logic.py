@@ -526,6 +526,47 @@ class ConversationMappingTests(unittest.TestCase):
         first.refresh.assert_called_once_with(silent=True, scan=False)
 
 
+class UsagePresentationTests(unittest.TestCase):
+    @staticmethod
+    def window(previous=None):
+        return SimpleNamespace(
+            usage_data=dict(previous or {}),
+            usage_synced_label=Mock(), usage_used_label=Mock(), usage_remaining_label=Mock(),
+            usage_reset_label=Mock(), usage_today_label=Mock(), usage_today_caption=Mock(),
+            usage_progress=Mock(), format_tokens=APP.MainWindow.format_tokens,
+        )
+
+    def test_quota_failure_keeps_last_success_and_still_refreshes_local_tokens(self):
+        window = self.window({"usedPercent": 25, "remainingPercent": 75, "syncedAt": "21:30", "todayTokens": 100})
+
+        APP.MainWindow.on_usage_scanned(window, {
+            "error": "额度接口响应超时", "todayTokens": 220, "todayTokensSource": "local", "syncedAt": "21:32",
+        })
+
+        window.usage_today_label.setText.assert_called_once_with("220")
+        window.usage_used_label.setText.assert_not_called()
+        self.assertEqual(window.usage_data["usedPercent"], 25)
+        self.assertEqual(window.usage_data["todayTokens"], 220)
+        self.assertIn("保留 21:30", window.usage_synced_label.setText.call_args.args[0])
+        self.assertIn("响应超时", window.usage_synced_label.setToolTip.call_args.args[0])
+
+    def test_successful_quota_refresh_updates_all_capacity_metrics(self):
+        window = self.window()
+        data = {
+            "usedPercent": 25, "remainingPercent": 75, "resetText": "08月16日 20:21",
+            "todayTokens": 123400, "todayTokensSource": "local", "planType": "pro", "syncedAt": "21:31",
+        }
+
+        APP.MainWindow.on_usage_scanned(window, data)
+
+        window.usage_used_label.setText.assert_called_once_with("25%")
+        window.usage_remaining_label.setText.assert_called_once_with("75%")
+        window.usage_reset_label.setText.assert_called_once_with("08月16日 20:21")
+        window.usage_today_label.setText.assert_called_once_with("123.4K")
+        window.usage_progress.setValue.assert_called_once_with(25)
+        self.assertEqual(window.usage_data, data)
+
+
 class ProjectIdentityTests(unittest.TestCase):
     def test_codex_source_name_wins_until_an_explicit_local_override_exists(self):
         state = {
@@ -1983,6 +2024,13 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1 · 最久逾期 4 天",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
+
+    def test_confirmation_caption_explains_a_homogeneous_queue_instead_of_hiding_it(self):
+        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 9, "overdue": 0, "total": 9}), "首次基线")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 3, "baseline": 0, "overdue": 0, "total": 3}), "资料补全")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 0, "overdue": 2, "total": 2}), "到期复核")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 1, "baseline": 1, "overdue": 0, "total": 2}), "管理确认")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 0, "overdue": 0, "total": 0}), "管理确认")
 
     def test_next_step_batch_summary_distinguishes_codex_ready_and_manual_projects(self):
         with tempfile.TemporaryDirectory() as folder:

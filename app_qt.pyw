@@ -1,14 +1,12 @@
 import json
 import mmap
 import os
-import queue
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -132,6 +130,10 @@ from codex_hub.portfolio import (
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 from codex_hub.storage import consume_json_recovery_events, load_json, save_json
+from codex_hub.usage import (
+    local_codex_tokens_for_date as estimate_local_codex_tokens,
+    read_codex_usage as query_codex_usage,
+)
 
 ROOT = Path(__file__).resolve().parent
 PROJECTS_FILE = ROOT / "data" / "projects.json"
@@ -668,162 +670,12 @@ def find_summary_codex_binary():
     return str(candidates[0]) if candidates else find_codex_binary()
 
 
-_LOCAL_TOKEN_CACHE = {"date": None, "files": {}}
-
-
 def local_codex_tokens_for_date(date_value=None):
-    """Estimate daily usage from cumulative token_count events in local Codex logs."""
-    target = date_value or datetime.now().date().isoformat()
-    local_tz = datetime.now().astimezone().tzinfo
-    try:
-        target_start = datetime.strptime(target, "%Y-%m-%d").replace(tzinfo=local_tz)
-    except ValueError:
-        return 0
-    cutoff_mtime = target_start.timestamp()
-    if _LOCAL_TOKEN_CACHE.get("date") != target:
-        _LOCAL_TOKEN_CACHE["date"] = target
-        _LOCAL_TOKEN_CACHE["files"] = {}
-    cache_files = _LOCAL_TOKEN_CACHE["files"]
-    try:
-        files = CODEX_SESSIONS.rglob("*.jsonl")
-    except OSError:
-        return 0
-    for path in files:
-        try:
-            stat = path.stat()
-            if stat.st_mtime < cutoff_mtime:
-                continue
-            cache_key = str(path)
-            state = cache_files.get(cache_key, {"offset": 0, "previousTotal": None, "tokens": 0})
-            if stat.st_size < state["offset"]:
-                state = {"offset": 0, "previousTotal": None, "tokens": 0}
-            previous_total = state["previousTotal"]
-            with path.open("r", encoding="utf-8", errors="ignore") as stream:
-                stream.seek(state["offset"])
-                while True:
-                    line = stream.readline()
-                    if not line:
-                        break
-                    if "token_count" not in line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    payload = record.get("payload") or {}
-                    if payload.get("type") != "token_count":
-                        continue
-                    usage = ((payload.get("info") or {}).get("total_token_usage") or {})
-                    current_total = int(usage.get("total_tokens") or 0)
-                    if current_total <= 0:
-                        continue
-                    delta = current_total if previous_total is None or current_total < previous_total else current_total - previous_total
-                    previous_total = current_total
-                    timestamp = record.get("timestamp") or record.get("at")
-                    if not timestamp:
-                        continue
-                    try:
-                        point = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-                        if point.tzinfo is None:
-                            point = point.replace(tzinfo=timezone.utc)
-                        event_date = point.astimezone(local_tz).date().isoformat()
-                    except ValueError:
-                        continue
-                    if event_date == target:
-                        state["tokens"] += max(0, delta)
-                state["offset"] = stream.tell()
-            state["previousTotal"] = previous_total
-            cache_files[cache_key] = state
-        except OSError:
-            continue
-    return sum(int(state.get("tokens") or 0) for state in cache_files.values())
+    return estimate_local_codex_tokens(CODEX_SESSIONS, date_value)
 
 
 def read_codex_usage():
-    binary = find_codex_binary()
-    if not binary:
-        return {"error": "未找到 Codex App Server"}
-    process = None
-    try:
-        process = subprocess.Popen(
-            [binary, "app-server"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        messages = queue.Queue()
-
-        def read_stdout():
-            for line in process.stdout:
-                try:
-                    messages.put(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-        threading.Thread(target=read_stdout, daemon=True).start()
-
-        def send(message):
-            process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-            process.stdin.flush()
-
-        def response(request_id, timeout=12):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                try:
-                    message = messages.get(timeout=max(0.1, deadline - time.monotonic()))
-                except queue.Empty:
-                    break
-                if message.get("id") == request_id:
-                    return message
-            return None
-
-        send({"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "codex_project_hub", "title": "Codex Project Hub", "version": "0.3.0"}}})
-        initialized = response(0)
-        if not initialized or initialized.get("error"):
-            return {"error": "Codex 用量连接初始化失败"}
-        send({"method": "initialized", "params": {}})
-        send({"method": "account/rateLimits/read", "id": 6, "params": {}})
-        limits_response = response(6)
-        send({"method": "account/usage/read", "id": 7, "params": {}})
-        usage_response = response(7)
-        limits = ((limits_response or {}).get("result") or {}).get("rateLimits") or {}
-        usage = (usage_response or {}).get("result") or {}
-        primary = limits.get("primary") or {}
-        used = max(0, min(100, int(round(float(primary.get("usedPercent") or 0)))))
-        reset_at = primary.get("resetsAt")
-        reset_text = "暂无刷新时间"
-        if reset_at:
-            reset_text = datetime.fromtimestamp(float(reset_at)).strftime("%m月%d日 %H:%M")
-        today = datetime.now().date().isoformat()
-        buckets = usage.get("dailyUsageBuckets") or []
-        official_today_tokens = next((int(item.get("tokens") or 0) for item in buckets if item.get("startDate") == today), None)
-        local_today_tokens = local_codex_tokens_for_date(today)
-        today_tokens = official_today_tokens if official_today_tokens is not None else local_today_tokens
-        return {
-            "usedPercent": used,
-            "remainingPercent": 100 - used,
-            "resetText": reset_text,
-            "windowMinutes": primary.get("windowDurationMins"),
-            "planType": limits.get("planType") or "",
-            "todayTokens": today_tokens,
-            "todayTokensSource": "official" if official_today_tokens is not None else "local",
-            "localTodayTokens": local_today_tokens,
-            "lifetimeTokens": int((usage.get("summary") or {}).get("lifetimeTokens") or 0),
-            "syncedAt": datetime.now().strftime("%H:%M"),
-        }
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        return {"error": str(error)}
-    finally:
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
+    return query_codex_usage(find_codex_binary(), CODEX_SESSIONS)
 
 
 class UsageScanner(QThread):
@@ -1321,6 +1173,19 @@ def project_confirmation_counts(projects):
         else:
             counts["overdue"] += 1
     return counts
+
+
+def project_confirmation_caption(counts):
+    """Name a homogeneous review queue by the actual decision it contains."""
+    counts = counts or {}
+    total = int(counts.get("total") or 0)
+    if total and int(counts.get("governance") or 0) == total:
+        return "资料补全"
+    if total and int(counts.get("baseline") or 0) == total:
+        return "首次基线"
+    if total and int(counts.get("overdue") or 0) == total:
+        return "到期复核"
+    return "管理确认"
 
 
 def project_review_urgency_summary(projects, now=None):
@@ -6920,7 +6785,7 @@ class MainWindow(QMainWindow):
             card_title = QLabel(caption); card_title.setAttribute(Qt.WA_TransparentForMouseEvents); card_title.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: 700;"); card_text.addWidget(card_title)
             preview = ElidedLabel("当前无需处理"); preview.setAttribute(Qt.WA_TransparentForMouseEvents); preview.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); card_text.addWidget(preview); card_layout.addLayout(card_text, 1)
             arrow = QLabel(); arrow.setAttribute(Qt.WA_TransparentForMouseEvents); arrow.setFixedSize(18, 18); arrow.setPixmap(fluent_icon("\uE72A", color=color, size=12).pixmap(QSize(12, 12))); arrow.setAlignment(Qt.AlignCenter); card_layout.addWidget(arrow)
-            self.portfolio_decision_cards[scope] = {"frame": card, "count": count, "preview": preview, "caption": caption}
+            self.portfolio_decision_cards[scope] = {"frame": card, "count": count, "title": card_title, "preview": preview, "caption": caption}
             decision_layout.addWidget(card, 1)
         layout.addWidget(decision_panel)
 
@@ -7358,6 +7223,12 @@ class MainWindow(QMainWindow):
                 controls["frame"].setAccessibleName(f"重点容量，{len(strategic)} / {capacity_state['capacity']}；{len(executing)} 项实际推进。{summary}")
                 continue
             projects = groups.get(scope, [])
+            if scope == "review":
+                confirmation_counts = project_confirmation_counts(projects)
+                review_caption = project_confirmation_caption(confirmation_counts)
+                controls["caption"] = review_caption
+                controls["title"].setText(review_caption)
+                prefixes["review"] = review_caption
             routed_to = routing.get("routedTo", {}).get(scope, {})
             route_labels = {
                 "attention": "风险与阻塞", "alignment": "执行校准", "lifecycle": "生命周期",
@@ -7374,7 +7245,6 @@ class MainWindow(QMainWindow):
                 if len(names) > 2:
                     preview += f" 等 {len(names)} 项"
                 if scope == "review":
-                    confirmation_counts = project_confirmation_counts(projects)
                     parts = []
                     if confirmation_counts["governance"]:
                         parts.append(f"补全 {confirmation_counts['governance']}")
@@ -7718,7 +7588,9 @@ class MainWindow(QMainWindow):
     def start_usage_scan(self):
         if self.usage_scanner is not None:
             return
-        self.usage_synced_label.setText("正在同步真实额度…")
+        previous_sync = str((self.usage_data or {}).get("syncedAt") or "").strip()
+        self.usage_synced_label.setText(f"正在刷新 · 上次 {previous_sync}" if previous_sync else "正在读取真实额度…")
+        self.usage_synced_label.setToolTip("正在读取 Codex 官方额度并更新本地 Tokens 估算")
         scanner = UsageScanner(self); scanner.scanned.connect(self.on_usage_scanned); scanner.finished.connect(lambda: self.finish_usage_scan(scanner)); self.usage_scanner = scanner; scanner.start()
 
     def finish_usage_scan(self, scanner):
@@ -7727,19 +7599,36 @@ class MainWindow(QMainWindow):
         scanner.deleteLater()
 
     def on_usage_scanned(self, data):
+        data = dict(data or {})
+        source = data.get("todayTokensSource")
+        if "todayTokens" in data:
+            self.usage_today_label.setText(self.format_tokens(data.get("todayTokens")))
+            if hasattr(self, "usage_today_caption"):
+                estimated = source == "local"
+                self.usage_today_caption.setText("今日 Tokens*" if estimated else "今日 Tokens")
+                self.usage_today_caption.setToolTip("由本地 Codex 对话日志实时估算" if estimated else "Codex 官方今日用量")
+                self.usage_today_label.setToolTip(self.usage_today_caption.toolTip())
         if data.get("error"):
-            self.usage_synced_label.setText("额度读取失败，稍后自动重试")
+            previous_sync = str((self.usage_data or {}).get("syncedAt") or "").strip()
+            attempted_at = str(data.get("syncedAt") or datetime.now().strftime("%H:%M"))
+            if self.usage_data:
+                self.usage_data = {
+                    **self.usage_data,
+                    "todayTokens": data.get("todayTokens", self.usage_data.get("todayTokens")),
+                    "todayTokensSource": source or self.usage_data.get("todayTokensSource"),
+                    "lastAttemptAt": attempted_at,
+                    "lastError": str(data.get("error")),
+                }
+            else:
+                self.usage_data = data
+            status = f"额度暂不可用 · 保留 {previous_sync}" if previous_sync else f"额度暂不可用 · Tokens 已更新 {attempted_at}"
+            self.usage_synced_label.setText(status)
+            self.usage_synced_label.setToolTip(f"{data.get('error')}；将在 2 分钟后自动重试")
             return
         self.usage_data = data
         used = data.get("usedPercent", 0); remaining = data.get("remainingPercent", 100)
         self.usage_used_label.setText(f"{used}%"); self.usage_remaining_label.setText(f"{remaining}%")
-        self.usage_reset_label.setText(data.get("resetText") or "—"); self.usage_today_label.setText(self.format_tokens(data.get("todayTokens")))
-        source = data.get("todayTokensSource")
-        if hasattr(self, "usage_today_caption"):
-            estimated = source == "local"
-            self.usage_today_caption.setText("今日 Tokens*" if estimated else "今日 Tokens")
-            self.usage_today_caption.setToolTip("由本地 Codex 对话日志实时估算；官方日用量通常延迟一天" if estimated else "Codex 官方今日用量")
-            self.usage_today_label.setToolTip(self.usage_today_caption.toolTip())
+        self.usage_reset_label.setText(data.get("resetText") or "—")
         self.usage_progress.setValue(used); plan = str(data.get("planType") or "").upper(); suffix = f" · {plan}" if plan else ""
         token_note = " · Tokens 本地估算" if source == "local" else ""
         sync_text = f"真实额度{suffix}{token_note} · {data.get('syncedAt', '')} 同步"
