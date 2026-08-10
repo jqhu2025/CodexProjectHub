@@ -97,9 +97,13 @@ from codex_hub.portfolio import (
     project_lifecycle_calibration_state,
     project_live_work_state,
     project_reference_ids,
+    assign_task_project,
+    reconcile_task_project_links_from_conversations,
     reconcile_task_project_snapshots,
     task_matches_project,
     task_project_identity,
+    task_project_link_events,
+    task_project_link_issues,
     task_wip_capacity_state,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
@@ -2856,19 +2860,22 @@ class TaskEditor(QDialog):
         self.outcome_frame.setVisible(self.status_field.currentData() == "done")
 
     def value(self):
-        project_id = self.project_field.currentData()
-        project = next((item for item in self.projects if item.get("id") == project_id), None)
+        selected_project_id = self.project_field.currentData()
+        project = next((item for item in self.projects if item.get("id") == selected_project_id), None)
         if project is not None:
+            project_id = project.get("savedId") or project.get("codexProjectId") or project.get("id")
             project_name_snapshot = str(project.get("name") or "").strip()
             project_category_snapshot = str(project.get("category") or "未分类").strip()
-        elif project_id == self.unresolved_project_id:
+        elif selected_project_id == self.unresolved_project_id:
+            project_id = selected_project_id
             project_name_snapshot = self.unresolved_project_name
             project_category_snapshot = str(self.task.get("projectCategorySnapshot") or self.task.get("category") or "未分类").strip()
         else:
+            project_id = None
             project_name_snapshot = ""
             project_category_snapshot = ""
         session_id = self.conversation_field.currentData()
-        if project_id == self.unresolved_project_id and session_id == self.preferred_session_id:
+        if selected_project_id == self.unresolved_project_id and session_id == self.preferred_session_id:
             conversation_title = str(self.task.get("conversationTitle") or "").strip()
         else:
             conversation_title = self.conversation_field.currentText() if session_id else ""
@@ -2885,6 +2892,87 @@ class TaskEditor(QDialog):
             "notes": self.notes_field.toPlainText().strip(),
             "completionNote": self.outcome_field.toPlainText().strip(),
         }
+
+
+class TaskLinkRepairDialog(QDialog):
+    """Review orphan task links without guessing project identity."""
+    def __init__(self, parent, issues, projects):
+        super().__init__(parent)
+        self.issues = list(issues or [])
+        self.projects = sorted(
+            projects or [],
+            key=lambda project: (
+                bool(project.get("_archived")),
+                str(project.get("category") or "未分类").casefold(),
+                str(project.get("name") or "").casefold(),
+            ),
+        )
+        self.selectors = {}
+        self.setWindowTitle("修复任务项目关联")
+        self.setObjectName("taskLinkRepairDialog")
+        self.setMinimumSize(780, 380)
+        self.resize(840, min(680, max(400, 225 + min(len(self.issues), 6) * 86)))
+        self.setStyleSheet(STYLE + """
+            QDialog#taskLinkRepairDialog { background: #f5f7fb; }
+            QFrame#taskLinkRepairRow { background: #ffffff; border: 1px solid #dce4ed; border-radius: 10px; }
+            QFrame#taskLinkRepairRow:hover { border-color: #a9bfd8; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(12)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE71B", color="#315f9b", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #e8eff7; border: 1px solid #cbd9e8; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        eyebrow = QLabel("DATA INTEGRITY"); eyebrow.setStyleSheet("color: #315f9b; font-size: 10px; font-weight: 750; letter-spacing: 1px;"); title_box.addWidget(eyebrow)
+        title = QLabel("修复任务项目关联"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("这些任务仍保留原内容和状态，但项目 ID 已失效。请只在确认归属后重新关联；未选择的任务保持不变。")
+        subtitle.setWordWrap(True); subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.selection_count = QLabel(); self.selection_count.setAlignment(Qt.AlignCenter); self.selection_count.setFixedHeight(30)
+        self.selection_count.setStyleSheet("color: #315f9b; background: #e8eff7; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 700;"); heading.addWidget(self.selection_count)
+        root.addLayout(heading)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        rows = QVBoxLayout(content); rows.setContentsMargins(0, 0, 6, 0); rows.setSpacing(8)
+        for task in self.issues:
+            row = QFrame(); row.setObjectName("taskLinkRepairRow"); row.setMinimumHeight(78)
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(14, 10, 12, 10); row_layout.setSpacing(14)
+            text = QVBoxLayout(); text.setSpacing(3)
+            task_title = ElidedLabel(str(task.get("title") or "未命名任务")); task_title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 680; border: none;"); text.addWidget(task_title)
+            task_date = QDate.fromString(str(task.get("date") or ""), Qt.ISODate)
+            date_text = task_date.toString("yyyy年MM月dd日") if task_date.isValid() else str(task.get("date") or "日期未知")
+            historical = str(task.get("projectNameSnapshot") or "历史项目").strip()
+            conversation = str(task.get("conversationTitle") or "未保留对话标题").strip()
+            meta = ElidedLabel(f"{date_text}  ·  原关联：{historical}  ·  Codex：{conversation}"); meta.setStyleSheet("color: #748094; font-size: 11px; border: none;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            selector = QComboBox(); selector.setFixedSize(330, 40); selector.setAccessibleName(f"为任务 {task.get('title') or '未命名任务'} 选择项目")
+            selector.addItem("选择确认后的项目…", None)
+            for project in self.projects:
+                category = str(project.get("category") or "未分类")
+                suffix = " · 已归档" if project.get("_archived") else ""
+                selector.addItem(f"{category}  ›  {project.get('name') or '未命名项目'}{suffix}", project.get("id"))
+            selector.currentIndexChanged.connect(self.sync_selection); row_layout.addWidget(selector)
+            self.selectors[str(task.get("id") or "")] = selector; rows.addWidget(row)
+        rows.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        note = QLabel("修复只更新项目归属与快照，不改变任务状态、日期和执行记录。")
+        note.setStyleSheet("color: #748094; font-size: 11px;"); actions.addWidget(note); actions.addStretch()
+        close = QPushButton("稍后处理"); close.setFixedHeight(38); close.clicked.connect(self.reject); actions.addWidget(close)
+        self.apply_button = QPushButton("保存确认的关联"); self.apply_button.setObjectName("primary"); self.apply_button.setFixedHeight(38); self.apply_button.clicked.connect(self.accept); actions.addWidget(self.apply_button)
+        root.addLayout(actions); self.sync_selection()
+
+    def sync_selection(self):
+        selected = sum(selector.currentData() is not None for selector in self.selectors.values())
+        self.selection_count.setText(f"已选择 {selected} / {len(self.issues)}")
+        self.apply_button.setEnabled(selected > 0)
+
+    def value(self):
+        return [
+            (task_id, selector.currentData())
+            for task_id, selector in self.selectors.items()
+            if selector.currentData() is not None
+        ]
 
 
 class TaskOutcomeDialog(QDialog):
@@ -3200,6 +3288,22 @@ class TaskAuditDialog(QDialog):
                 event_color,
             )
         body.addWidget(event_section)
+
+        link_events = task_project_link_events(self.task)
+        if link_events:
+            link_section, link_layout = self._section("项目关联修复", "\uE71B", "#315f9b")
+            source_labels = {"codex_conversation": "Codex 对话自动恢复", "manual_repair": "人工确认"}
+            for event in link_events[:30]:
+                previous = str(event.get("fromProjectName") or "历史项目").strip()
+                current = str(event.get("toProjectName") or "未命名项目").strip()
+                source = source_labels.get(str(event.get("source") or ""), "关联修复")
+                self._add_event_row(
+                    link_layout,
+                    f"{previous}  →  {current}",
+                    f"{source}  ·  {format_project_decision_time(event.get('at'))}",
+                    "#315f9b",
+                )
+            body.addWidget(link_section)
 
         revision_section, revision_layout = self._section("成果修订", "\uE70F", "#7c3aed")
         if not revisions:
@@ -5038,6 +5142,10 @@ class MainWindow(QMainWindow):
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
         self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #66758a; font-size: 12px;"); board_head.addWidget(self.task_summary)
+        self.task_link_repair_button = QPushButton("关联待修复"); self.task_link_repair_button.setFixedHeight(28)
+        self.task_link_repair_button.setIcon(fluent_icon("\uE71B", color="#315f9b", size=13)); self.task_link_repair_button.setIconSize(QSize(13, 13))
+        self.task_link_repair_button.setStyleSheet("QPushButton { color: #315f9b; background: #edf3f8; border: 1px solid #cedbe8; border-radius: 8px; padding: 3px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #ffffff; border-color: #8faac7; }")
+        self.task_link_repair_button.setToolTip("修复仍引用失效项目 ID 的任务"); self.task_link_repair_button.clicked.connect(self.show_task_link_repair); self.task_link_repair_button.hide(); board_head.addWidget(self.task_link_repair_button)
         self.task_wip_button = QPushButton(); self.task_wip_button.setFixedHeight(28); self.task_wip_button.setAccessibleName("调整进行中任务容量"); self.task_wip_button.clicked.connect(self.show_task_wip); board_head.addWidget(self.task_wip_button)
         board_head.addStretch()
         self.task_archive_button = QToolButton(); self.task_archive_button.setFixedSize(36, 36); self.task_archive_button.setIcon(fluent_icon("\uE74D", color="#526071", size=16)); self.task_archive_button.setIconSize(QSize(16, 16)); self.task_archive_button.setToolTip("任务回收站"); self.task_archive_button.setAccessibleName("任务回收站")
@@ -5209,6 +5317,47 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"进行中任务容量已调整为 {limit} 项", 3200)
         return limit
 
+    def task_link_project_catalog(self):
+        active = list(self.projects)
+        active_references = {reference for project in active for reference in project_reference_ids(project)}
+        archived = [
+            {**project, "_archived": True}
+            for project in self.archived_projects()
+            if not (project_reference_ids(project) & active_references)
+        ]
+        return active + archived
+
+    def task_link_issues(self):
+        return task_project_link_issues(self.today_tasks, self.task_link_project_catalog())
+
+    def show_task_link_repair(self):
+        issues = self.task_link_issues()
+        if not issues:
+            QMessageBox.information(self, "关联完整", "当前任务都已关联到可识别的项目。")
+            return
+        dialog = TaskLinkRepairDialog(self, issues, self.task_link_project_catalog())
+        if dialog.exec_() == QDialog.Accepted:
+            self.repair_task_project_links(dialog.value())
+
+    def repair_task_project_links(self, selections, source="manual_repair", occurred_at=None):
+        task_index = {str(task.get("id") or ""): task for task in self.today_tasks}
+        project_index = {str(project.get("id") or ""): project for project in self.task_link_project_catalog()}
+        repaired = []
+        timestamp = occurred_at or datetime.now().isoformat(timespec="seconds")
+        for task_id, project_id in selections or []:
+            task = task_index.get(str(task_id or ""))
+            project = project_index.get(str(project_id or ""))
+            if assign_task_project(task, project, timestamp, source):
+                repaired.append(task)
+        if not repaired:
+            self.statusBar().showMessage("没有产生关联变化，请重新确认所选项目", 3200)
+            return 0
+        save_json(TASKS_FILE, self.today_tasks)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage(f"已修复 {len(repaired)} 条任务项目关联，并保留关联历史", 4200)
+        return len(repaired)
+
     def defer_task_from_wip(self, task):
         current = next((item for item in self.today_tasks if str(item.get("id") or "") == str((task or {}).get("id") or "")), None)
         if current is None or current.get("status", "planned") != "doing":
@@ -5374,6 +5523,15 @@ class MainWindow(QMainWindow):
         for project in self.projects:
             project["conversations"] = conversations.get(project["id"], [])
             project["lastActivity"] = project["conversations"][0] if project["conversations"] else None
+        automatic_link_repairs = reconcile_task_project_links_from_conversations(
+            self.today_tasks,
+            self.projects,
+            datetime.now().isoformat(timespec="seconds"),
+            self.task_link_project_catalog(),
+        )
+        if automatic_link_repairs:
+            save_json(TASKS_FILE, self.today_tasks)
+            self.render_today_tasks()
         self.running_count = sum(codex_state(session)[0] == "running" for project in self.projects for session in project["conversations"])
         if hasattr(self, "pulse_state_label"):
             if self.running_count:
@@ -5411,7 +5569,9 @@ class MainWindow(QMainWindow):
             self.sync.setText(f"●  已同步 {datetime.now().strftime('%H:%M')}")
         if scan:
             self.start_session_scan()
-        if rollover_count:
+        if automatic_link_repairs:
+            self.statusBar().showMessage(f"已依据唯一 Codex 对话自动恢复 {len(automatic_link_repairs)} 条任务项目关联", 4500)
+        elif rollover_count:
             self.statusBar().showMessage(f"已将 {rollover_count} 个进行中任务延续到下一天，并保留原日期记录", 4500)
         elif not silent:
             self.statusBar().showMessage("已从本地项目与 Codex 活动记录刷新", 2000)
@@ -5955,6 +6115,11 @@ class MainWindow(QMainWindow):
         self.task_board_title.setText(title)
         counts = {status: sum(task.get("status") == status for task in tasks) for status in TASK_STATUS}
         self.task_summary.setText(f"{len(tasks)} 项 · {counts['doing']} 项进行中 · {counts['done']} 项完成")
+        if hasattr(self, "task_link_repair_button"):
+            link_issues = self.task_link_issues()
+            self.task_link_repair_button.setVisible(bool(link_issues))
+            self.task_link_repair_button.setText(f"关联待修复 {len(link_issues)}")
+            self.task_link_repair_button.setAccessibleName(f"{len(link_issues)} 条任务项目关联待修复")
         is_today = selected_date == QDate.currentDate()
         current_wip = self.task_wip_state(date_key) if is_today else None
         if hasattr(self, "task_wip_button"):

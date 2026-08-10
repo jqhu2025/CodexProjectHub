@@ -773,6 +773,47 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(value["sessionId"], "old-session")
         self.assertEqual(value["conversationTitle"], "Original conversation")
 
+    def test_task_editor_persists_the_stable_project_identity(self):
+        date_value = Mock(); date_value.toString.return_value = "2026-08-10"
+        project = {
+            "id": "current-codex-id", "codexProjectId": "current-codex-id", "savedId": "stable-project-id",
+            "name": "Release project", "category": "Research",
+        }
+        editor = SimpleNamespace(
+            project_field=SimpleNamespace(currentData=lambda: "current-codex-id"),
+            projects=[project], unresolved_project_id=None, unresolved_project_name="", task={},
+            conversation_field=SimpleNamespace(currentData=lambda: None, currentText=lambda: ""), preferred_session_id=None,
+            title_field=SimpleNamespace(text=lambda: "Validate release"), category_field=SimpleNamespace(currentData=lambda: "Research"),
+            status_field=SimpleNamespace(currentData=lambda: "planned"), date_field=SimpleNamespace(date=lambda: date_value),
+            notes_field=SimpleNamespace(toPlainText=lambda: ""), outcome_field=SimpleNamespace(toPlainText=lambda: ""),
+        )
+        value = APP.TaskEditor.value(editor)
+        self.assertEqual(value["projectId"], "stable-project-id")
+        self.assertEqual(value["projectNameSnapshot"], "Release project")
+
+    def test_manual_link_repair_saves_once_and_refreshes_without_rewriting_activity(self):
+        task = {
+            "id": "task-1", "projectId": "obsolete", "status": "doing",
+            "updatedAt": "2026-08-09T09:00:00",
+        }
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release project", "category": "Research",
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], task_link_project_catalog=lambda: [project],
+            view_signature="old", refresh=Mock(), statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json") as save:
+            repaired = APP.MainWindow.repair_task_project_links(
+                window, [("task-1", "runtime")], occurred_at="2026-08-10T10:00:00"
+            )
+        self.assertEqual(repaired, 1)
+        self.assertEqual(task["projectId"], "stable")
+        self.assertEqual(task["updatedAt"], "2026-08-09T09:00:00")
+        save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+
     def test_review_queue_defers_to_the_more_specific_lifecycle_decision(self):
         normal = {"id": "normal", "status": "active"}
         quiet = {"id": "quiet", "status": "active"}

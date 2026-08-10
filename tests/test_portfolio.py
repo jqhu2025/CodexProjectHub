@@ -58,6 +58,52 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(tasks[1]["projectCategorySnapshot"], "Research")
         self.assertNotIn("projectNameSnapshot", tasks[2])
 
+    def test_project_link_issues_ignore_resolved_and_recycled_tasks(self):
+        projects = [{"id": "runtime", "savedId": "stable"}]
+        tasks = [
+            {"id": "resolved", "projectId": "stable"},
+            {"id": "orphan", "projectId": "missing"},
+            {"id": "recycled", "projectId": "missing", "archivedAt": "2026-08-10T12:00:00"},
+            {"id": "unlinked"},
+        ]
+        self.assertEqual(
+            [task["id"] for task in portfolio.task_project_link_issues(tasks, projects)],
+            ["orphan"],
+        )
+
+    def test_project_link_repair_preserves_task_activity_and_records_identity_evidence(self):
+        task = {
+            "id": "task", "projectId": "obsolete", "projectNameSnapshot": "Previous project",
+            "category": "Old", "updatedAt": "2026-08-09T09:00:00", "status": "doing",
+        }
+        project = {"id": "runtime", "savedId": "stable", "name": "Current project", "category": "Research"}
+        changed = portfolio.assign_task_project(task, project, "2026-08-10T10:00:00", "manual_repair")
+        self.assertTrue(changed)
+        self.assertEqual((task["projectId"], task["projectNameSnapshot"], task["category"]), ("stable", "Current project", "Research"))
+        self.assertEqual((task["status"], task["updatedAt"]), ("doing", "2026-08-09T09:00:00"))
+        event = portfolio.task_project_link_events(task)[0]
+        self.assertEqual((event["fromProjectId"], event["toProjectId"], event["source"]), ("obsolete", "stable", "manual_repair"))
+        self.assertFalse(portfolio.assign_task_project(task, project, "2026-08-10T11:00:00"))
+
+    def test_conversation_repair_requires_one_unique_candidate_and_respects_archived_projects(self):
+        tasks = [
+            {"id": "recover", "projectId": "obsolete", "sessionId": "session-1"},
+            {"id": "ambiguous", "projectId": "missing", "sessionId": "session-2"},
+            {"id": "archived-valid", "projectId": "archived-stable", "sessionId": "session-1"},
+        ]
+        projects = [
+            {"id": "one", "savedId": "stable-1", "name": "One", "category": "A", "conversations": [{"sessionId": "session-1"}, {"sessionId": "session-2"}]},
+            {"id": "two", "savedId": "stable-2", "name": "Two", "category": "B", "conversations": [{"sessionId": "session-2"}]},
+        ]
+        known = [*projects, {"id": "archived", "savedId": "archived-stable", "name": "Archived"}]
+        repaired = portfolio.reconcile_task_project_links_from_conversations(
+            tasks, projects, "2026-08-10T10:00:00", known
+        )
+        self.assertEqual([task["id"] for task in repaired], ["recover"])
+        self.assertEqual(tasks[0]["projectId"], "stable-1")
+        self.assertEqual(tasks[1]["projectId"], "missing")
+        self.assertEqual(tasks[2]["projectId"], "archived-stable")
+
     def test_lifecycle_queue_excludes_focus_live_risk_and_nonactive_projects(self):
         now = datetime(2026, 8, 10, 12, 0, 0)
         stale = {"id": "stale", "name": "Stale", "status": "active", "priority": "normal", "health": "on_track", "conversations": [{"at": "2026-07-01T09:00:00", "state": "linked"}]}

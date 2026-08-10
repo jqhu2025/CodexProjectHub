@@ -87,6 +87,80 @@ def reconcile_task_project_snapshots(tasks, projects):
     return changed
 
 
+def task_project_link_issues(tasks, projects):
+    """Return live task records whose saved project reference no longer resolves."""
+    known_references = {
+        reference
+        for project in projects or []
+        for reference in project_reference_ids(project)
+    }
+    return [
+        task for task in tasks or []
+        if not task_is_archived(task)
+        and str(task.get("projectId") or "").strip()
+        and str(task.get("projectId")) not in known_references
+    ]
+
+
+def task_project_link_events(task):
+    """Return newest-first task/project repair evidence."""
+    events = [event for event in (task or {}).get("projectLinkHistory") or [] if isinstance(event, dict)]
+    return sorted(events, key=lambda event: str(event.get("at") or ""), reverse=True)
+
+
+def assign_task_project(task, project, occurred_at, source="manual_repair"):
+    """Repair one task link without rewriting task activity or status history."""
+    if not task or not project:
+        return False
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    if not stable_project_id or task_matches_project(task, project):
+        return False
+    previous_id = str(task.get("projectId") or "")
+    previous_name = str(task.get("projectNameSnapshot") or "").strip()
+    previous_category = str(task.get("projectCategorySnapshot") or task.get("category") or "").strip()
+    project_name = str(project.get("name") or "未命名项目").strip()
+    project_category = str(project.get("category") or "未分类").strip()
+    task["projectId"] = stable_project_id
+    task["projectNameSnapshot"] = project_name
+    task["projectCategorySnapshot"] = project_category
+    task["category"] = project_category
+    history = task.setdefault("projectLinkHistory", [])
+    history.append({
+        "at": str(occurred_at or ""),
+        "source": str(source or "manual_repair"),
+        "fromProjectId": previous_id,
+        "fromProjectName": previous_name,
+        "fromProjectCategory": previous_category,
+        "toProjectId": str(stable_project_id),
+        "toProjectName": project_name,
+        "toProjectCategory": project_category,
+    })
+    if len(history) > 100:
+        task["projectLinkHistory"] = history[-100:]
+    return True
+
+
+def reconcile_task_project_links_from_conversations(tasks, projects, occurred_at, known_projects=None):
+    """Repair only orphan links backed by one unique current Codex conversation."""
+    project_by_session = {}
+    for project in projects or []:
+        for conversation in project.get("conversations") or []:
+            session_id = str(conversation.get("sessionId") or "")
+            if not session_id:
+                continue
+            project_by_session.setdefault(session_id, []).append(project)
+    repaired = []
+    for task in task_project_link_issues(tasks, known_projects if known_projects is not None else projects):
+        candidates = project_by_session.get(str(task.get("sessionId") or ""), [])
+        unique = {str((candidate or {}).get("id") or ""): candidate for candidate in candidates if (candidate or {}).get("id")}
+        if len(unique) != 1:
+            continue
+        project = next(iter(unique.values()))
+        if assign_task_project(task, project, occurred_at, "codex_conversation"):
+            repaired.append(task)
+    return repaired
+
+
 def _project_priority_key(project):
     value = str((project or {}).get("priority") or "normal")
     return value if value in PROJECT_PRIORITY else "normal"
