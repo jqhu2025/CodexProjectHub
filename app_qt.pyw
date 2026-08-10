@@ -1460,34 +1460,52 @@ def project_management_scope_matches(project, scope):
     return True
 
 
-def project_portfolio_overview(projects, direct_review_projects):
-    """Build unambiguous cockpit counts from strategy, execution, and routed decisions."""
+PROJECT_DECISION_QUEUE_PRESENTATION = (
+    ("attention", "风险处置", "\uE7BA", "#b42318", "#fff0ee", "处理已确认的风险与阻塞"),
+    ("alignment", "执行校准", "\uE9D2", "#1d4ed8", "#edf3ff", "确认真实执行方向与项目下一步"),
+    ("lifecycle", "生命周期", "\uE823", "#526071", "#eef2f6", "确认静默项目继续、暂缓或退出"),
+    ("needs_next", "待定下一步", "\uE945", "#6d3fc0", "#f3edff", "为项目明确一个可执行下一步"),
+    ("focus_commitment", "重点落地", "\uE735", "#7c3aed", "#f1eaff", "把战略重点的下一步落到任务板"),
+    ("review", "管理确认", "\uE73E", "#315f9b", "#edf3ff", "补全项目资料、建立基线或完成周期复核"),
+)
+
+
+def project_decision_queue_counts(projects, routing):
+    """Count the one primary management decision owned by each visible project."""
+    counts = {queue_name: 0 for queue_name, *_rest in PROJECT_DECISION_QUEUE_PRESENTATION}
+    for project in projects or []:
+        primary = primary_project_decision(project, routing)
+        queue_name = str((primary or {}).get("queue") or "")
+        if queue_name in counts:
+            counts[queue_name] += 1
+    return counts
+
+
+def project_decision_queue_summary(counts):
+    parts = [
+        f"{label} {int((counts or {}).get(queue_name) or 0)}"
+        for queue_name, label, *_rest in PROJECT_DECISION_QUEUE_PRESENTATION
+        if int((counts or {}).get(queue_name) or 0)
+    ]
+    return " · ".join(parts) if parts else "当前没有项目级管理待办"
+
+
+def project_portfolio_overview(projects, routing):
+    """Build unambiguous cockpit counts from strategy, execution, risk, and decisions."""
     projects = list(projects or [])
-    direct_review_projects = list(direct_review_projects or [])
     signals = [project_strategy_execution_signals(project) for project in projects]
     blocked_or_attention = sum(
         project_control_state(project)[0] in {"blocked", "attention"}
         for project in projects
     )
-    review_projects = [project for project in projects if project_management_scope_matches(project, "review")]
-    direct_references = {
-        reference
-        for project in direct_review_projects
-        for reference in project_reference_ids(project)
-    }
-    direct_objects = {id(project) for project in direct_review_projects}
-    direct_review_count = sum(
-        id(project) in direct_objects
-        or bool(project_reference_ids(project) & direct_references)
-        for project in review_projects
-    )
+    decision_counts = project_decision_queue_counts(projects, routing)
     return {
         "total": len(projects),
         "strategic": sum(item["strategic"] for item in signals),
         "executing": sum(item["executing"] for item in signals),
         "risk": blocked_or_attention,
-        "directReview": direct_review_count,
-        "routedReview": max(0, len(review_projects) - direct_review_count),
+        "decisionTotal": sum(decision_counts.values()),
+        "decisionCounts": decision_counts,
     }
 
 
@@ -1497,10 +1515,8 @@ def project_portfolio_overview_text(metrics):
         f"战略重点 {metrics['strategic']}",
         f"实际推进 {metrics['executing']}",
         f"风险/阻塞 {metrics['risk']}",
-        f"待确认 {metrics['directReview']}",
+        f"管理待办 {metrics['decisionTotal']}",
     ]
-    if metrics["routedReview"]:
-        parts.append(f"另有决策 {metrics['routedReview']}")
     return "  ·  ".join(parts)
 
 
@@ -3053,42 +3069,69 @@ class ProjectMindMap(QGraphicsView):
         card_width = int((canvas_width - side_margin * 2 - column_gap * (columns - 1)) / columns)
 
         overview = QFrame()
-        overview.setFixedSize(canvas_width - side_margin * 2, 58)
+        overview.setFixedSize(canvas_width - side_margin * 2, 104)
         overview.setObjectName("mapOverview")
         overview.setStyleSheet(
             "QFrame#mapOverview { background: transparent; border: none; }"
             "QLabel { border: none; background: transparent; }"
         )
-        overview_layout = QHBoxLayout(overview)
-        overview_layout.setContentsMargins(4, 0, 4, 0)
-        overview_layout.setSpacing(10)
+        overview_layout = QVBoxLayout(overview)
+        overview_layout.setContentsMargins(4, 2, 4, 2)
+        overview_layout.setSpacing(7)
+        headline = QHBoxLayout(); headline.setSpacing(10)
         accent = QLabel(); accent.setFixedSize(4, 30); accent.setStyleSheet("background: #2563eb; border-radius: 2px;")
-        overview_layout.addWidget(accent)
+        headline.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
         title = QLabel("项目驾驶舱"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
-        subtitle = QLabel("战略重点由你选择；实际推进来自今日任务与 Codex 活动")
+        subtitle = QLabel("战略态势与主决策分开呈现；每个项目只进入一个管理队列")
         subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
-        overview_layout.addLayout(title_box)
-        overview_layout.addStretch(1)
-        overview_metrics = project_portfolio_overview(
-            projects,
-            self.window.portfolio_review_queue(),
-        )
+        headline.addLayout(title_box)
+        headline.addStretch(1)
+        overview_metrics = project_portfolio_overview(projects, routing)
         summary = QLabel(project_portfolio_overview_text(overview_metrics))
+        decision_summary = project_decision_queue_summary(overview_metrics["decisionCounts"])
         summary.setToolTip(
             "战略重点：你主动选定的有限项目\n"
             "实际推进：今天有进行中任务或 Codex 对话的项目\n"
-            "待确认：当前可直接进入管理确认的项目\n"
-            "另有决策：已由风险、校准、生命周期或下一步队列承接"
+            "风险/阻塞：已经人工确认的风险状态\n"
+            f"管理待办：每个项目只计入一个主决策\n{decision_summary}"
         )
         summary.setAccessibleName(project_portfolio_overview_text(overview_metrics))
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
-        overview_layout.addWidget(summary)
+        headline.addWidget(summary); overview_layout.addLayout(headline)
+
+        decision_row = QHBoxLayout(); decision_row.setSpacing(7)
+        decision_caption = QLabel("管理决策")
+        decision_caption.setStyleSheet("color: #526071; font-size: 11px; font-weight: 700; letter-spacing: 0.4px;")
+        decision_row.addWidget(decision_caption)
+        visible_decisions = 0
+        for queue_name, label, glyph, color, background, tooltip in PROJECT_DECISION_QUEUE_PRESENTATION:
+            count_value = int(overview_metrics["decisionCounts"].get(queue_name) or 0)
+            if not count_value:
+                continue
+            visible_decisions += count_value
+            decision_button = QPushButton(f"{label}  {count_value}")
+            decision_button.setFixedHeight(30)
+            decision_button.setIcon(fluent_icon(glyph, color=color, size=13)); decision_button.setIconSize(QSize(13, 13))
+            decision_button.setToolTip(f"{tooltip}；点击进入 {count_value} 个项目的处理流程")
+            decision_button.setAccessibleName(f"{label}，{count_value} 个项目，点击处理")
+            decision_button.setStyleSheet(
+                f"QPushButton {{ color: {color}; background: {background}; border: 1px solid #d6e0eb; border-radius: 8px; "
+                "padding: 3px 10px; font-size: 11px; font-weight: 650; }"
+                f"QPushButton:hover, QPushButton:focus {{ background: #ffffff; border-color: {color}; }}"
+            )
+            decision_button.clicked.connect(lambda _checked=False, value=queue_name: self.window.open_project_decision_queue(value))
+            decision_row.addWidget(decision_button)
+        if not visible_decisions:
+            clear = QLabel("✓ 当前没有项目级管理待办")
+            clear.setStyleSheet("color: #087443; background: #eef8f2; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 650;")
+            decision_row.addWidget(clear)
+        decision_row.addStretch(1); overview_layout.addLayout(decision_row)
         overview_proxy = self.map_scene.addWidget(overview)
         overview_proxy.setPos(side_margin, 8)
 
-        column_heights = [82] * columns
+        column_heights = [130] * columns
         for category_index, category in enumerate(order):
             items = groups[category]
             color = self.CATEGORY_COLORS[category_index % len(self.CATEGORY_COLORS)]
@@ -6934,6 +6977,22 @@ class MainWindow(QMainWindow):
             ("focus_commitment", focus_commitments),
             ("review", groups.get("review", [])),
         ))
+
+    def open_project_decision_queue(self, queue_name):
+        """Open the exact workflow represented by a portfolio decision-distribution item."""
+        actions = {
+            "attention": self.show_risk_response_queue,
+            "alignment": self.show_execution_alignment_queue,
+            "lifecycle": self.show_lifecycle_calibration,
+            "needs_next": self.show_next_step_decision_queue,
+            "focus_commitment": self.show_focus_capacity,
+            "review": self.show_portfolio_review_queue,
+        }
+        action = actions.get(str(queue_name or ""))
+        if action is None:
+            return False
+        action()
+        return True
 
     def project_command_for(self, project, routing=None):
         """Use the same primary decision in portfolio rows and the project workbench."""

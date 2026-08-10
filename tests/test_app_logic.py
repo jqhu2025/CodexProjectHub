@@ -939,18 +939,52 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             "id": "routed", "status": "active", "priority": "normal", "activeTaskCount": 0,
             "objective": "", "nextStep": "Define benchmark", "stage": "planning", "health": "on_track", "conversations": [],
         }
+        routing = APP.route_project_decision_queues((
+            ("attention", [risk]),
+            ("alignment", []),
+            ("lifecycle", [routed_review]),
+            ("needs_next", []),
+            ("focus_commitment", []),
+            ("review", [{"id": "runtime-review", "savedId": "stable-review"}]),
+        ))
         metrics = APP.project_portfolio_overview(
-            [strategic_idle, both, executing_regular, risk, review, routed_review],
-            [{"id": "runtime-review", "savedId": "stable-review"}],
+            [strategic_idle, both, executing_regular, risk, review, routed_review], routing,
         )
         self.assertEqual(
             metrics,
-            {"total": 6, "strategic": 2, "executing": 2, "risk": 1, "directReview": 1, "routedReview": 1},
+            {
+                "total": 6, "strategic": 2, "executing": 2, "risk": 1, "decisionTotal": 3,
+                "decisionCounts": {
+                    "attention": 1, "alignment": 0, "lifecycle": 1,
+                    "needs_next": 0, "focus_commitment": 0, "review": 1,
+                },
+            },
         )
         self.assertEqual(
             APP.project_portfolio_overview_text(metrics),
-            "6 个项目  ·  战略重点 2  ·  实际推进 2  ·  风险/阻塞 1  ·  待确认 1  ·  另有决策 1",
+            "6 个项目  ·  战略重点 2  ·  实际推进 2  ·  风险/阻塞 1  ·  管理待办 3",
         )
+        self.assertEqual(APP.project_decision_queue_summary(metrics["decisionCounts"]), "风险处置 1 · 生命周期 1 · 管理确认 1")
+        self.assertNotIn("另有决策", APP.project_portfolio_overview_text(metrics))
+
+    def test_portfolio_decision_distribution_opens_the_exact_existing_workflow(self):
+        window = SimpleNamespace(
+            show_risk_response_queue=Mock(), show_execution_alignment_queue=Mock(),
+            show_lifecycle_calibration=Mock(), show_next_step_decision_queue=Mock(),
+            show_focus_capacity=Mock(), show_portfolio_review_queue=Mock(),
+        )
+        routes = {
+            "attention": "show_risk_response_queue",
+            "alignment": "show_execution_alignment_queue",
+            "lifecycle": "show_lifecycle_calibration",
+            "needs_next": "show_next_step_decision_queue",
+            "focus_commitment": "show_focus_capacity",
+            "review": "show_portfolio_review_queue",
+        }
+        for queue_name, method_name in routes.items():
+            self.assertTrue(APP.MainWindow.open_project_decision_queue(window, queue_name))
+            getattr(window, method_name).assert_called_once_with()
+        self.assertFalse(APP.MainWindow.open_project_decision_queue(window, "unknown"))
 
     def test_focus_capacity_is_bounded_and_reports_overcommitment(self):
         projects = [{"id": str(index), "status": "active", "priority": "focus"} for index in range(4)]
