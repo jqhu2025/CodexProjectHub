@@ -41,14 +41,17 @@ from codex_hub.management import (
     build_project_decision_entry,
     build_project_alignment_entry,
     build_project_decision_rollback,
+    build_project_closeout_entry,
     build_project_lifecycle_entry,
     build_project_review_entry,
+    clear_project_completion_outcome,
     clear_task_completion_outcome,
     compact_project_decision_value,
     display_project_decision_value,
     format_project_decision_summary,
     format_project_decision_time,
     merge_missing_project_insight,
+    latest_project_completion_outcome,
     normalize_project_management_decision,
     normalized_action_text,
     normalized_decision_value,
@@ -59,9 +62,11 @@ from codex_hub.management import (
     portfolio_execution_alignment_queue,
     project_review_status,
     project_management_validation_error,
+    project_completion_outcome,
     project_next_step_completion_update,
     project_next_step_reopen_update,
     record_task_completion_outcome,
+    record_project_completion_outcome,
     record_task_status_event,
     reorder_task_board,
     rollover_in_progress_tasks,
@@ -1201,7 +1206,9 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
         decisions.append({
             "project": str(entry.get("projectName") or project.get("name") or "未命名项目"),
             "at": str(entry.get("at") or ""),
-            "kind": {"review": "项目复核", "alignment": "执行方向确认", "lifecycle": "项目生命周期"}.get(kind, "项目决策"),
+            "kind": {"review": "项目复核", "alignment": "执行方向确认", "lifecycle": "项目生命周期", "closeout": "项目收尾"}.get(kind, "项目决策"),
+            "action": str(entry.get("action") or ""),
+            "isCompletionEvidence": kind == "closeout" and entry.get("action") in {"complete", "revise"},
             "source": PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策"),
             "summary": format_project_decision_summary(entry),
             "changes": [
@@ -1350,7 +1357,7 @@ def daily_summary_prompt(payload, visible=False):
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
         "任务中的 completionOutcome 是人工确认的实际完成成果，应作为 completed 的首要证据；notes 只是计划说明，不能单独证明工作已完成。"
         "已完成任务若没有 completionOutcome，只能谨慎描述状态，不得补造结果。\n"
-        "projectDecisions 是人工确认的项目管理活动，可用于说明方向、阶段、风险和下一步发生了什么变化；它本身不等于交付成果，不能仅凭复核或字段变更写入 completed。\n"
+        "projectDecisions 是人工确认的项目管理活动，可用于说明方向、阶段、风险和下一步发生了什么变化。只有 kind 为‘项目收尾’且 isCompletionEvidence 为 true 的记录，才是整个项目完成的人工确认成果；普通复核、字段变更、归档和重新打开都不能写入 completed。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
         "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
         "nextFocus 不只是重复未完成项，要结合现状给出具体、可执行的下一步进化建议，例如更可靠的验证、拆分或决策动作。\n"
@@ -1488,6 +1495,7 @@ class ProjectEditor(QDialog):
         self.project = project
         self.insight_worker = None
         self.insight_applied = False
+        self.completion_summary = None
         self.setWindowTitle("编辑项目" if project else "新建项目")
         self.setObjectName("projectEditor")
         self.setMinimumSize(720, 650)
@@ -1560,7 +1568,18 @@ class ProjectEditor(QDialog):
         actions.addStretch()
         cancel = QPushButton("取消"); cancel.setFixedHeight(38); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
         save = QPushButton("保存项目"); save.setFixedHeight(38); save.setObjectName("primary"); save.clicked.connect(self.accept_project); actions.addWidget(save); layout.addLayout(actions)
+        status.currentIndexChanged.connect(self.update_status_controls)
+        self.update_status_controls()
         self.fields["name"].setFocus()
+
+    def update_status_controls(self):
+        completed = self.fields["status"].currentData() == "completed"
+        self.next_step.setEnabled(not completed); self.blocker.setEnabled(not completed)
+        if completed:
+            self.next_step.setToolTip("已完成项目不保留待执行下一步")
+            self.blocker.setToolTip("已完成项目不保留当前阻塞")
+        else:
+            self.next_step.setToolTip(""); self.blocker.setToolTip("")
 
     def start_codex_insight(self):
         if self.insight_worker is not None:
@@ -1637,18 +1656,13 @@ class ProjectEditor(QDialog):
         if validation_error:
             self.blocker.setFocus(); QMessageBox.information(self, "项目决策不完整", validation_error)
             return
-        if self.project and self.project.get("status", "active") != "completed" and data.get("status") == "completed":
+        if (not self.project or self.project.get("status", "active") != "completed") and data.get("status") == "completed":
             pending = open_project_tasks(getattr(self.parent(), "today_tasks", []), self.project)
-            if pending:
-                answer = QMessageBox.question(
-                    self,
-                    "项目仍有未完成任务",
-                    f"这个项目仍关联 {len(pending)} 项未完成任务。\n\n继续会完成项目本身，但不会改写这些任务，便于你逐项确认。是否继续？",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if answer != QMessageBox.Yes:
-                    return
+            initial = str((self.project or {}).get("lastCompletedOutcome") or "").strip() or latest_project_completion_outcome(self.project)
+            closeout = ProjectCloseoutDialog(self, self.project, len(pending), initial)
+            if closeout.exec_() != QDialog.Accepted:
+                return
+            self.completion_summary = closeout.value()
         self.accept()
 
     def value(self):
@@ -1661,6 +1675,8 @@ class ProjectEditor(QDialog):
         data["objective"] = self.objective.toPlainText().strip()
         data["nextStep"] = self.next_step.text().strip()
         data["blocker"] = self.blocker.text().strip()
+        if self.completion_summary is not None:
+            data["completionSummary"] = self.completion_summary
         return normalize_project_management_decision(self.project, data)[0]
 
 
@@ -2762,6 +2778,64 @@ class TaskOutcomeDialog(QDialog):
         return self.outcome_field.toPlainText().strip()
 
 
+class ProjectCloseoutDialog(QDialog):
+    """Capture project-level delivery evidence without turning closeout into a form."""
+    def __init__(self, parent, project, pending_count=0, initial_outcome=""):
+        super().__init__(parent)
+        self.project = project or {}
+        existing = project_completion_outcome(self.project)
+        self.editing = bool(existing)
+        self.setWindowTitle("项目收尾记录" if self.editing else "确认项目完成")
+        self.setObjectName("projectCloseoutDialog")
+        self.setMinimumWidth(650)
+        self.resize(680, 440 if pending_count else 400)
+        self.setStyleSheet(STYLE + """
+            QDialog#projectCloseoutDialog { background: #f7f9fc; }
+            QDialog#projectCloseoutDialog QTextEdit { background: #ffffff; border: 1px solid #cbd7e6; border-radius: 10px; padding: 10px; font-size: 13px; line-height: 1.5; }
+            QDialog#projectCloseoutDialog QTextEdit:focus { border: 2px solid #2563eb; padding: 9px; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(30, 26, 30, 24); root.setSpacing(13)
+
+        heading = QHBoxLayout(); heading.setSpacing(12)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #e8f7ef; border: 1px solid #b9dfc8; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        eyebrow = QLabel("PROJECT CLOSEOUT"); eyebrow.setStyleSheet("color: #16803c; font-size: 10px; font-weight: 750; letter-spacing: 1px;"); title_box.addWidget(eyebrow)
+        title = QLabel("修订完成成果" if self.editing else "确认项目完成"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        heading.addLayout(title_box, 1); root.addLayout(heading)
+
+        project_name = QLabel(str(self.project.get("name") or "未命名项目")); project_name.setWordWrap(True)
+        project_name.setStyleSheet("color: #34445c; background: #eef3f8; border: 1px solid #dce5ef; border-radius: 9px; padding: 10px 12px; font-size: 14px; font-weight: 650;"); root.addWidget(project_name)
+        hint = QLabel("写下整个项目最终交付了什么、验证到了什么程度。这里记录的是项目成果，不是最近完成的一项任务。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #5f6f84; font-size: 12px;"); root.addWidget(hint)
+
+        if pending_count:
+            warning = QLabel(f"仍有 {pending_count} 项未完成任务。完成项目不会改写这些任务，它们会继续保留，便于逐项确认或重新归类。")
+            warning.setWordWrap(True); warning.setStyleSheet("color: #8a5800; background: #fff8e8; border: 1px solid #ead7a4; border-radius: 9px; padding: 9px 11px; font-size: 11px;"); root.addWidget(warning)
+
+        initial = existing or str(initial_outcome or "").strip()
+        self.outcome_field = QTextEdit(initial); self.outcome_field.setFixedHeight(112)
+        self.outcome_field.setPlaceholderText("例如：交付可复现的分析流程并通过三组数据验证，核心结论已写入报告，未遗留阻断问题。")
+        self.outcome_field.setAccessibleName("项目完成成果"); root.addWidget(self.outcome_field)
+
+        footer = QHBoxLayout(); footer.setSpacing(8)
+        evidence = QLabel("保存后会写入项目档案与每日总结；重新打开项目也不会删除这次成果。")
+        evidence.setWordWrap(True); evidence.setStyleSheet("color: #718096; font-size: 10px;"); footer.addWidget(evidence, 1)
+        cancel = QPushButton("取消"); cancel.setFixedHeight(38); cancel.clicked.connect(self.reject); footer.addWidget(cancel)
+        save = QPushButton("保存成果" if self.editing else "确认完成"); save.setObjectName("primary"); save.setFixedHeight(38); save.clicked.connect(self.accept_outcome); footer.addWidget(save)
+        root.addLayout(footer); self.outcome_field.setFocus()
+
+    def accept_outcome(self):
+        if not self.value():
+            QMessageBox.information(self, "还没有项目成果", "请写下项目最终交付或验证的结果；如果还没有形成结果，可以先保持“进行中”。")
+            return
+        self.accept()
+
+    def value(self):
+        return self.outcome_field.toPlainText().strip()
+
+
 class TodayTaskCard(QFrame):
     def __init__(self, task, window):
         super().__init__()
@@ -3251,15 +3325,28 @@ class ProjectDecisionHistoryDialog(QDialog):
             timestamp = QLabel(format_project_decision_time(entry.get("at"))); timestamp.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); header.addWidget(timestamp)
             header.addStretch()
             source_text = PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策")
-            source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source)
+            source_color, source_background = "#315f9b", "#eaf2ff"
+            if entry.get("kind") == "closeout":
+                source_color, source_background = {
+                    "complete": ("#17623b", "#e8f7ef"),
+                    "revise": ("#6d35b5", "#f2eaff"),
+                    "reopen": ("#526071", "#eef2f6"),
+                }.get(entry.get("action"), (source_color, source_background))
+            source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet(f"color: {source_color}; background: {source_background}; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source)
             if entry.get("changes") and self.allow_rollback:
                 rollback = QPushButton("恢复到变更前"); rollback.setFixedHeight(30); rollback.setIcon(fluent_icon("\uE7A7", color="#526071", size=12)); rollback.setIconSize(QSize(12, 12))
                 rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
                 rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback)
             card_layout.addLayout(header)
-            if entry.get("kind") in {"review", "alignment", "lifecycle"}:
+            if entry.get("kind") in {"review", "alignment", "lifecycle", "closeout"}:
                 review_line = QLabel(format_project_decision_summary(entry)); review_line.setWordWrap(True)
                 review_line.setStyleSheet("color: #526071; background: #f7f9fc; border: none; border-radius: 7px; padding: 7px 9px; font-size: 12px;"); card_layout.addWidget(review_line)
+                if entry.get("kind") == "closeout":
+                    outcome = str((entry.get("snapshot") or {}).get("outcome") or "").strip()
+                    if outcome:
+                        outcome_line = QLabel(outcome); outcome_line.setWordWrap(True); outcome_line.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                        outcome_accent = {"complete": "#7db694", "revise": "#a982d6", "reopen": "#9aa7b6"}.get(entry.get("action"), "#7db694")
+                        outcome_line.setStyleSheet(f"color: #30455f; border-left: 3px solid {outcome_accent}; padding: 4px 9px; font-size: 12px;"); card_layout.addWidget(outcome_line)
             for change in entry.get("changes") or []:
                 field = change.get("field")
                 before = display_project_decision_value(field, change.get("before"))
@@ -3622,6 +3709,7 @@ class ProjectWorkbenchDialog(QDialog):
         _state, state_text, state_color, state_background = project_display_state(project)
         self.project_state_badge = QLabel(f"● {state_text}"); self.project_state_badge.setAlignment(Qt.AlignCenter); self.project_state_badge.setFixedSize(78, 30)
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.project_state_badge)
+        self.control_badge.setVisible(control_text != state_text)
         continue_button = QPushButton("在 Codex 中继续"); continue_button.setObjectName("primary"); continue_button.setFixedHeight(38)
         continue_button.setIcon(fluent_icon("\uE72A", color="#ffffff", size=15)); continue_button.setIconSize(QSize(15, 15)); continue_button.clicked.connect(self.continue_in_codex); heading.addWidget(continue_button)
         root.addLayout(heading)
@@ -3661,18 +3749,18 @@ class ProjectWorkbenchDialog(QDialog):
         self.next_step_field = QLineEdit(str(project.get("nextStep") or "")); self.next_step_field.setFixedHeight(40); self.next_step_field.setPlaceholderText("一个可以直接开始的具体动作"); next_box.addWidget(self.next_step_field); next_row.addLayout(next_box, 1)
         blocker_box = QVBoxLayout(); blocker_box.setSpacing(5); blocker_label = QLabel("当前阻塞"); blocker_label.setProperty("fieldLabel", True); blocker_box.addWidget(blocker_label)
         self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
-        schedule = QPushButton("加入今日"); schedule.setFixedHeight(40); schedule.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); schedule.setIconSize(QSize(14, 14)); schedule.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); schedule.clicked.connect(self.schedule_next_step); next_row.addWidget(schedule, 0, Qt.AlignBottom)
+        self.schedule_button = QPushButton("加入今日"); self.schedule_button.setFixedHeight(40); self.schedule_button.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); self.schedule_button.setIconSize(QSize(14, 14)); self.schedule_button.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); self.schedule_button.clicked.connect(self.schedule_next_step); next_row.addWidget(self.schedule_button, 0, Qt.AlignBottom)
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(lambda: self.save_changes()); next_row.addWidget(save, 0, Qt.AlignBottom)
         management_layout.addLayout(next_row)
-        last_outcome = str(project.get("lastCompletedOutcome") or "").strip()
-        if last_outcome:
-            outcome_strip = QFrame(); outcome_strip.setObjectName("projectOutcomeStrip")
-            outcome_strip.setStyleSheet("QFrame#projectOutcomeStrip { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 9px; } QFrame#projectOutcomeStrip QLabel { border: none; background: transparent; }")
-            outcome_layout = QHBoxLayout(outcome_strip); outcome_layout.setContentsMargins(11, 7, 11, 7); outcome_layout.setSpacing(8)
-            outcome_icon = QLabel(); outcome_icon.setFixedSize(18, 18); outcome_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=14).pixmap(QSize(14, 14))); outcome_layout.addWidget(outcome_icon)
-            outcome_title = QLabel("最近完成成果"); outcome_title.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 700;"); outcome_layout.addWidget(outcome_title)
-            outcome_text = ElidedLabel(last_outcome.replace("\n", " ")); outcome_text.setToolTip(last_outcome); outcome_text.setStyleSheet("color: #456a55; font-size: 11px;"); outcome_layout.addWidget(outcome_text, 1)
-            management_layout.addWidget(outcome_strip)
+        self.outcome_strip = QFrame(); self.outcome_strip.setObjectName("projectOutcomeStrip")
+        outcome_layout = QHBoxLayout(self.outcome_strip); outcome_layout.setContentsMargins(11, 7, 8, 7); outcome_layout.setSpacing(8)
+        self.outcome_icon = QLabel(); self.outcome_icon.setFixedSize(18, 18); outcome_layout.addWidget(self.outcome_icon)
+        self.outcome_title = QLabel(); self.outcome_title.setStyleSheet("font-size: 11px; font-weight: 700;"); outcome_layout.addWidget(self.outcome_title)
+        self.outcome_text = ElidedLabel(); self.outcome_text.setStyleSheet("font-size: 11px;"); outcome_layout.addWidget(self.outcome_text, 1)
+        self.outcome_edit = QPushButton("编辑成果"); self.outcome_edit.setFixedHeight(28); self.outcome_edit.setIcon(fluent_icon("\uE70F", color="#17623b", size=12)); self.outcome_edit.setIconSize(QSize(12, 12))
+        self.outcome_edit.setStyleSheet("QPushButton { color: #17623b; background: #ffffff; border: 1px solid #b9d9c6; border-radius: 7px; padding: 3px 8px; font-size: 10px; font-weight: 650; } QPushButton:hover { background: #f7fbf8; border-color: #7fbe98; }")
+        self.outcome_edit.clicked.connect(self.edit_project_closeout); outcome_layout.addWidget(self.outcome_edit)
+        management_layout.addWidget(self.outcome_strip); self.render_project_outcome()
         root.addWidget(management)
 
         self.decision_history_frame = ClickableFrame(); self.decision_history_frame.setObjectName("decisionHistoryStrip"); self.decision_history_frame.setFixedHeight(52)
@@ -3692,7 +3780,7 @@ class ProjectWorkbenchDialog(QDialog):
         tasks_card = QFrame(); tasks_card.setObjectName("projectTasksCard"); tasks_card.setStyleSheet("QFrame#projectTasksCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
         tasks_layout = QVBoxLayout(tasks_card); tasks_layout.setContentsMargins(16, 14, 16, 14); tasks_layout.setSpacing(8)
         task_head = QHBoxLayout(); task_title = QLabel("今日任务"); task_title.setProperty("sectionTitle", True); task_head.addWidget(task_title); task_head.addStretch()
-        add_task = QPushButton("新建关联任务"); add_task.setFixedHeight(32); add_task.setIcon(fluent_icon("\uE710", color="#1d4ed8", size=13)); add_task.setIconSize(QSize(13, 13)); add_task.clicked.connect(self.new_task); task_head.addWidget(add_task); tasks_layout.addLayout(task_head)
+        self.add_task_button = QPushButton("新建关联任务"); self.add_task_button.setFixedHeight(32); self.add_task_button.setIcon(fluent_icon("\uE710", color="#1d4ed8", size=13)); self.add_task_button.setIconSize(QSize(13, 13)); self.add_task_button.clicked.connect(self.new_task); task_head.addWidget(self.add_task_button); tasks_layout.addLayout(task_head)
         self.project_tasks = QVBoxLayout(); self.project_tasks.setSpacing(6); tasks_layout.addLayout(self.project_tasks); tasks_layout.addStretch(); lower.addWidget(tasks_card, 1)
 
         conversations_card = QFrame(); conversations_card.setObjectName("projectConversationsCard"); conversations_card.setStyleSheet("QFrame#projectConversationsCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
@@ -3711,6 +3799,8 @@ class ProjectWorkbenchDialog(QDialog):
         folder = QPushButton("打开项目文件夹"); folder.setIcon(fluent_icon("\uE838", size=14)); folder.setIconSize(QSize(14, 14)); folder.clicked.connect(lambda: parent.open_folder(project)); actions.addWidget(folder)
         edit = QPushButton("完整编辑"); edit.setIcon(fluent_icon("\uE70F", size=14)); edit.setIconSize(QSize(14, 14)); edit.clicked.connect(self.full_edit); actions.addWidget(edit)
         actions.addStretch(); close = QPushButton("关闭"); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.status_field.currentIndexChanged.connect(self.update_completion_controls)
+        self.update_completion_controls()
         self.render_tasks()
         self.render_decision_history()
 
@@ -3740,6 +3830,60 @@ class ProjectWorkbenchDialog(QDialog):
             status = QLabel(TASK_STATUS.get(task.get("status", "planned"), "计划")); status.setStyleSheet(f"color: {TASK_COLORS.get(task.get('status'), '#64748b')}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(status)
             edit = QToolButton(); edit.setFixedSize(30, 30); edit.setIcon(fluent_icon("\uE70F", size=13)); edit.setToolTip("编辑任务"); edit.clicked.connect(lambda _checked=False, value=task: self.edit_task(value)); row_layout.addWidget(edit)
             self.project_tasks.addWidget(row)
+
+    def render_project_outcome(self):
+        closeout = project_completion_outcome(self.project)
+        recent_task = str(self.project.get("lastCompletedOutcome") or "").strip()
+        if self.project.get("status", "active") == "completed":
+            completed_at = format_project_decision_time(self.project.get("completedAt"), compact=True)
+            self.outcome_title.setText(f"项目完成成果 · {completed_at}" if self.project.get("completedAt") else "项目完成成果")
+            self.outcome_text.setText((closeout or "尚未记录最终交付成果").replace("\n", " "))
+            self.outcome_text.setToolTip(closeout or "这是旧版完成项目；补充成果后会形成可追溯收尾记录。")
+            self.outcome_icon.setPixmap(fluent_icon("\uE73E" if closeout else "\uE7BA", color="#16803c" if closeout else "#a15c00", size=14).pixmap(QSize(14, 14)))
+            self.outcome_title.setStyleSheet(f"color: {'#17623b' if closeout else '#8a5800'}; font-size: 11px; font-weight: 700;")
+            self.outcome_text.setStyleSheet(f"color: {'#456a55' if closeout else '#7d6537'}; font-size: 11px;")
+            self.outcome_strip.setStyleSheet(
+                "QFrame#projectOutcomeStrip { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 9px; } QFrame#projectOutcomeStrip QLabel { border: none; background: transparent; }"
+                if closeout else
+                "QFrame#projectOutcomeStrip { background: #fff8e8; border: 1px solid #ead7a4; border-radius: 9px; } QFrame#projectOutcomeStrip QLabel { border: none; background: transparent; }"
+            )
+            self.outcome_edit.setVisible(True); self.outcome_strip.setVisible(True); return
+        if recent_task:
+            self.outcome_title.setText("最近任务成果")
+            self.outcome_text.setText(recent_task.replace("\n", " ")); self.outcome_text.setToolTip(recent_task)
+            self.outcome_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=14).pixmap(QSize(14, 14)))
+            self.outcome_title.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 700;")
+            self.outcome_text.setStyleSheet("color: #456a55; font-size: 11px;")
+            self.outcome_strip.setStyleSheet("QFrame#projectOutcomeStrip { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 9px; } QFrame#projectOutcomeStrip QLabel { border: none; background: transparent; }")
+            self.outcome_edit.setVisible(False); self.outcome_strip.setVisible(True); return
+        self.outcome_strip.setVisible(False)
+
+    def update_completion_controls(self):
+        completed = self.status_field.currentData() == "completed"
+        for control in (self.next_step_field, self.blocker_field, self.schedule_button, self.add_task_button):
+            control.setEnabled(not completed)
+        if completed:
+            self.next_step_field.setToolTip("已完成项目没有待执行下一步；重新打开后可继续规划")
+            self.blocker_field.setToolTip("已完成项目不保留当前阻塞；重新打开后可继续维护")
+            self.schedule_button.setToolTip("重新打开项目后才能安排新的下一步")
+            self.add_task_button.setToolTip("重新打开项目后才能新建关联任务")
+        else:
+            self.next_step_field.setToolTip(""); self.blocker_field.setToolTip("")
+            self.schedule_button.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联")
+            self.add_task_button.setToolTip("新建一项与当前项目稳定关联的今日任务")
+
+    def edit_project_closeout(self):
+        if self.project.get("status", "active") != "completed":
+            QMessageBox.information(self, "项目尚未完成", "项目完成成果只记录整个项目的最终交付。请先将项目状态改为“已完成”。")
+            return
+        if not self.save_changes(notify=False):
+            return
+        pending = open_project_tasks(self.window.today_tasks, self.project)
+        dialog = ProjectCloseoutDialog(self, self.project, len(pending), latest_project_completion_outcome(self.project))
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        if self.window.update_project_completion_summary(self.project, dialog.value()):
+            self.render_project_outcome(); self.render_decision_history()
 
     def render_decision_history(self):
         entries = self.window.project_decisions_for(self.project)
@@ -3785,6 +3929,7 @@ class ProjectWorkbenchDialog(QDialog):
         _state, state_text, state_color, state_background = project_display_state(self.project)
         self.project_state_badge.setText(f"● {state_text}")
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
+        self.control_badge.setVisible(text != state_text)
         self.review_meta.setText(project_review_summary(self.project))
 
     def confirm_current_state(self):
@@ -3814,19 +3959,17 @@ class ProjectWorkbenchDialog(QDialog):
             return False
         if self.project.get("status", "active") != "completed" and data.get("status") == "completed":
             pending = open_project_tasks(self.window.today_tasks, self.project)
-            if pending:
-                answer = QMessageBox.question(
-                    self,
-                    "项目仍有未完成任务",
-                    f"这个项目仍关联 {len(pending)} 项未完成任务。\n\n继续会完成项目本身，但不会改写这些任务，便于你逐项确认。是否继续？",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if answer != QMessageBox.Yes:
-                    return False
+            initial = str(self.project.get("lastCompletedOutcome") or "").strip() or latest_project_completion_outcome(self.project)
+            closeout = ProjectCloseoutDialog(self, self.project, len(pending), initial)
+            if closeout.exec_() != QDialog.Accepted:
+                return False
+            data["completionSummary"] = closeout.value()
         saved = self.window.update_project_management(self.project, data, notify=notify)
+        if saved is None:
+            return False
         self.apply_management_values(saved or data)
         self.refresh_header_states()
+        self.render_project_outcome()
         self.render_decision_history()
         return True
 
@@ -4650,6 +4793,63 @@ class MainWindow(QMainWindow):
         save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
         return entry
 
+    def record_project_closeout(self, project, action, outcome, occurred_at=None):
+        entry = build_project_closeout_entry(
+            project,
+            action,
+            outcome,
+            occurred_at or datetime.now().isoformat(timespec="seconds"),
+        )
+        if entry is None:
+            return None
+        self.project_decisions.append(entry)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        return entry
+
+    def apply_project_completion_lifecycle(self, project, before, target, requested, occurred_at, source="manual"):
+        """Keep current closeout truth and immutable closeout history in sync."""
+        previous_status = (before or {}).get("status", "active")
+        current_status = (target or {}).get("status", "active")
+        identity = project or {**(target or {}), "savedId": (target or {}).get("id")}
+
+        def audit_identity():
+            return {
+                **(target or {}),
+                "savedId": (target or {}).get("id") or (project or {}).get("savedId"),
+                "codexProjectId": (project or {}).get("codexProjectId"),
+                "name": (target or {}).get("name") or (project or {}).get("name"),
+            }
+
+        if current_status == "completed":
+            requested_outcome = str((requested or {}).get("completionSummary") or "").strip()
+            if previous_status != "completed" and not requested_outcome:
+                requested_outcome = latest_project_completion_outcome(before) or latest_project_completion_outcome(target)
+            if previous_status != "completed":
+                target.pop("completionSummary", None)
+                target.pop("completedAt", None)
+            changed = bool(requested_outcome) and record_project_completion_outcome(
+                target, requested_outcome, occurred_at, "closeout" if previous_status != "completed" else source
+            )
+            for key in ("completionSummary", "completedAt", "completionHistory"):
+                if key in target:
+                    identity[key] = target.get(key)
+            if changed:
+                action = "complete" if previous_status != "completed" else "revise"
+                self.record_project_closeout(audit_identity(), action, requested_outcome, occurred_at)
+            return previous_status == "completed" or bool(project_completion_outcome(target))
+        if previous_status == "completed":
+            previous_outcome = str((before or {}).get("completionSummary") or "").strip() or latest_project_completion_outcome(before)
+            changed = clear_project_completion_outcome(target, occurred_at, "reopen")
+            for key in ("completionSummary", "completedAt"):
+                identity.pop(key, None)
+            if "completionHistory" in target:
+                identity["completionHistory"] = target.get("completionHistory")
+            if changed:
+                self.record_project_closeout(audit_identity(), "reopen", previous_outcome, occurred_at)
+        return True
+
     def record_project_review(self, project, audit=True, occurred_at=None):
         """Confirm current project state without inventing a field change."""
         reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
@@ -5239,6 +5439,13 @@ class MainWindow(QMainWindow):
             if notify:
                 self.statusBar().showMessage(validation_error, 4000)
             return None
+        if before.get("status", "active") != "completed" and data.get("status") == "completed":
+            closeout = str(data.get("completionSummary") or "").strip() or latest_project_completion_outcome(before)
+            if not closeout:
+                if notify:
+                    self.statusBar().showMessage("完成项目需要先记录最终交付成果", 4000)
+                return None
+            data["completionSummary"] = closeout
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
@@ -5250,6 +5457,10 @@ class MainWindow(QMainWindow):
             "nextStep": str(data.get("nextStep") or "").strip(),
             "blocker": str(data.get("blocker") or "").strip(),
         })
+        if not self.apply_project_completion_lifecycle(project, before, target, data, occurred_at, source):
+            if notify:
+                self.statusBar().showMessage("完成项目需要先记录最终交付成果", 4000)
+            return None
         if target.get("nextStep"):
             target["nextStepReviewNeeded"] = False
         new_category = target.get("category", previous_category)
@@ -5258,8 +5469,11 @@ class MainWindow(QMainWindow):
             orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
             if project.get("id") not in orders.setdefault(new_category, []):
                 orders[new_category].append(project.get("id"))
-        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded"):
+        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory"):
             project[key] = target.get(key)
+        for key in ("completionSummary", "completedAt"):
+            if key not in target:
+                project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
         entry = self.record_project_decision(project, before, target, decision_source, occurred_at)
         if entry is not None and decision_source in {"manual", "editor", "codex", "created"}:
@@ -5273,6 +5487,29 @@ class MainWindow(QMainWindow):
             message = normalization_notes[0] if normalization_notes else "项目目标与下一步已保存"
             self.statusBar().showMessage(message, 3500 if normalization_notes else 2500)
         return dict(target)
+
+    def update_project_completion_summary(self, project, outcome):
+        if (project or {}).get("status", "active") != "completed":
+            self.statusBar().showMessage("项目尚未完成，不能记录项目级完成成果", 3500)
+            return False
+        text = str(outcome or "").strip()
+        if not text:
+            self.statusBar().showMessage("项目完成成果不能为空", 3000)
+            return False
+        target = self.saved_record_for_project(project)
+        previous = project_completion_outcome(target)
+        occurred_at = datetime.now().isoformat(timespec="seconds")
+        if not record_project_completion_outcome(target, text, occurred_at, "closeout_editor"):
+            self.statusBar().showMessage("项目完成成果没有变化", 2300)
+            return False
+        for key in ("completionSummary", "completedAt", "completionHistory"):
+            project[key] = target.get(key)
+        self.record_project_closeout(project, "revise" if previous else "complete", text, occurred_at)
+        save_json(PROJECTS_FILE, self.saved_projects)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage("项目完成成果已保存，并纳入项目档案与每日总结", 3800)
+        return True
 
     def rollback_project_decision(self, project, entry):
         if str((entry or {}).get("projectId") or "") not in project_reference_ids(project):
@@ -5593,6 +5830,8 @@ class MainWindow(QMainWindow):
         recent = (project.get("lastActivity") or {}).get("summary") or "暂无自动同步的进度记录。"
         completed_outcome = str(project.get("lastCompletedOutcome") or "").strip()
         completed_outcome_line = f"最近完成成果：{completed_outcome}\n" if completed_outcome else ""
+        project_outcome = project_completion_outcome(project)
+        project_outcome_line = f"项目最终成果：{project_outcome}\n" if project_outcome else ""
         text = (
             f"继续项目：{project['name']}\n"
             f"项目目标：{project.get('objective') or '尚未明确'}\n"
@@ -5602,6 +5841,7 @@ class MainWindow(QMainWindow):
             f"当前阻塞：{project.get('blocker') or '无'}\n"
             f"工作目录：{project['path']}\n"
             f"当前下一步：{project.get('nextStep') or '请先判断下一步'}\n"
+            f"{project_outcome_line}"
             f"{completed_outcome_line}"
             f"最近动态：{recent}\n\n"
             "请先读取项目现状，围绕项目目标说明当前进度、风险和建议的下一步，再等待我的具体指令。"
@@ -5645,10 +5885,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "信息不完整", "项目名称和本地路径不能为空。", parent=self); return
         if not data["color"].startswith("#") or len(data["color"]) != 7: data["color"] = "#58d7f6"
         before = dict(project or {})
+        if before.get("status", "active") != "completed" and data.get("status") == "completed":
+            closeout = str(data.get("completionSummary") or "").strip() or latest_project_completion_outcome(before)
+            if not closeout:
+                QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
+                return
+            data["completionSummary"] = closeout
         if project:
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
-            target.update(data)
+            target.update({key: value for key, value in data.items() if key not in {"completionSummary", "completedAt", "completionHistory"}})
             if target.get("nextStep"):
                 target["nextStepReviewNeeded"] = False
             if data.get("category") != previous_category:
@@ -5659,7 +5905,7 @@ class MainWindow(QMainWindow):
             target = next((item for item in self.saved_projects if normalized_path(item.get("path")) == normalized_path(data.get("path"))), None)
             if target is None:
                 target = {"id": str(uuid.uuid4())}; self.saved_projects.append(target)
-            target.update(data)
+            target.update({key: value for key, value in data.items() if key not in {"completionSummary", "completedAt", "completionHistory"}})
             if target.get("nextStep"):
                 target["nextStepReviewNeeded"] = False
             codex_projects = codex_sidebar_projects(self.saved_projects)
@@ -5671,6 +5917,9 @@ class MainWindow(QMainWindow):
         decision_project = project or {**target, "savedId": target.get("id")}
         source = ("codex" if dialog.insight_applied else "editor") if project else "created"
         occurred_at = datetime.now().isoformat(timespec="seconds")
+        if not self.apply_project_completion_lifecycle(decision_project, before, target, data, occurred_at, source):
+            QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
+            return
         entry = self.record_project_decision(decision_project, before, target, source, occurred_at)
         if entry is not None:
             target["reviewedAt"] = occurred_at

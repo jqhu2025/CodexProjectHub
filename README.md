@@ -51,8 +51,9 @@ All screenshots use fictional sample data. They do not contain real project path
 - Process that review queue one project at a time from the home workspace: inspect the saved objective, stage, health, cadence, and next action; confirm deliberately, defer without mutating data, or open the full project workbench to correct the decision first.
 - Treat unverified legacy attention flags as **Needs Review**, not as current risk; only a confirmed attention decision is surfaced as a live portfolio warning.
 - Restore any recorded project decision selectively: only fields touched by that event are rolled back, newer conflicting edits are disclosed before confirmation, and the rollback is preserved as a new audit event.
-- Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links. Every new archive and restore action enters the unified decision history with its timestamp and a frozen snapshot of project status, stage, next action, and blocker; the archive shows cycle counts while legacy records remain honestly marked as time unknown. Projects with unfinished tasks or running Codex conversations must close that live work first, preventing archived projects from leaving orphaned activity records.
-- Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, and completion warns when linked tasks remain open without rewriting them.
+- Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links. Every new archive and restore action enters the unified decision history with its timestamp and a frozen snapshot of project status, stage, next action, blocker, and confirmed closeout outcome; the archive shows cycle counts while legacy records remain honestly marked as time unknown. Projects with unfinished tasks or running Codex conversations must close that live work first, preventing archived projects from leaving orphaned activity records.
+- Close a project with an explicit, human-confirmed delivery outcome instead of a status flag alone. The closeout stores the original completion time, supports outcome revisions, appears in the project workbench and handoff context, and enters the unified audit history. Reopening retires the current completion claim while preserving the previous outcome as historical evidence.
+- Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, linked open tasks remain untouched for deliberate follow-up, and completed projects cannot schedule new work until they are reopened.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
 - Filter the portfolio by current focus, missing next action, or paused/idea state.
 - Filter projects by running, completed, linked, or unlinked state.
@@ -77,7 +78,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Move unwanted tasks to a recoverable recycle bin instead of deleting their daily record; archived tasks retain their original date, three-state status, ordering context, and complete transition history while remaining excluded from boards, workload counts, and generated reviews.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
-- Include audited project reviews, direction reconciliations, and real objective/stage/health/next-action changes in the daily evidence packet. Management decisions are counted separately from tasks and conversations and are never treated as completion evidence by themselves.
+- Include audited project reviews, direction reconciliations, closeouts, and real objective/stage/health/next-action changes in the daily evidence packet. Management decisions are counted separately from tasks and conversations; only a human-confirmed project closeout is accepted as project-level completion evidence.
 - Keep the home review compact and open the full completed / in-progress / next-focus breakdown on click.
 - Show immediate progress and failure feedback when a review is regenerated, then write the structured result back into the workspace.
 
@@ -190,7 +191,7 @@ Runtime data is stored in the `data` directory:
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
 | `data/settings.json` | Local configuration, including the optional summary conversation ID. |
 | `data/project_layout.json` | Project order and recoverable archive settings. |
-| `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, and next-action changes. |
+| `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 

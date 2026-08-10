@@ -57,6 +57,50 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual((revision["text"], revision["source"]), ("Imported outcome", "legacy"))
         self.assertEqual(management.task_completion_revisions(None), [])
 
+    def test_project_completion_outcome_forms_a_reopen_safe_audit_chain(self):
+        project = {"id": "project-1", "status": "completed"}
+        self.assertTrue(management.record_project_completion_outcome(
+            project, "Delivered the validated release package.", "2026-08-10T12:00:00"
+        ))
+        self.assertEqual(management.project_completion_outcome(project), "Delivered the validated release package.")
+        self.assertEqual(project["completedAt"], "2026-08-10T12:00:00")
+        self.assertTrue(management.record_project_completion_outcome(
+            project, "Delivered the package and passed 18 release checks.", "2026-08-10T12:30:00", "closeout_editor"
+        ))
+        self.assertEqual(project["completedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(len(project["completionHistory"]), 2)
+        project["status"] = "active"
+        self.assertEqual(management.project_completion_outcome(project), "")
+        self.assertTrue(management.clear_project_completion_outcome(project, "2026-08-10T13:00:00"))
+        self.assertNotIn("completionSummary", project)
+        self.assertNotIn("completedAt", project)
+        self.assertEqual(project["completionHistory"][-1]["source"], "reopen")
+        self.assertEqual(
+            management.latest_project_completion_outcome(project),
+            "Delivered the package and passed 18 release checks.",
+        )
+
+    def test_project_completion_outcome_rejects_unfinished_or_empty_evidence(self):
+        active = {"status": "active"}
+        completed = {"status": "completed"}
+        self.assertFalse(management.record_project_completion_outcome(active, "Not final", "2026-08-10T12:00:00"))
+        self.assertFalse(management.record_project_completion_outcome(completed, "  ", "2026-08-10T12:00:00"))
+        self.assertNotIn("completionSummary", active)
+        self.assertNotIn("completionSummary", completed)
+
+    def test_project_closeout_event_distinguishes_completion_from_reopen(self):
+        project = {"id": "runtime", "savedId": "stable", "name": "Release", "completedAt": "2026-08-10T12:00:00"}
+        completed = management.build_project_closeout_entry(
+            project, "complete", "Passed the release gate.", "2026-08-10T12:00:00", "closeout-1"
+        )
+        reopened = management.build_project_closeout_entry(
+            project, "reopen", "Passed the release gate.", "2026-08-10T13:00:00", "closeout-2"
+        )
+        self.assertEqual((completed["projectId"], completed["kind"], completed["action"]), ("stable", "closeout", "complete"))
+        self.assertIn("最终成果", management.format_project_decision_summary(completed))
+        self.assertIn("重新打开", management.format_project_decision_summary(reopened))
+        self.assertIsNone(management.build_project_closeout_entry(project, "archive", "Result", "2026-08-10T14:00:00"))
+
     def test_task_archive_round_trip_preserves_status_and_transition_history(self):
         task = {
             "id": "task-1",
@@ -286,6 +330,11 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("验证阶段", management.format_project_decision_summary(archived))
         self.assertIn("Verify package", management.format_project_decision_summary(archived))
         self.assertIn("Operations", management.format_project_decision_summary(restored))
+        completed = management.build_project_lifecycle_entry(
+            {**project, "status": "completed", "stage": "completion", "nextStep": "", "completionSummary": "Passed 18 release checks."},
+            "archive", "2026-08-10T14:00:00", "archive-2",
+        )
+        self.assertIn("成果：Passed 18 release checks.", management.format_project_decision_summary(completed))
         self.assertIsNone(management.build_project_lifecycle_entry(project, "delete", "2026-08-10T14:00:00"))
 
     def test_decision_diff_ignores_cosmetic_whitespace(self):

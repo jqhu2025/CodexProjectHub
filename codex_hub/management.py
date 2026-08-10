@@ -59,6 +59,7 @@ PROJECT_DECISION_SOURCES = {
     "alignment": "执行对齐",
     "archive": "项目归档",
     "restore": "项目恢复",
+    "closeout": "项目收尾",
 }
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 
@@ -197,6 +198,93 @@ def task_completion_revisions(task):
                 "source": "legacy",
             }]
     return sorted(revisions, key=lambda item: str(item.get("at") or ""), reverse=True)
+
+
+def project_completion_outcome(project):
+    """Return project-level completion evidence only while the project is completed."""
+    if not isinstance(project, dict) or project.get("status") != "completed":
+        return ""
+    return str(project.get("completionSummary") or "").strip()
+
+
+def record_project_completion_outcome(project, outcome, occurred_at, source="closeout"):
+    """Store a project's final outcome while retaining every real revision."""
+    if not isinstance(project, dict) or project.get("status") != "completed":
+        return False
+    text = str(outcome or "").strip()
+    if not text:
+        return False
+    previous = str(project.get("completionSummary") or "").strip()
+    if normalized_decision_value(previous) == normalized_decision_value(text):
+        return False
+    history = project.get("completionHistory")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "at": str(occurred_at or ""),
+        "previous": previous,
+        "text": text,
+        "source": str(source or "closeout"),
+    })
+    project["completionHistory"] = history[-40:]
+    project["completionSummary"] = text
+    if not previous or not project.get("completedAt"):
+        project["completedAt"] = str(occurred_at or "")
+    return True
+
+
+def clear_project_completion_outcome(project, occurred_at, source="reopen"):
+    """Retire current project completion evidence without deleting its history."""
+    if not isinstance(project, dict):
+        return False
+    previous = str(project.get("completionSummary") or "").strip()
+    completed_at = str(project.get("completedAt") or "")
+    if not previous and not completed_at:
+        return False
+    history = project.get("completionHistory")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "at": str(occurred_at or ""),
+        "previous": previous,
+        "text": "",
+        "source": str(source or "reopen"),
+        "completedAt": completed_at,
+    })
+    project["completionHistory"] = history[-40:]
+    project.pop("completionSummary", None)
+    project.pop("completedAt", None)
+    return True
+
+
+def project_completion_revisions(project):
+    """Return project outcome revisions newest-first with a legacy fallback."""
+    if not isinstance(project, dict):
+        return []
+    history = project.get("completionHistory")
+    revisions = [dict(item) for item in history or [] if isinstance(item, dict)] if isinstance(history, list) else []
+    if not revisions:
+        legacy = str(project.get("completionSummary") or "").strip()
+        if legacy:
+            revisions = [{
+                "at": str(project.get("completedAt") or project.get("reviewedAt") or ""),
+                "previous": "",
+                "text": legacy,
+                "source": "legacy",
+            }]
+    return sorted(revisions, key=lambda item: str(item.get("at") or ""), reverse=True)
+
+
+def latest_project_completion_outcome(project):
+    """Find the last non-empty closeout result, including after a reopen."""
+    current = str((project or {}).get("completionSummary") or "").strip()
+    if current:
+        return current
+    for revision in project_completion_revisions(project):
+        text = str(revision.get("text") or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
@@ -595,6 +683,34 @@ def build_project_lifecycle_entry(project, action, occurred_at, entry_id=None):
             "objective": normalized_decision_value((project or {}).get("objective")),
             "nextStep": normalized_decision_value((project or {}).get("nextStep")),
             "blocker": normalized_decision_value((project or {}).get("blocker")),
+            "completionSummary": normalized_decision_value((project or {}).get("completionSummary")),
+            "completedAt": str((project or {}).get("completedAt") or ""),
+        },
+    }
+
+
+def build_project_closeout_entry(project, action, outcome, occurred_at, entry_id=None):
+    """Audit project completion evidence separately from ordinary field changes."""
+    if action not in {"complete", "revise", "reopen"}:
+        return None
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    if not stable_project_id:
+        return None
+    summary = normalized_decision_value(outcome)
+    if action in {"complete", "revise"} and not summary:
+        return None
+    return {
+        "id": entry_id or str(uuid.uuid4()),
+        "projectId": stable_project_id,
+        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "at": str(occurred_at or ""),
+        "source": "closeout",
+        "kind": "closeout",
+        "action": action,
+        "changes": [],
+        "snapshot": {
+            "outcome": summary,
+            "completedAt": str((project or {}).get("completedAt") or occurred_at or ""),
         },
     }
 
@@ -629,8 +745,21 @@ def format_project_decision_summary(entry, max_changes=2):
         stage = display_project_decision_value("stage", snapshot.get("stage"))
         blocker = compact_project_decision_value("blocker", snapshot.get("blocker"), 30)
         next_step = compact_project_decision_value("nextStep", snapshot.get("nextStep"), 30)
-        context = f"阻塞：{blocker}" if normalized_decision_value(snapshot.get("blocker")) else f"下一步：{next_step}"
+        completion = compact_project_decision_value("completionSummary", snapshot.get("completionSummary"), 42)
+        if normalized_decision_value(snapshot.get("completionSummary")):
+            context = f"成果：{completion}"
+        else:
+            context = f"阻塞：{blocker}" if normalized_decision_value(snapshot.get("blocker")) else f"下一步：{next_step}"
         return f"归档项目 · {status} / {stage}阶段 · {context}"
+    if (entry or {}).get("kind") == "closeout":
+        snapshot = (entry or {}).get("snapshot") or {}
+        outcome = compact_project_decision_value("completionSummary", snapshot.get("outcome"), 64)
+        action = (entry or {}).get("action")
+        if action == "reopen":
+            return f"重新打开项目 · 原完成成果保留在历史：{outcome}"
+        if action == "revise":
+            return f"修订项目完成成果：{outcome}"
+        return f"完成项目 · 最终成果：{outcome}"
     changes = (entry or {}).get("changes") or []
     parts = [
         f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："
