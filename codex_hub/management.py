@@ -120,6 +120,64 @@ def restore_task_record(task, occurred_at):
     return True
 
 
+def task_completion_outcome(task):
+    """Return the current completion evidence only while a task is completed."""
+    if not isinstance(task, dict) or task.get("status") != "done":
+        return ""
+    return str(task.get("completionNote") or "").strip()
+
+
+def record_task_completion_outcome(task, outcome, occurred_at, source="manual"):
+    """Store a completed task's outcome and retain every real outcome revision."""
+    if not isinstance(task, dict) or task.get("status") != "done":
+        return False
+    text = str(outcome or "").strip()
+    previous = str(task.get("completionNote") or "").strip()
+    if normalized_decision_value(previous) == normalized_decision_value(text):
+        return False
+    history = task.get("completionHistory")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "at": str(occurred_at or ""),
+        "previous": previous,
+        "text": text,
+        "source": str(source or "manual"),
+    })
+    task["completionHistory"] = history[-40:]
+    if text:
+        task["completionNote"] = text
+        task["completionRecordedAt"] = str(occurred_at or "")
+    else:
+        task.pop("completionNote", None)
+        task.pop("completionRecordedAt", None)
+    task["updatedAt"] = str(occurred_at or task.get("updatedAt") or "")
+    return True
+
+
+def clear_task_completion_outcome(task, occurred_at, source="reopen"):
+    """Retire stale completion evidence when a completed task is reopened."""
+    if not isinstance(task, dict):
+        return False
+    previous = str(task.get("completionNote") or "").strip()
+    if not previous and not task.get("completionRecordedAt"):
+        return False
+    history = task.get("completionHistory")
+    if not isinstance(history, list):
+        history = []
+    history.append({
+        "at": str(occurred_at or ""),
+        "previous": previous,
+        "text": "",
+        "source": str(source or "reopen"),
+    })
+    task["completionHistory"] = history[-40:]
+    task.pop("completionNote", None)
+    task.pop("completionRecordedAt", None)
+    task["updatedAt"] = str(occurred_at or task.get("updatedAt") or "")
+    return True
+
+
 def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
     """Append one real task status transition, avoiding no-op events."""
     if not isinstance(task, dict) or status not in TASK_STATUS:
@@ -511,12 +569,17 @@ def project_next_step_completion_update(project, task, completed_at):
     completed_step = str((task or {}).get("projectNextStep") or (task or {}).get("title") or "").strip()
     if normalized_action_text((project or {}).get("nextStep")) != normalized_action_text(completed_step):
         return None
-    return {
+    update = {
         "lastCompletedNextStep": completed_step,
         "lastCompletedNextStepAt": completed_at,
         "nextStep": "",
         "nextStepReviewNeeded": True,
     }
+    outcome = task_completion_outcome(task)
+    if outcome:
+        update["lastCompletedOutcome"] = outcome
+        update["lastCompletedOutcomeAt"] = str((task or {}).get("completionRecordedAt") or completed_at)
+    return update
 
 
 def project_next_step_reopen_update(project, task):
@@ -534,6 +597,8 @@ def project_next_step_reopen_update(project, task):
         "nextStepReviewNeeded": False,
         "lastCompletedNextStep": "",
         "lastCompletedNextStepAt": "",
+        "lastCompletedOutcome": "",
+        "lastCompletedOutcomeAt": "",
     }
 
 

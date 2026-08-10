@@ -131,6 +131,30 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(update["nextStep"], "Run validation set")
         self.assertFalse(update["nextStepReviewNeeded"])
         self.assertEqual(update["lastCompletedNextStep"], "")
+        self.assertEqual(update["lastCompletedOutcome"], "")
+
+    def test_late_completion_outcome_is_synced_to_project_handoff(self):
+        project = {
+            "id": "current-id", "savedId": "stable-id",
+            "lastCompletedNextStep": "Run validation set", "lastCompletedOutcome": "",
+        }
+        saved = dict(project)
+        task = {
+            "status": "done", "origin": "project_next_step", "projectId": "stable-id",
+            "projectNextStep": "Run validation set", "completionNote": "Confirmed stable results on 3 validation sets.",
+            "completionRecordedAt": "2026-08-10T10:30:00",
+        }
+        window = SimpleNamespace(
+            project_by_id=lambda _project_id: project,
+            saved_record_for_project=lambda _project: saved,
+            saved_projects=[saved],
+        )
+        with patch.object(APP, "save_json") as save:
+            changed = APP.MainWindow.sync_project_completion_outcome(window, task, "2026-08-10T10:30:00")
+        self.assertTrue(changed)
+        self.assertEqual(project["lastCompletedOutcome"], "Confirmed stable results on 3 validation sets.")
+        self.assertEqual(saved["lastCompletedOutcomeAt"], "2026-08-10T10:30:00")
+        save.assert_called_once()
 
     def test_reopening_never_overwrites_a_newer_project_decision(self):
         project = {
@@ -606,7 +630,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
 class DailySummaryTests(unittest.TestCase):
     def test_payload_uses_only_requested_date_and_resolves_project(self):
         tasks = [
-            {"date": "2026-08-08", "title": "Validate model", "status": "doing", "projectId": "p1", "notes": "Compare alpha"},
+            {"date": "2026-08-08", "title": "Validate model", "status": "doing", "projectId": "p1", "notes": "Compare alpha", "completionNote": "Stale result"},
             {"date": "2026-08-08", "title": "Removed duplicate", "status": "planned", "projectId": "p1", "archivedAt": "2026-08-08T12:00:00"},
             {"date": "2026-08-09", "title": "Today", "status": "planned", "projectId": "p1"},
         ]
@@ -615,7 +639,19 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 1)
         self.assertEqual(payload["tasks"][0]["project"], "Denoising")
         self.assertEqual(payload["tasks"][0]["status"], "进行中")
+        self.assertEqual(payload["tasks"][0]["completionOutcome"], "")
         self.assertEqual(payload["tasks"][0]["statusTransitions"][0]["source"], "历史记录")
+
+    def test_payload_exposes_confirmed_completion_outcome_separately_from_plan_notes(self):
+        tasks = [{
+            "date": "2026-08-08", "title": "Validate model", "status": "done", "projectId": "p1",
+            "notes": "Plan to compare alpha and beta.",
+            "completionNote": "Beta reduced validation error by 8% across three runs.",
+        }]
+        payload = APP.build_daily_summary_payload(tasks, [{"id": "p1", "name": "Denoising"}], "2026-08-08")
+        task = payload["tasks"][0]
+        self.assertEqual(task["notes"], "Plan to compare alpha and beta.")
+        self.assertEqual(task["completionOutcome"], "Beta reduced validation error by 8% across three runs.")
 
     def test_payload_includes_ordered_task_status_transitions(self):
         tasks = [{
@@ -643,6 +679,7 @@ class DailySummaryTests(unittest.TestCase):
         self.assertIn('"completed"', prompt)
         self.assertIn("不要虚构完成情况", prompt)
         self.assertIn("下一步进化建议", prompt)
+        self.assertIn("completionOutcome 是人工确认的实际完成成果", prompt)
 
     def test_visible_prompt_is_readable_and_has_writeback_marker(self):
         prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [{}, {}], "codexActivities": [{"userTurns": 3}]}, visible=True)

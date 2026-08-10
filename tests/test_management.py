@@ -20,6 +20,29 @@ class ManagementModuleTests(unittest.TestCase):
         event = management.task_status_events([task])[0]
         self.assertEqual((event["from"], event["to"], event["source"]), ("planned", "doing", "drag"))
 
+    def test_completion_outcome_is_audited_and_only_active_for_completed_tasks(self):
+        task = {"id": "task-1", "status": "done"}
+        self.assertTrue(management.record_task_completion_outcome(
+            task, "Validated all 12 release checks.", "2026-08-10T11:00:00", "outcome_editor"
+        ))
+        self.assertEqual(management.task_completion_outcome(task), "Validated all 12 release checks.")
+        self.assertFalse(management.record_task_completion_outcome(
+            task, "  Validated   all 12 release checks.  ", "2026-08-10T11:01:00", "outcome_editor"
+        ))
+        self.assertEqual(len(task["completionHistory"]), 1)
+        task["status"] = "doing"
+        self.assertEqual(management.task_completion_outcome(task), "")
+        self.assertTrue(management.clear_task_completion_outcome(task, "2026-08-10T11:02:00"))
+        self.assertNotIn("completionNote", task)
+        self.assertEqual(task["completionHistory"][-1]["source"], "reopen")
+
+    def test_completion_outcome_rejects_unfinished_tasks(self):
+        task = {"id": "task-1", "status": "doing"}
+        self.assertFalse(management.record_task_completion_outcome(
+            task, "This must not become completion evidence.", "2026-08-10T11:00:00"
+        ))
+        self.assertNotIn("completionNote", task)
+
     def test_task_archive_round_trip_preserves_status_and_transition_history(self):
         task = {
             "id": "task-1",
@@ -118,13 +141,20 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertTrue(notes)
 
     def test_completed_next_step_can_be_reopened_without_overwriting_newer_work(self):
-        task = {"origin": "project_next_step", "projectNextStep": "Validate release"}
+        task = {
+            "origin": "project_next_step", "projectNextStep": "Validate release", "status": "done",
+            "completionNote": "Release passed 12 regression checks.",
+            "completionRecordedAt": "2026-08-10T09:55:00",
+        }
         completed = management.project_next_step_completion_update(
             {"nextStep": "Validate release"}, task, "2026-08-10T10:00:00"
         )
+        self.assertEqual(completed["lastCompletedOutcome"], "Release passed 12 regression checks.")
+        self.assertEqual(completed["lastCompletedOutcomeAt"], "2026-08-10T09:55:00")
         project = {"status": "active", **completed}
         reopened = management.project_next_step_reopen_update(project, task)
         self.assertEqual(reopened["nextStep"], "Validate release")
+        self.assertEqual(reopened["lastCompletedOutcome"], "")
         project["nextStep"] = "Publish report"
         self.assertIsNone(management.project_next_step_reopen_update(project, task))
 

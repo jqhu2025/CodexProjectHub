@@ -8,7 +8,7 @@
     "sessionId": "demo-thread-001",
     "conversationTitle": "Export workflow polish",
     "status": "doing",
-    "note": "Verify output quality and finish the release checklist.",
+    "notes": "Verify output quality and finish the release checklist.",
     "createdAt": "2026-08-06T09:10:00",
     "updatedAt": "2026-08-06T11:25:00"
   },
@@ -21,7 +21,7 @@
     "sessionId": "demo-thread-002",
     "conversationTitle": "Benchmark comparison",
     "status": "planned",
-    "note": "Summarize the strongest model and the remaining risks.",
+    "notes": "Summarize the strongest model and the remaining risks.",
     "createdAt": "2026-08-06T09:20:00",
     "updatedAt": "2026-08-06T09:20:00"
   },
@@ -32,7 +32,7 @@
     "projectId": "manual:paper-figures",
     "projectTitle": "Publication Figures",
     "status": "planned",
-    "note": "Apply the final typography and spacing pass.",
+    "notes": "Apply the final typography and spacing pass.",
     "createdAt": "2026-08-06T09:30:00",
     "updatedAt": "2026-08-06T09:30:00"
   },
@@ -43,7 +43,17 @@
     "projectId": "manual:automation-tools",
     "projectTitle": "Automation Toolkit",
     "status": "done",
-    "note": "Add setup, verification, and rollback steps.",
+    "notes": "Add setup, verification, and rollback steps.",
+    "completionNote": "Published setup, verification, and rollback guidance and verified every command on a clean environment.",
+    "completionRecordedAt": "2026-08-06T10:40:00",
+    "completionHistory": [
+      {
+        "at": "2026-08-06T10:40:00",
+        "previous": "",
+        "text": "Published setup, verification, and rollback guidance and verified every command on a clean environment.",
+        "source": "outcome_editor"
+      }
+    ],
     "createdAt": "2026-08-06T08:45:00",
     "updatedAt": "2026-08-06T10:40:00"
   }

@@ -41,6 +41,7 @@ from codex_hub.management import (
     build_project_decision_entry,
     build_project_decision_rollback,
     build_project_review_entry,
+    clear_task_completion_outcome,
     compact_project_decision_value,
     display_project_decision_value,
     format_project_decision_summary,
@@ -56,6 +57,7 @@ from codex_hub.management import (
     project_management_validation_error,
     project_next_step_completion_update,
     project_next_step_reopen_update,
+    record_task_completion_outcome,
     record_task_status_event,
     reorder_task_board,
     rollover_in_progress_tasks,
@@ -64,6 +66,7 @@ from codex_hub.management import (
     task_status_events,
     task_status_transition_allowed,
     task_is_archived,
+    task_completion_outcome,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 
@@ -719,6 +722,7 @@ def generate_project_insight(project, tasks=None, timeout=240):
                     "title": task.get("title") or "未命名任务",
                     "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
                     "notes": str(task.get("notes") or "")[:240],
+                    "completionOutcome": task_completion_outcome(task)[:360],
                 }
                 for task in tasks[-12:]
             ],
@@ -1151,6 +1155,7 @@ def build_daily_summary_payload(tasks, projects, target_date):
             "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
             "project": str(project.get("name") or "未关联项目"),
             "notes": str(task.get("notes") or "").strip(),
+            "completionOutcome": task_completion_outcome(task),
             "conversation": str(task.get("conversationTitle") or "").strip(),
             "statusTransitions": transitions,
         })
@@ -1300,6 +1305,8 @@ def daily_summary_prompt(payload, visible=False):
         f"本次共覆盖 {work_item_count} 个工作项：{task_count} 项昨日计划任务、{activity_count} 个实际活跃的 Codex 对话（{turn_count} 次用户提问）。必须综合全部记录后再总结。\n"
         "要求：overview 用自然、简洁的 2-3 句话说明昨天主要做了什么和当前结果，不超过 180 个汉字；"
         "completed 列出已完成成果；inProgress 列出仍在推进的工作及当前落点；nextFocus 给出今天最值得继续的事项。\n"
+        "任务中的 completionOutcome 是人工确认的实际完成成果，应作为 completed 的首要证据；notes 只是计划说明，不能单独证明工作已完成。"
+        "已完成任务若没有 completionOutcome，只能谨慎描述状态，不得补造结果。\n"
         "每个数组最多 4 条，每条不超过 60 个汉字。不要在 overview 里重复逐条清单，不要堆叠模型参数。"
         "如果某一类没有证据，返回空数组。每条包含项目名和实际动作，避免‘推进项目’这类空话。\n"
         "nextFocus 不只是重复未完成项，要结合现状给出具体、可执行的下一步进化建议，例如更可靠的验证、拆分或决策动作。\n"
@@ -2596,6 +2603,17 @@ class TaskEditor(QDialog):
         for status, label in TASK_STATUS.items(): self.status_field.addItem(label, status)
         status_index = self.status_field.findData(self.task.get("status") or default_status or "planned"); self.status_field.setCurrentIndex(max(0, status_index)); layout.addWidget(self.status_field)
         layout.addWidget(QLabel("备注")); self.notes_field = QTextEdit(self.task.get("notes", "")); self.notes_field.setFixedHeight(88); self.notes_field.setAccessibleName("任务备注"); self.notes_field.setPlaceholderText("补充交付标准、重点或下一步…"); layout.addWidget(self.notes_field)
+        self.outcome_frame = QFrame(); self.outcome_frame.setObjectName("taskOutcomeEditor")
+        self.outcome_frame.setStyleSheet("QFrame#taskOutcomeEditor { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 11px; } QFrame#taskOutcomeEditor QLabel { background: transparent; border: none; }")
+        outcome_layout = QVBoxLayout(self.outcome_frame); outcome_layout.setContentsMargins(14, 11, 14, 13); outcome_layout.setSpacing(6)
+        outcome_title = QLabel("完成成果"); outcome_title.setStyleSheet("color: #116b3b; font-size: 13px; font-weight: 700;"); outcome_layout.addWidget(outcome_title)
+        outcome_hint = QLabel("写下可验证的结果，不重复任务名称；这会进入项目交接与每日总结。")
+        outcome_hint.setWordWrap(True); outcome_hint.setStyleSheet("color: #547363; font-size: 11px;"); outcome_layout.addWidget(outcome_hint)
+        self.outcome_field = QTextEdit(task_completion_outcome(self.task)); self.outcome_field.setFixedHeight(76); self.outcome_field.setAccessibleName("完成成果")
+        self.outcome_field.setPlaceholderText("例如：完成 3 组对照实验，确认方案 B 在高噪声条件下更稳定。")
+        outcome_layout.addWidget(self.outcome_field); layout.addWidget(self.outcome_frame)
+        self.status_field.currentIndexChanged.connect(self.update_outcome_visibility)
+        self.update_outcome_visibility()
         actions = QHBoxLayout(); actions.setSpacing(8); actions.setContentsMargins(0, 4, 0, 0); actions.addStretch()
         cancel = QPushButton("取消"); cancel.setFixedHeight(38); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
         codex = QPushButton("在 Codex 中规划"); codex.setFixedHeight(38); codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); codex.setIconSize(QSize(14, 14)); codex.setToolTip("保存任务，复制规划提示并打开关联对话"); codex.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf4ff; border: none; font-weight: 600; } QPushButton:hover { background: #dfeaff; }"); codex.clicked.connect(self.accept_with_codex); actions.addWidget(codex)
@@ -2639,6 +2657,9 @@ class TaskEditor(QDialog):
             return
         self.accept()
 
+    def update_outcome_visibility(self):
+        self.outcome_frame.setVisible(self.status_field.currentData() == "done")
+
     def value(self):
         return {
             "title": self.title_field.text().strip(),
@@ -2649,7 +2670,44 @@ class TaskEditor(QDialog):
             "status": self.status_field.currentData(),
             "date": self.date_field.date().toString(Qt.ISODate),
             "notes": self.notes_field.toPlainText().strip(),
+            "completionNote": self.outcome_field.toPlainText().strip(),
         }
+
+
+class TaskOutcomeDialog(QDialog):
+    def __init__(self, parent, task):
+        super().__init__(parent)
+        self.setWindowTitle("记录完成成果")
+        self.setObjectName("taskOutcomeDialog")
+        self.setMinimumWidth(560)
+        self.setStyleSheet(STYLE + """
+            QDialog#taskOutcomeDialog QLabel { color: #26364c; }
+            QDialog#taskOutcomeDialog QTextEdit { font-size: 13px; line-height: 1.45; }
+            QDialog#taskOutcomeDialog QPushButton { min-height: 20px; }
+        """)
+        layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 24); layout.setSpacing(12)
+        eyebrow = QLabel("完成闭环"); eyebrow.setStyleSheet("color: #16803c; font-size: 11px; font-weight: 700;"); layout.addWidget(eyebrow)
+        title = QLabel("记录完成成果"); title.setStyleSheet("font-size: 23px; font-weight: 700; color: #172033;"); layout.addWidget(title)
+        task_name = QLabel(str((task or {}).get("title") or "未命名任务")); task_name.setWordWrap(True)
+        task_name.setStyleSheet("font-size: 14px; font-weight: 650; color: #34445c; background: #eef3f8; border-radius: 9px; padding: 10px 12px;"); layout.addWidget(task_name)
+        hint = QLabel("用一到两句话写下可验证的结果或关键结论。该内容会进入每日回顾，并在项目下一步完成时成为交接证据。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #66758a; font-size: 12px;"); layout.addWidget(hint)
+        self.outcome_field = QTextEdit(task_completion_outcome(task)); self.outcome_field.setFixedHeight(108)
+        self.outcome_field.setPlaceholderText("例如：完成新版导出流程并通过 12 项回归检查，未发现阻断问题。")
+        self.outcome_field.setAccessibleName("完成成果"); layout.addWidget(self.outcome_field)
+        actions = QHBoxLayout(); actions.setSpacing(8); actions.addStretch()
+        cancel = QPushButton("取消"); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
+        save = QPushButton("保存成果"); save.setObjectName("primary"); save.clicked.connect(self.accept_outcome); actions.addWidget(save)
+        layout.addLayout(actions); self.outcome_field.setFocus()
+
+    def accept_outcome(self):
+        if not self.value():
+            QMessageBox.information(self, "还没有成果", "请写下实际完成的结果；如果任务尚未完成，可先将它移回“进行中”。")
+            return
+        self.accept()
+
+    def value(self):
+        return self.outcome_field.toPlainText().strip()
 
 
 class TodayTaskCard(QFrame):
@@ -2687,12 +2745,25 @@ class TodayTaskCard(QFrame):
         root.addLayout(meta_row)
         if task.get("notes"):
             notes = ElidedLabel(task["notes"].replace("\n", " ")); notes.setStyleSheet("color: #526071; font-size: 11px; border: none;"); root.addWidget(notes)
+        completion_outcome = task_completion_outcome(task)
+        if completion_outcome:
+            outcome_row = QFrame(); outcome_row.setObjectName("completionOutcome")
+            outcome_row.setStyleSheet("QFrame#completionOutcome { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 8px; } QFrame#completionOutcome QLabel { border: none; background: transparent; }")
+            outcome_layout = QHBoxLayout(outcome_row); outcome_layout.setContentsMargins(9, 6, 9, 6); outcome_layout.setSpacing(7)
+            outcome_icon = QLabel(); outcome_icon.setFixedSize(16, 16); outcome_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=13).pixmap(QSize(13, 13))); outcome_layout.addWidget(outcome_icon)
+            outcome_text = ElidedLabel(f"成果 · {completion_outcome.replace(chr(10), ' ')}"); outcome_text.setToolTip(completion_outcome); outcome_text.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 600;"); outcome_layout.addWidget(outcome_text, 1)
+            root.addWidget(outcome_row)
         actions = QHBoxLayout(); actions.setSpacing(6)
         status = QComboBox(); status.setFixedSize(86, 30); status.setToolTip("调整任务状态")
         for value, label in TASK_STATUS.items(): status.addItem(label, value)
         status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
         status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
         status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData(), source="selector")); actions.addWidget(status); actions.addStretch()
+        if task.get("status") == "done" and not completion_outcome:
+            record_outcome = QPushButton("记录成果"); record_outcome.setFixedSize(88, 30)
+            record_outcome.setIcon(fluent_icon("\uE73E", color="#16803c", size=13)); record_outcome.setIconSize(QSize(13, 13)); record_outcome.setToolTip("补充实际完成结果，供项目交接与每日总结使用")
+            record_outcome.setStyleSheet("QPushButton { color: #126b3b; background: #eaf7ef; border: 1px solid #b9dfc8; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dff2e7; border-color: #88cda4; }")
+            record_outcome.clicked.connect(lambda: window.edit_task_outcome(task)); actions.addWidget(record_outcome)
         if task.get("sessionId"):
             open_codex = QPushButton("打开 Codex")
             open_codex.setFixedSize(96, 30)
@@ -2709,6 +2780,9 @@ class TodayTaskCard(QFrame):
         menu = QMenu(more)
         edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
         edit_action.triggered.connect(lambda: window.edit_today_task(task))
+        if task.get("status") == "done":
+            outcome_action = menu.addAction(fluent_icon("\uE73E", color="#16803c", size=14), "编辑完成成果" if completion_outcome else "记录完成成果")
+            outcome_action.triggered.connect(lambda: window.edit_task_outcome(task))
         delete_action = menu.addAction(fluent_icon("\uE74D", color="#526071", size=14), "移到任务回收站")
         delete_action.triggered.connect(lambda: window.delete_today_task(task))
         more.setMenu(menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
@@ -3106,7 +3180,17 @@ class ProjectWorkbenchDialog(QDialog):
         self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
         schedule = QPushButton("加入今日"); schedule.setFixedHeight(40); schedule.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); schedule.setIconSize(QSize(14, 14)); schedule.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); schedule.clicked.connect(self.schedule_next_step); next_row.addWidget(schedule, 0, Qt.AlignBottom)
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(lambda: self.save_changes()); next_row.addWidget(save, 0, Qt.AlignBottom)
-        management_layout.addLayout(next_row); root.addWidget(management)
+        management_layout.addLayout(next_row)
+        last_outcome = str(project.get("lastCompletedOutcome") or "").strip()
+        if last_outcome:
+            outcome_strip = QFrame(); outcome_strip.setObjectName("projectOutcomeStrip")
+            outcome_strip.setStyleSheet("QFrame#projectOutcomeStrip { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 9px; } QFrame#projectOutcomeStrip QLabel { border: none; background: transparent; }")
+            outcome_layout = QHBoxLayout(outcome_strip); outcome_layout.setContentsMargins(11, 7, 11, 7); outcome_layout.setSpacing(8)
+            outcome_icon = QLabel(); outcome_icon.setFixedSize(18, 18); outcome_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=14).pixmap(QSize(14, 14))); outcome_layout.addWidget(outcome_icon)
+            outcome_title = QLabel("最近完成成果"); outcome_title.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 700;"); outcome_layout.addWidget(outcome_title)
+            outcome_text = ElidedLabel(last_outcome.replace("\n", " ")); outcome_text.setToolTip(last_outcome); outcome_text.setStyleSheet("color: #456a55; font-size: 11px;"); outcome_layout.addWidget(outcome_text, 1)
+            management_layout.addWidget(outcome_strip)
+        root.addWidget(management)
 
         self.decision_history_frame = ClickableFrame(); self.decision_history_frame.setObjectName("decisionHistoryStrip"); self.decision_history_frame.setFixedHeight(52)
         self.decision_history_frame.setAccessibleName("查看项目决策记录"); self.decision_history_frame.setToolTip("查看这个项目的目标、阶段、健康度和下一步等真实变更")
@@ -3165,7 +3249,11 @@ class ProjectWorkbenchDialog(QDialog):
         for task in tasks:
             row = QFrame(); row.setObjectName("projectTaskRow"); row.setFixedHeight(48); row.setStyleSheet("QFrame#projectTaskRow { background: #f8fafc; border: 1px solid #e0e7ef; border-radius: 8px; }")
             row_layout = QHBoxLayout(row); row_layout.setContentsMargins(11, 0, 8, 0); row_layout.setSpacing(8)
-            title = ElidedLabel(task.get("title") or "未命名任务"); title.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 600;"); row_layout.addWidget(title, 1)
+            title = ElidedLabel(task.get("title") or "未命名任务"); title.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 600;")
+            completion_outcome = task_completion_outcome(task)
+            if completion_outcome:
+                title.setToolTip(f"完成成果：{completion_outcome}")
+            row_layout.addWidget(title, 1)
             status = QLabel(TASK_STATUS.get(task.get("status", "planned"), "计划")); status.setStyleSheet(f"color: {TASK_COLORS.get(task.get('status'), '#64748b')}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(status)
             edit = QToolButton(); edit.setFixedSize(30, 30); edit.setIcon(fluent_icon("\uE70F", size=13)); edit.setToolTip("编辑任务"); edit.clicked.connect(lambda _checked=False, value=task: self.edit_task(value)); row_layout.addWidget(edit)
             self.project_tasks.addWidget(row)
@@ -4203,6 +4291,24 @@ class MainWindow(QMainWindow):
     def new_today_task(self, status=None):
         self.edit_today_task(None, status if status in TASK_STATUS else "planned")
 
+    def edit_task_outcome(self, task):
+        if (task or {}).get("status") != "done":
+            QMessageBox.information(self, "任务尚未完成", "完成成果只记录实际结束后的结果。请先将任务移到“已完成”。")
+            return False
+        dialog = TaskOutcomeDialog(self, task)
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        now = datetime.now().isoformat(timespec="seconds")
+        if not record_task_completion_outcome(task, dialog.value(), now, "outcome_editor"):
+            self.statusBar().showMessage("完成成果没有变化", 2200)
+            return False
+        save_json(TASKS_FILE, self.today_tasks)
+        self.sync_project_completion_outcome(task, now)
+        self.view_signature = None
+        self.render_today_tasks(); self.render()
+        self.statusBar().showMessage("完成成果已记录，并纳入项目交接与每日总结", 3800)
+        return True
+
     def edit_today_task(self, task=None, default_status=None, default_project_id=None):
         default_date = self.board_date_field.date().toString(Qt.ISODate) if hasattr(self, "board_date_field") else QDate.currentDate().toString(Qt.ISODate)
         dialog = TaskEditor(self, self.projects, task, default_date, default_status, default_project_id)
@@ -4212,6 +4318,7 @@ class MainWindow(QMainWindow):
         if not data.get("title"):
             QMessageBox.information(self, "任务名称为空", "请输入一个清晰的任务名称。")
             return
+        requested_outcome = data.pop("completionNote", "")
         now = datetime.now().isoformat(timespec="seconds")
         previous_status = task.get("status", "planned") if task is not None else None
         previous_date = task.get("date") if task is not None else None
@@ -4230,8 +4337,15 @@ class MainWindow(QMainWindow):
         else:
             record_task_status_event(task, previous_status, task.get("status", "planned"), now, "editor")
         current_status = task.get("status", "planned")
+        outcome_changed = False
+        if current_status == "done":
+            outcome_changed = record_task_completion_outcome(task, requested_outcome, now, "task_editor")
+        else:
+            outcome_changed = clear_task_completion_outcome(task, now, "reopen")
         completed_handoff = previous_status != "done" and current_status == "done" and self.complete_project_next_step(task, now)
         reopened_handoff = previous_status == "done" and current_status != "done" and self.reopen_project_next_step(task, now, "task_reopen")
+        if current_status == "done" and outcome_changed:
+            self.sync_project_completion_outcome(task, now)
         save_json(TASKS_FILE, self.today_tasks)
         task_date = QDate.fromString(task.get("date", ""), Qt.ISODate)
         if task_date.isValid(): self.board_date_field.setDate(task_date)
@@ -4248,7 +4362,8 @@ class MainWindow(QMainWindow):
         if dialog.codex_requested and not completed_handoff and not reopened_handoff:
             self.plan_task_in_codex(task)
         elif not completed_handoff and not reopened_handoff:
-            self.statusBar().showMessage("今日任务已保存", 2500)
+            message = "任务与完成成果已保存" if outcome_changed and current_status == "done" else "今日任务已保存"
+            self.statusBar().showMessage(message, 3000)
 
     def set_task_status(self, task_id, status, source="manual", allow_undo=True):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
@@ -4266,6 +4381,8 @@ class MainWindow(QMainWindow):
         now = datetime.now().isoformat(timespec="seconds")
         if status_changed:
             record_task_status_event(task, previous_status, status, now, source)
+            if status != "done":
+                clear_task_completion_outcome(task, now, "reopen")
         task["updatedAt"] = now
         completed_handoff = status_changed and previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
         reopened_handoff = status_changed and previous_status == "done" and status != "done" and self.reopen_project_next_step(task, now, "undo" if source == "undo" else "task_reopen")
@@ -4595,6 +4712,27 @@ class MainWindow(QMainWindow):
         save_json(PROJECTS_FILE, self.saved_projects)
         return True
 
+    def sync_project_completion_outcome(self, task, now=None):
+        """Keep a project handoff's completion evidence aligned with its completed task."""
+        if (task or {}).get("origin") != "project_next_step" or task.get("status") != "done":
+            return False
+        project = self.project_by_id(task.get("projectId"))
+        if project is None:
+            return False
+        completed_step = str(task.get("projectNextStep") or task.get("title") or "").strip()
+        if normalized_action_text(project.get("lastCompletedNextStep")) != normalized_action_text(completed_step):
+            return False
+        outcome = task_completion_outcome(task)
+        if normalized_decision_value(project.get("lastCompletedOutcome")) == normalized_decision_value(outcome):
+            return False
+        recorded_at = str(task.get("completionRecordedAt") or now or datetime.now().isoformat(timespec="seconds"))
+        target = self.saved_record_for_project(project)
+        for record in (target, project):
+            record["lastCompletedOutcome"] = outcome
+            record["lastCompletedOutcomeAt"] = recorded_at if outcome else ""
+        save_json(PROJECTS_FILE, self.saved_projects)
+        return True
+
     def reopen_project_next_step(self, task, now=None, source="task_reopen"):
         project = self.project_by_id(task.get("projectId"))
         if project is None:
@@ -4809,6 +4947,8 @@ class MainWindow(QMainWindow):
 
     def copy_context(self, project):
         recent = (project.get("lastActivity") or {}).get("summary") or "暂无自动同步的进度记录。"
+        completed_outcome = str(project.get("lastCompletedOutcome") or "").strip()
+        completed_outcome_line = f"最近完成成果：{completed_outcome}\n" if completed_outcome else ""
         text = (
             f"继续项目：{project['name']}\n"
             f"项目目标：{project.get('objective') or '尚未明确'}\n"
@@ -4818,6 +4958,7 @@ class MainWindow(QMainWindow):
             f"当前阻塞：{project.get('blocker') or '无'}\n"
             f"工作目录：{project['path']}\n"
             f"当前下一步：{project.get('nextStep') or '请先判断下一步'}\n"
+            f"{completed_outcome_line}"
             f"最近动态：{recent}\n\n"
             "请先读取项目现状，围绕项目目标说明当前进度、风险和建议的下一步，再等待我的具体指令。"
         )

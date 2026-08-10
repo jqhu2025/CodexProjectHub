@@ -70,6 +70,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
 - Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, or daily rollover—and feed that evidence into daily reviews.
+- Record a concise, verifiable completion outcome after a task is finished. Outcomes keep their own revision history, appear compactly on completed cards, feed Codex daily reviews as stronger evidence than planning notes, and follow project-next-action handoffs back into the project workbench.
 - Move unwanted tasks to a recoverable recycle bin instead of deleting their daily record; archived tasks retain their original date, three-state status, ordering context, and complete transition history while remaining excluded from boards, workload counts, and generated reviews.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
@@ -90,6 +91,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Generate the previous day's review through a configured Codex conversation and store its structured response locally.
 - Send manual regeneration requests visibly through Codex Desktop, then write the reply back into the dashboard.
 - Include completed work, active work, and concrete next-step evolution suggestions in every review.
+- Treat a human-recorded task outcome as primary completion evidence while keeping plans and notes clearly separated from actual results.
 - Combine dated planning records with every user Codex conversation that was actually active that day, using per-record timestamps instead of a conversation's latest-modified date.
 - Show the number of covered work items, planning tasks, Codex conversations, and user turns before the review.
 
