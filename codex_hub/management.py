@@ -842,6 +842,17 @@ def project_review_status(project, now=None):
     return age_days >= cadence, age_days, cadence
 
 
+def project_review_phase(project, now=None):
+    """Return the management meaning behind the compact review status."""
+    project = project or {}
+    if project.get("status", "active") != "active":
+        return "inactive"
+    due, age_days, _cadence = project_review_status(project, now)
+    if age_days is None:
+        return "baseline"
+    return "overdue" if due else "current"
+
+
 def display_project_decision_value(field, value):
     normalized = normalized_decision_value(value)
     if field == "priority":

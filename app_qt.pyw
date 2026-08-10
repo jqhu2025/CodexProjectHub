@@ -65,6 +65,7 @@ from codex_hub.management import (
     project_governance_gaps,
     portfolio_execution_alignment_queue,
     project_review_status,
+    project_review_phase,
     project_management_validation_error,
     project_blocker_duration_label,
     project_completion_outcome,
@@ -1171,11 +1172,9 @@ def project_control_state(project):
     if gap_text:
         return "review", "待补全", "#315f9b", "#edf4ff", f"复核前先补全：{gap_text}"
     if review_due:
-        reason = (
-            f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
-            if review_age is not None else
-            "尚未建立首次复核基线"
-        )
+        if project_review_phase(project) == "baseline":
+            return "review", "待建基线", "#315f9b", "#edf4ff", "尚未建立首次复核基线"
+        reason = f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
         return "review", "待复核", "#315f9b", "#edf4ff", reason
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
 
@@ -1189,6 +1188,22 @@ def project_review_summary(project):
     if due:
         return f"尚未完成首次复核 · 确认后每 {cadence} 天自动提醒"
     return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
+
+
+def project_confirmation_counts(projects):
+    """Classify confirmation work without conflating setup and cadence review."""
+    counts = {"governance": 0, "baseline": 0, "overdue": 0, "total": 0}
+    for project in projects or []:
+        if not project_management_scope_matches(project, "review"):
+            continue
+        counts["total"] += 1
+        if project_governance_gaps(project):
+            counts["governance"] += 1
+        elif project_review_phase(project) == "baseline":
+            counts["baseline"] += 1
+        else:
+            counts["overdue"] += 1
+    return counts
 
 
 def project_management_scope_matches(project, scope):
@@ -2668,8 +2683,19 @@ class ProjectMindMap(QGraphicsView):
         focus_count = sum(project_focus_state(project)[0] for project in projects)
         blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
         attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
-        review_count = sum(project_management_scope_matches(project, "review") for project in projects)
-        summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个风险  ·  {review_count} 个待复核")
+        review_projects = [project for project in projects if project_management_scope_matches(project, "review")]
+        direct_ids = {id(project) for project in self.window.portfolio_review_queue()}
+        direct_review_count = sum(id(project) in direct_ids for project in review_projects)
+        routed_review_count = max(0, len(review_projects) - direct_review_count)
+        summary_parts = [
+            f"{len(projects)} 个项目",
+            f"{focus_count} 个重点",
+            f"{blocked_count + attention_count} 个异常",
+            f"{direct_review_count} 个待确认",
+        ]
+        if routed_review_count:
+            summary_parts.append(f"{routed_review_count} 个另有决策")
+        summary = QLabel("  ·  ".join(summary_parts))
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         overview_layout.addWidget(summary)
         overview_proxy = self.map_scene.addWidget(overview)
@@ -4655,7 +4681,7 @@ class PortfolioReviewDialog(QDialog):
         self.pending = list(projects or [])
         self.portfolio_total = max(len(self.pending), int(total_count or len(self.pending)))
         self.reviewed_count = 0
-        self.setWindowTitle("项目复核")
+        self.setWindowTitle("项目确认")
         self.setObjectName("portfolioReviewDialog")
         self.setMinimumSize(720, 560)
         self.resize(780, 620)
@@ -4714,7 +4740,7 @@ class PortfolioReviewDialog(QDialog):
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
         self.counter.setText(
-            f"{self.reviewed_count + 1} / {total} · 总待复核 {self.portfolio_total}"
+            f"{self.reviewed_count + 1} / {total} · 总待确认 {self.portfolio_total}"
             if remaining else f"本轮完成 {self.reviewed_count}"
         )
         self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1)
@@ -4723,16 +4749,16 @@ class PortfolioReviewDialog(QDialog):
             done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
             done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 15px;")
             self.card_layout.addStretch(); self.card_layout.addWidget(done_icon, 0, Qt.AlignCenter)
-            done = QLabel("本轮项目复核已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
+            done = QLabel("本轮项目确认已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
             remaining_total = max(0, self.portfolio_total - self.reviewed_count)
             detail_text = (
-                f"本轮已确认 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待复核，可稍后继续"
+                f"本轮已确认 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待确认，可稍后继续"
                 if remaining_total else
                 f"已确认 {self.reviewed_count} 个项目；复核日期和周期已经写入决策记录"
             )
             detail = QLabel(detail_text)
             detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
-            feedback = "主页待复核数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮复核基线已经全部建立。"
+            feedback = "主页待确认数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮管理确认已经全部处理。"
             self.card_layout.addStretch(); self.feedback.setText(feedback)
             self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
             return
@@ -4761,6 +4787,7 @@ class PortfolioReviewDialog(QDialog):
             self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
             self.confirm_button.setToolTip("确认当前目标、阶段、健康度和下一步，并启动复核周期")
         _review_due, review_age, review_cadence = project_review_status(project)
+        review_phase = project_review_phase(project)
         if gaps:
             review_reason = f"复核前先补全：{gap_text}"
         else:
@@ -4774,7 +4801,8 @@ class PortfolioReviewDialog(QDialog):
         priority = QLabel(PROJECT_PRIORITY.get(project_priority_key(project), "常规推进")); priority.setAlignment(Qt.AlignCenter)
         priority.setStyleSheet("color: #1d4ed8; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(priority)
         self.card_layout.addLayout(name_row)
-        reason = QLabel(f"{'管理资料未就绪' if gaps else '待复核原因'} · {review_reason}"); reason.setWordWrap(True)
+        reason_caption = "管理资料未就绪" if gaps else "首次管理基线" if review_phase == "baseline" else "周期复核到期"
+        reason = QLabel(f"{reason_caption} · {review_reason}"); reason.setWordWrap(True)
         reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
 
         metrics = QHBoxLayout(); metrics.setSpacing(9)
@@ -5734,7 +5762,7 @@ class MainWindow(QMainWindow):
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
         self.scope_filter.setToolTip("“重点与推进”同时呈现人工战略重点和当前真实执行；两种信号在重点容量面板中分别管理")
-        for label, value in (("全部项目", "all"), ("重点与推进", "focus"), ("待复核", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        for label, value in (("全部项目", "all"), ("重点与推进", "focus"), ("管理确认", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -5798,7 +5826,7 @@ class MainWindow(QMainWindow):
         decision_specs = (
             ("focus_capacity", "重点容量", "#6d3fc0", "#f7f2ff", "#dfd0f5"),
             ("attention", "风险与阻塞", "#b54708", "#fff8ed", "#efd7b4"),
-            ("review", "待复核", "#315f9b", "#f4f7fb", "#d5e0ec"),
+            ("review", "管理确认", "#315f9b", "#f4f7fb", "#d5e0ec"),
             ("needs_next", "待定下一步", "#6d3fc0", "#f6f3fb", "#dfd5f1"),
         )
         for scope, caption, color, background, border in decision_specs:
@@ -5914,7 +5942,7 @@ class MainWindow(QMainWindow):
     def show_portfolio_review_queue(self):
         projects = self.portfolio_review_queue()
         if not projects:
-            QMessageBox.information(self, "无需复核", "当前没有到期或尚未确认的项目。")
+            QMessageBox.information(self, "暂无待确认项目", "当前没有需要补全、建立基线或到期复核的项目。")
             return
         PortfolioReviewDialog(
             self,
@@ -6139,7 +6167,7 @@ class MainWindow(QMainWindow):
             return
         groups = portfolio_decision_groups(self.projects)
         groups["review"] = self.portfolio_review_queue()
-        prefixes = {"attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
+        prefixes = {"attention": "风险处置", "review": "管理确认", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
         focus_commitments = self.focus_commitment_queue()
         for scope, controls in self.portfolio_decision_cards.items():
@@ -6178,17 +6206,14 @@ class MainWindow(QMainWindow):
                 if len(names) > 2:
                     preview += f" 等 {len(names)} 项"
                 if scope == "review":
-                    governance_count = sum(bool(project_governance_gaps(project)) for project in projects)
-                    ready_projects = [project for project in projects if not project_governance_gaps(project)]
-                    baseline_count = sum(not str(project.get("reviewedAt") or "").strip() for project in ready_projects)
-                    overdue_count = len(ready_projects) - baseline_count
+                    confirmation_counts = project_confirmation_counts(projects)
                     parts = []
-                    if governance_count:
-                        parts.append(f"补全 {governance_count}")
-                    if baseline_count:
-                        parts.append(f"首次 {baseline_count}")
-                    if overdue_count:
-                        parts.append(f"到期 {overdue_count}")
+                    if confirmation_counts["governance"]:
+                        parts.append(f"补全 {confirmation_counts['governance']}")
+                    if confirmation_counts["baseline"]:
+                        parts.append(f"建基线 {confirmation_counts['baseline']}")
+                    if confirmation_counts["overdue"]:
+                        parts.append(f"到期 {confirmation_counts['overdue']}")
                     summary = f"{' · '.join(parts)}：{preview}"
                 else:
                     summary = f"{prefixes[scope]}：{preview}"

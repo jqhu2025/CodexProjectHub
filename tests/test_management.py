@@ -450,6 +450,9 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.project_review_status(attention), (True, None, 7))
         self.assertEqual(management.project_review_status(healthy), (True, None, 7))
         self.assertEqual(management.project_review_status(paused), (False, None, 7))
+        self.assertEqual(management.project_review_phase(attention), "baseline")
+        self.assertEqual(management.project_review_phase(healthy), "baseline")
+        self.assertEqual(management.project_review_phase(paused), "inactive")
 
     def test_review_cadence_tracks_management_priority(self):
         now = datetime(2026, 8, 10, 12, 0, 0)
@@ -457,6 +460,8 @@ class ManagementModuleTests(unittest.TestCase):
         normal = {"status": "active", "priority": "normal", "health": "on_track", "reviewedAt": "2026-08-06T12:00:00"}
         self.assertEqual(management.project_review_status(focus, now), (True, 4, 3))
         self.assertEqual(management.project_review_status(normal, now), (False, 4, 7))
+        self.assertEqual(management.project_review_phase(focus, now), "overdue")
+        self.assertEqual(management.project_review_phase(normal, now), "current")
 
     def test_explicit_project_review_is_auditable_without_fake_field_changes(self):
         project = {

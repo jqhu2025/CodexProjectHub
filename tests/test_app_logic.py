@@ -1049,6 +1049,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
         self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
         self.assertEqual(APP.project_control_state(healthy)[0], "review")
+        self.assertEqual(APP.project_control_state(healthy)[1], "待建基线")
         self.assertIn("首次复核基线", APP.project_control_state(healthy)[4])
         self.assertEqual(APP.project_control_state(incomplete)[:2], ("review", "待补全"))
         self.assertIn("项目目标", APP.project_control_state(incomplete)[4])
@@ -1057,7 +1058,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         legacy_attention = {"status": "active", "stage": "execution", "health": "attention", "objective": "Ship", "nextStep": "Review"}
         fresh_attention = {**legacy_attention, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
         overdue_attention = {**legacy_attention, "reviewedAt": "2000-01-01T00:00:00"}
-        self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待复核"))
+        self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待建基线"))
         self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertEqual(APP.project_control_state(fresh_attention)[:2], ("attention", "需关注"))
         self.assertEqual(APP.project_control_state(overdue_attention)[:2], ("attention", "需关注"))
@@ -1248,6 +1249,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertFalse(APP.project_management_scope_matches(healthy, "attention"))
         self.assertTrue(APP.project_management_scope_matches(healthy, "review"))
         self.assertTrue(APP.project_management_scope_matches(due_review, "review"))
+
+    def test_project_confirmation_counts_keep_baseline_and_due_review_distinct(self):
+        baseline = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        incomplete = {**baseline, "objective": ""}
+        overdue = {**baseline, "reviewedAt": "2000-01-01T00:00:00"}
+        current = {**baseline, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        counts = APP.project_confirmation_counts([baseline, incomplete, overdue, current])
+        self.assertEqual(counts, {"governance": 1, "baseline": 1, "overdue": 1, "total": 3})
 
     def test_focus_projects_sort_before_regular_projects(self):
         projects = [
