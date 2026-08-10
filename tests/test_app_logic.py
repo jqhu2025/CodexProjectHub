@@ -311,6 +311,45 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(update["priority"], "later")
         self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
 
+    def test_task_wip_capacity_uses_only_active_tasks_on_the_selected_day(self):
+        tasks = [
+            {"id": "run", "date": "2026-08-10", "status": "doing", "sessionId": "session-1"},
+            {"id": "manual", "date": "2026-08-10", "status": "doing"},
+            {"id": "planned", "date": "2026-08-10", "status": "planned"},
+            {"id": "other-day", "date": "2026-08-09", "status": "doing"},
+            {"id": "archived", "date": "2026-08-10", "status": "doing", "archivedAt": "2026-08-10T12:00:00"},
+        ]
+        state = APP.task_wip_capacity_state(tasks, "2026-08-10", 1, {"session-1"})
+        self.assertEqual([task["id"] for task in state["doing"]], ["run", "manual"])
+        self.assertEqual([task["id"] for task in state["protected"]], ["run"])
+        self.assertEqual(state["overBy"], 1)
+        self.assertEqual(state["remaining"], 0)
+
+    def test_task_wip_limit_is_bounded(self):
+        self.assertEqual(APP.normalized_task_wip_limit(0), 1)
+        self.assertEqual(APP.normalized_task_wip_limit(30), 9)
+        self.assertEqual(APP.normalized_task_wip_limit("bad"), APP.DEFAULT_TASK_WIP_LIMIT)
+
+    def test_wip_reduction_never_defers_a_running_codex_task(self):
+        task = {"id": "task-1", "date": "2026-08-10", "status": "doing", "sessionId": "running"}
+        status_bar = Mock(); move = Mock(return_value=True)
+        window = SimpleNamespace(
+            today_tasks=[task], running_codex_session_ids=lambda: {"running"}, move_task_on_board=move,
+            task_wip_state=Mock(return_value={"overBy": 0}), statusBar=lambda: status_bar,
+        )
+        self.assertFalse(APP.MainWindow.defer_task_from_wip(window, task))
+        move.assert_not_called()
+
+    def test_wip_reduction_reuses_the_audited_board_transition(self):
+        task = {"id": "task-1", "date": "2026-08-10", "status": "doing", "sessionId": "idle"}
+        status_bar = Mock(); move = Mock(return_value=True)
+        window = SimpleNamespace(
+            today_tasks=[task], running_codex_session_ids=lambda: set(), move_task_on_board=move,
+            task_wip_state=Mock(return_value={"overBy": 0}), statusBar=lambda: status_bar,
+        )
+        self.assertTrue(APP.MainWindow.defer_task_from_wip(window, task))
+        move.assert_called_once_with("task-1", "planned", None, source="manual")
+
     def test_non_active_project_never_leaks_into_current_focus(self):
         completed = {"status": "completed", "priority": "focus", "activeTaskCount": 1, "conversations": [{"state": "working"}]}
         self.assertFalse(APP.project_focus_state(completed)[0])

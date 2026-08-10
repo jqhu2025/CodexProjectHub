@@ -1,5 +1,6 @@
 {
   "dailySummaryThreadId": "",
   "portfolioFocusCapacity": 3,
-  "portfolioInactivityDays": 14
+  "portfolioInactivityDays": 14,
+  "taskWipLimit": 3
 }

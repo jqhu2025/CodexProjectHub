@@ -98,6 +98,7 @@ CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 DEFAULT_CATEGORIES = ["Product Development", "Research Lab", "Operations", "External Projects", "未分类"]
 DEFAULT_PORTFOLIO_FOCUS_CAPACITY = 3
 DEFAULT_PORTFOLIO_INACTIVITY_DAYS = 14
+DEFAULT_TASK_WIP_LIMIT = 3
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -194,6 +195,29 @@ def save_portfolio_inactivity_days(value):
     settings["portfolioInactivityDays"] = normalized_portfolio_inactivity_days(value)
     save_json(SETTINGS_FILE, settings)
     return settings["portfolioInactivityDays"]
+
+
+def normalized_task_wip_limit(value):
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = DEFAULT_TASK_WIP_LIMIT
+    return max(1, min(9, limit))
+
+
+def task_wip_limit():
+    settings = load_json(SETTINGS_FILE, {})
+    value = settings.get("taskWipLimit") if isinstance(settings, dict) else None
+    return normalized_task_wip_limit(value)
+
+
+def save_task_wip_limit(value):
+    settings = load_json(SETTINGS_FILE, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    settings["taskWipLimit"] = normalized_task_wip_limit(value)
+    save_json(SETTINGS_FILE, settings)
+    return settings["taskWipLimit"]
 
 
 def save_json(path, data):
@@ -1230,6 +1254,27 @@ def portfolio_lifecycle_calibration_queue(projects, tasks, now=None, inactivity_
             str((item.get("project") or {}).get("name") or "").casefold(),
         ),
     )
+
+
+def task_wip_capacity_state(tasks, target_date, limit=DEFAULT_TASK_WIP_LIMIT, running_session_ids=None):
+    """Describe current in-progress capacity without blocking legitimate state changes."""
+    limit = normalized_task_wip_limit(limit)
+    running_session_ids = {str(value) for value in (running_session_ids or set()) if value}
+    doing = [
+        task for task in (tasks or [])
+        if not task_is_archived(task)
+        and str(task.get("date") or "") == str(target_date or "")
+        and task.get("status", "planned") == "doing"
+    ]
+    protected = [task for task in doing if str(task.get("sessionId") or "") in running_session_ids]
+    return {
+        "limit": limit,
+        "doing": doing,
+        "protected": protected,
+        "count": len(doing),
+        "remaining": max(0, limit - len(doing)),
+        "overBy": max(0, len(doing) - limit),
+    }
 
 
 def project_stage_key(project):
@@ -3595,6 +3640,125 @@ class ProjectDecisionHistoryDialog(QDialog):
             self.accept()
 
 
+class TaskWipDialog(QDialog):
+    """Make in-progress capacity visible and let the user deliberately reduce it."""
+    def __init__(self, parent, target_date):
+        super().__init__(parent)
+        self.window = parent
+        self.target_date = str(target_date or "")
+        self.setWindowTitle("进行中容量")
+        self.setObjectName("taskWipDialog")
+        self.setMinimumSize(720, 500)
+        self.resize(780, 570)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE9D2", color="#1d4ed8", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #cad9ef; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("控制今日在制任务"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("WIP 容量是软性提醒：不会阻止任务启动，也不会自动改变任何任务状态")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.limit_button = QPushButton(); self.limit_button.setFixedHeight(36)
+        self.limit_button.setIcon(fluent_icon("\uE70F", color="#1d4ed8", size=13)); self.limit_button.setIconSize(QSize(13, 13))
+        self.limit_button.setToolTip("调整允许同时处于进行中的任务数量"); self.limit_button.clicked.connect(self.change_limit); heading.addWidget(self.limit_button)
+        root.addLayout(heading)
+
+        self.summary = QFrame(); self.summary.setObjectName("taskWipSummary")
+        summary_layout = QHBoxLayout(self.summary); summary_layout.setContentsMargins(18, 13, 18, 13); summary_layout.setSpacing(22)
+        self.count_metric = self.metric_widget("进行中", "0", "#1d4ed8"); summary_layout.addWidget(self.count_metric[0], 1)
+        divider = QFrame(); divider.setFrameShape(QFrame.VLine); divider.setStyleSheet("color: #dfe6ef;"); summary_layout.addWidget(divider)
+        self.limit_metric = self.metric_widget("容量", "0", "#315f9b"); summary_layout.addWidget(self.limit_metric[0], 1)
+        divider = QFrame(); divider.setFrameShape(QFrame.VLine); divider.setStyleSheet("color: #dfe6ef;"); summary_layout.addWidget(divider)
+        self.judgement_metric = self.metric_widget("执行判断", "待计算", "#087443"); summary_layout.addWidget(self.judgement_metric[0], 2)
+        root.addWidget(self.summary)
+
+        hint = QLabel("如果需要收敛并行量，可将尚未由 Codex 执行的任务移回“计划”。正在运行的 Codex 任务会被保护，避免状态与真实执行不一致。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        self.rows_widget = QWidget(); self.rows_widget.setObjectName("taskWipRows"); self.rows_widget.setStyleSheet("QWidget#taskWipRows { background: #f7f9fc; }")
+        self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_state()
+
+    @staticmethod
+    def metric_widget(caption, value, color):
+        frame = QWidget(); layout = QVBoxLayout(frame); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(1)
+        value_label = QLabel(value); value_label.setStyleSheet(f"color: {color}; font-size: 21px; font-weight: 760;"); layout.addWidget(value_label)
+        caption_label = QLabel(caption); caption_label.setStyleSheet("color: #748094; font-size: 10px; font-weight: 600;"); layout.addWidget(caption_label)
+        return frame, value_label, caption_label
+
+    def clear_rows(self):
+        while self.rows_layout.count():
+            item = self.rows_layout.takeAt(0); widget = item.widget()
+            if widget is not None:
+                widget.hide(); widget.setParent(None); widget.deleteLater()
+
+    def render_state(self):
+        self.clear_rows()
+        state = self.window.task_wip_state(self.target_date)
+        self.limit_button.setText(f"WIP 容量 {state['limit']}")
+        self.count_metric[1].setText(str(state["count"])); self.limit_metric[1].setText(str(state["limit"]))
+        if state["overBy"]:
+            judgement = f"超出 {state['overBy']} 项"
+            color, background, border = "#b54708", "#fff8ed", "#efd7b4"
+        elif state["count"]:
+            judgement = f"尚可增加 {state['remaining']} 项"
+            color, background, border = "#087443", "#eef9f3", "#c8e7d6"
+        else:
+            judgement = "当前无在制任务"
+            color, background, border = "#66758a", "#f5f7fa", "#d8e1eb"
+        self.judgement_metric[1].setText(judgement); self.judgement_metric[1].setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 720;")
+        self.summary.setStyleSheet(f"QFrame#taskWipSummary {{ background: {background}; border: 1px solid {border}; border-radius: 12px; }} QFrame#taskWipSummary QLabel {{ background: transparent; border: none; }}")
+        protected_ids = {str(task.get("id") or "") for task in state["protected"]}
+        if not state["doing"]:
+            empty = QLabel("当前没有进行中的任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;"); self.rows_layout.addWidget(empty)
+        for task in state["doing"]:
+            self.rows_layout.addWidget(self.task_row(task, str(task.get("id") or "") in protected_ids))
+        self.rows_layout.addStretch()
+
+    def task_row(self, task, protected):
+        row = QFrame(); row.setObjectName("taskWipRow")
+        accent = "#10a361" if protected else "#2563eb"
+        row.setStyleSheet(f"QFrame#taskWipRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#taskWipRow QLabel {{ background: transparent; border: none; }}")
+        layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
+        text = QVBoxLayout(); text.setSpacing(3)
+        title = ElidedLabel(task.get("title") or "未命名任务"); title.setToolTip(task.get("title") or "未命名任务"); title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(title)
+        project = self.window.project_by_id(task.get("projectId")) or {}
+        meta_text = f"{project.get('name') or task.get('category') or '未关联项目'}  ·  {task.get('conversationTitle') or '未关联 Codex 对话'}"
+        meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
+        state = QLabel("● Codex 运行中" if protected else "进行中"); state.setAlignment(Qt.AlignCenter); state.setFixedSize(96 if protected else 66, 26)
+        state.setStyleSheet(("color: #087443; background: #e7f7ef;" if protected else "color: #1d4ed8; background: #e8f0ff;") + " border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(state)
+        if task.get("sessionId"):
+            open_codex = QToolButton(); open_codex.setFixedSize(34, 34); open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_codex.setIconSize(QSize(14, 14)); open_codex.setToolTip("打开关联的 Codex 对话")
+            open_codex.clicked.connect(lambda _checked=False, value=task: self.open_codex_task(value)); layout.addWidget(open_codex)
+        defer = QPushButton("执行中保护" if protected else "移回计划"); defer.setFixedSize(96 if protected else 90, 34); defer.setEnabled(not protected)
+        defer.setToolTip("Codex 正在执行，不能移回计划" if protected else "保留任务，但将状态改回计划")
+        if protected:
+            defer.setStyleSheet("QPushButton:disabled { color: #708097; background: #eef2f6; border: 1px solid #d8e1eb; border-radius: 8px; font-size: 11px; font-weight: 650; }")
+        defer.clicked.connect(lambda _checked=False, value=task: self.defer_task(value)); layout.addWidget(defer)
+        return row
+
+    def change_limit(self):
+        current = task_wip_limit()
+        value, accepted = QInputDialog.getInt(self, "调整 WIP 容量", "最多同时进行多少项任务？", current, 1, 9, 1)
+        if accepted:
+            self.window.update_task_wip_limit(value); self.render_state()
+
+    def defer_task(self, task):
+        if self.window.defer_task_from_wip(task):
+            self.render_state()
+
+    def open_codex_task(self, task):
+        conversation = self.window.conversation_by_id(task.get("sessionId"))
+        if conversation is not None:
+            self.window.open_codex_conversation(conversation)
+
+
 class LifecycleCalibrationDialog(QDialog):
     """Review quiet active projects one at a time without auto-pausing anything."""
     def __init__(self, parent, queue_items):
@@ -4851,7 +5015,9 @@ class MainWindow(QMainWindow):
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
-        self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #66758a; font-size: 12px;"); board_head.addWidget(self.task_summary); board_head.addStretch()
+        self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #66758a; font-size: 12px;"); board_head.addWidget(self.task_summary)
+        self.task_wip_button = QPushButton(); self.task_wip_button.setFixedHeight(28); self.task_wip_button.setAccessibleName("调整进行中任务容量"); self.task_wip_button.clicked.connect(self.show_task_wip); board_head.addWidget(self.task_wip_button)
+        board_head.addStretch()
         self.task_archive_button = QToolButton(); self.task_archive_button.setFixedSize(36, 36); self.task_archive_button.setIcon(fluent_icon("\uE74D", color="#526071", size=16)); self.task_archive_button.setIconSize(QSize(16, 16)); self.task_archive_button.setToolTip("任务回收站"); self.task_archive_button.setAccessibleName("任务回收站")
         self.task_archive_button.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #f1f5fa; border-color: #9fb6d0; }"); self.task_archive_button.clicked.connect(self.show_task_archive); board_head.addWidget(self.task_archive_button)
         history = QToolButton(); history.setFixedSize(36, 36); history.setIcon(fluent_icon("\uE81C", color="#24588f", size=17)); history.setIconSize(QSize(17, 17)); history.setToolTip("查看每日任务记录"); history.setAccessibleName("每日任务记录")
@@ -4980,6 +5146,44 @@ class MainWindow(QMainWindow):
             return False
         self.statusBar().showMessage(f"{project.get('name') or '项目'}已暂缓；资料、文件和 Codex 对话均保留", 4000)
         return True
+
+    def running_codex_session_ids(self):
+        return {
+            str(conversation.get("sessionId"))
+            for project in self.projects
+            for conversation in project.get("conversations", [])
+            if conversation.get("sessionId") and codex_state(conversation)[0] == "running"
+        }
+
+    def task_wip_state(self, target_date=None):
+        target_date = target_date or QDate.currentDate().toString(Qt.ISODate)
+        return task_wip_capacity_state(
+            self.today_tasks, target_date, task_wip_limit(), self.running_codex_session_ids()
+        )
+
+    def show_task_wip(self):
+        target_date = QDate.currentDate().toString(Qt.ISODate)
+        TaskWipDialog(self, target_date).exec_()
+
+    def update_task_wip_limit(self, value):
+        limit = save_task_wip_limit(value)
+        self.render_today_tasks()
+        self.statusBar().showMessage(f"进行中任务容量已调整为 {limit} 项", 3200)
+        return limit
+
+    def defer_task_from_wip(self, task):
+        current = next((item for item in self.today_tasks if str(item.get("id") or "") == str((task or {}).get("id") or "")), None)
+        if current is None or current.get("status", "planned") != "doing":
+            return False
+        if str(current.get("sessionId") or "") in self.running_codex_session_ids():
+            self.statusBar().showMessage("Codex 正在执行此任务，暂不能移回计划", 3600)
+            return False
+        changed = self.move_task_on_board(current.get("id"), "planned", None, source="manual")
+        if changed:
+            state = self.task_wip_state(current.get("date"))
+            message = "进行中容量已恢复" if not state["overBy"] else f"仍超出 WIP 容量 {state['overBy']} 项"
+            self.statusBar().showMessage(f"任务已移回计划；{message}", 3600)
+        return changed
 
     def execution_alignment_queue(self):
         today = QDate.currentDate().toString(Qt.ISODate)
@@ -5673,6 +5877,21 @@ class MainWindow(QMainWindow):
         self.task_board_title.setText(title)
         counts = {status: sum(task.get("status") == status for task in tasks) for status in TASK_STATUS}
         self.task_summary.setText(f"{len(tasks)} 项 · {counts['doing']} 项进行中 · {counts['done']} 项完成")
+        is_today = selected_date == QDate.currentDate()
+        current_wip = self.task_wip_state(date_key) if is_today else None
+        if hasattr(self, "task_wip_button"):
+            self.task_wip_button.setVisible(is_today)
+            if is_today:
+                over = current_wip["overBy"]
+                self.task_wip_button.setText(f"WIP {current_wip['count']} / {current_wip['limit']}")
+                if over:
+                    style = "color: #b54708; background: #fff4e5; border: 1px solid #efcf9e;"
+                    tooltip = f"进行中任务超出容量 {over} 项；点击查看并收敛并行量"
+                else:
+                    style = "color: #315f9b; background: #edf3fb; border: 1px solid #cfdbeb;"
+                    tooltip = f"进行中任务 {current_wip['count']} / {current_wip['limit']}；点击查看或调整容量"
+                self.task_wip_button.setStyleSheet(f"QPushButton {{ {style} border-radius: 8px; padding: 3px 9px; font-size: 10px; font-weight: 700; }} QPushButton:hover, QPushButton:focus {{ background: #ffffff; }}")
+                self.task_wip_button.setToolTip(tooltip); self.task_wip_button.setAccessibleName(tooltip)
         if hasattr(self, "task_archive_button"):
             archived_count = len(archived_task_records(self.today_tasks))
             self.task_archive_button.setToolTip(f"任务回收站（{archived_count} 项）" if archived_count else "任务回收站为空")
@@ -5695,7 +5914,16 @@ class MainWindow(QMainWindow):
             quick_add = QToolButton(); quick_add.setFixedSize(24, 22); quick_add.setIcon(fluent_icon("\uE710", color=accent, size=12)); quick_add.setIconSize(QSize(12, 12)); quick_add.setToolTip(f"直接新建“{label}”任务"); quick_add.setAccessibleName(f"新建{label}任务")
             quick_add.setStyleSheet(f"QToolButton {{ color: {accent}; background: #ffffff; border: 1px solid #d8e1eb; border-radius: 7px; }} QToolButton:hover, QToolButton:focus {{ background: {surface}; border-color: {accent}; }}")
             quick_add.clicked.connect(lambda _checked=False, value=status: self.new_today_task(value)); header.addWidget(quick_add)
-            count = QLabel(str(counts[status])); count_bg = accent if counts[status] else "#e1eaf6"; count_color = "#ffffff" if counts[status] else "#637994"; count.setAlignment(Qt.AlignCenter); count.setFixedSize(24, 20); count.setStyleSheet(f"color: {count_color}; background: {count_bg}; font-size: 10px; font-weight: 700; border: none; border-radius: 9px;"); header.addWidget(count); column_layout.addLayout(header)
+            count_text = str(counts[status])
+            count_width = 24
+            count_bg = accent if counts[status] else "#e1eaf6"
+            count_color = "#ffffff" if counts[status] else "#637994"
+            if status == "doing" and current_wip is not None:
+                count_text = f"{counts[status]}/{current_wip['limit']}"
+                count_width = 36
+                if current_wip["overBy"]:
+                    count_bg, count_color = "#b54708", "#ffffff"
+            count = QLabel(count_text); count.setAlignment(Qt.AlignCenter); count.setFixedSize(count_width, 20); count.setStyleSheet(f"color: {count_color}; background: {count_bg}; font-size: 10px; font-weight: 700; border: none; border-radius: 9px;"); header.addWidget(count); column_layout.addLayout(header)
             status_tasks = ordered_board_tasks(tasks, date_key, status)
             if not status_tasks:
                 empty = QLabel("暂无任务\n新建任务或从其他状态移入"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
