@@ -42,6 +42,15 @@ STATUS_COLOR = {"active": "#16803c", "paused": "#a15c00", "idea": "#7c3aed", "co
 TASK_STATUS = {"planned": "计划", "doing": "进行中", "done": "已完成"}
 TASK_COLORS = {"planned": "#7c3aed", "doing": "#2563eb", "done": "#16803c"}
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}
+PROJECT_STAGE = {
+    "discovery": "探索",
+    "planning": "规划",
+    "execution": "执行",
+    "validation": "验证",
+    "delivery": "交付",
+    "maintenance": "维护",
+}
+PROJECT_HEALTH = {"on_track": "正常", "attention": "需关注", "blocked": "阻塞"}
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -681,6 +690,105 @@ class UsageScanner(QThread):
         self.scanned.emit(read_codex_usage())
 
 
+def generate_project_insight(project, tasks=None, timeout=240):
+        project = dict(project or {})
+        tasks = [dict(task) for task in (tasks or [])]
+        binary = find_summary_codex_binary()
+        path = Path(str(project.get("path") or ""))
+        if not binary:
+            return {"error": "未找到 Codex 可执行程序"}
+        if not path.is_dir():
+            return {"error": "请先选择有效的项目文件夹"}
+        conversations = []
+        for conversation in project.get("conversations") or []:
+            conversations.append({
+                "title": conversation_name(conversation),
+                "state": codex_state(conversation)[1],
+                "summary": str(conversation.get("summary") or "").strip()[:240],
+            })
+        context = {
+            "name": project.get("name") or path.name,
+            "existingObjective": project.get("objective") or "",
+            "existingNextStep": project.get("nextStep") or "",
+            "existingBlocker": project.get("blocker") or "",
+            "currentStage": project_stage_key(project),
+            "currentHealth": project_health_key(project),
+            "recentTasks": [
+                {
+                    "title": task.get("title") or "未命名任务",
+                    "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
+                    "notes": str(task.get("notes") or "")[:240],
+                }
+                for task in tasks[-12:]
+            ],
+            "linkedCodexConversations": conversations[:12],
+        }
+        prompt = (
+            "你是严谨的单人项目管理分析助手。请以只读方式检查当前项目目录，只读取高价值材料（例如 README、项目配置、"
+            "入口文件、近期 git 状态与提交摘要），不要遍历大体积数据、构建产物或依赖目录，也不要修改任何文件。\n"
+            "结合下面已有信息，生成可供用户确认的项目态势建议。不得把计划当成已完成结果，不得虚构阻塞。"
+            "objective 用一句话说明最终交付或解决的问题；nextStep 必须是一个可以立刻执行的具体动作；"
+            "blocker 没有明确证据时返回空字符串；summary 用 1-2 句话说明判断依据。\n"
+            f"stage 只能是 {list(PROJECT_STAGE)} 之一；health 只能是 {list(PROJECT_HEALTH)} 之一。\n\n"
+            "已有项目信息：\n" + json.dumps(context, ensure_ascii=False, indent=2)
+        )
+        schema = {
+            "type": "object",
+            "properties": {
+                "objective": {"type": "string"},
+                "stage": {"type": "string", "enum": list(PROJECT_STAGE)},
+                "health": {"type": "string", "enum": list(PROJECT_HEALTH)},
+                "blocker": {"type": "string"},
+                "nextStep": {"type": "string"},
+                "summary": {"type": "string"},
+            },
+            "required": ["objective", "stage", "health", "blocker", "nextStep", "summary"],
+            "additionalProperties": False,
+        }
+        try:
+            with tempfile.TemporaryDirectory(prefix="codex-hub-project-insight-") as folder:
+                folder = Path(folder)
+                schema_path = folder / "schema.json"
+                output_path = folder / "result.json"
+                schema_path.write_text(json.dumps(schema, ensure_ascii=False), encoding="utf-8")
+                command = [
+                    binary, "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
+                    "--sandbox", "read-only", "--cd", str(path), "--output-schema", str(schema_path),
+                    "--output-last-message", str(output_path), "-",
+                ]
+                result = subprocess.run(
+                    command, input=prompt, text=True, encoding="utf-8", errors="replace",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(path), timeout=timeout,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode != 0:
+                    lines = (result.stderr or result.stdout or "Codex 项目整理失败").strip().splitlines()
+                    return {"error": " | ".join(lines[-4:])[:280]}
+                raw = output_path.read_text(encoding="utf-8").strip() if output_path.exists() else result.stdout.strip()
+                if raw.startswith("```"):
+                    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL)
+                data = json.loads(raw)
+                data["stage"] = data.get("stage") if data.get("stage") in PROJECT_STAGE else "execution"
+                data["health"] = data.get("health") if data.get("health") in PROJECT_HEALTH else "on_track"
+                for key in ("objective", "blocker", "nextStep", "summary"):
+                    data[key] = str(data.get(key) or "").strip()
+                return data
+        except (OSError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+            return {"error": str(error)[:280]}
+
+
+class ProjectInsightWorker(QThread):
+    generated = pyqtSignal(object)
+
+    def __init__(self, project, tasks=None, parent=None):
+        super().__init__(parent)
+        self.project = dict(project or {})
+        self.tasks = [dict(task) for task in (tasks or [])]
+
+    def run(self):
+        self.generated.emit(generate_project_insight(self.project, self.tasks))
+
+
 class DailySummaryWorker(QThread):
     generated = pyqtSignal(object)
 
@@ -802,12 +910,43 @@ def project_priority_key(project):
     return value if value in PROJECT_PRIORITY else "normal"
 
 
+def project_stage_key(project):
+    value = str((project or {}).get("stage") or "execution")
+    return value if value in PROJECT_STAGE else "execution"
+
+
+def project_health_key(project):
+    value = str((project or {}).get("health") or "on_track")
+    return value if value in PROJECT_HEALTH else "on_track"
+
+
+def project_control_state(project):
+    """Return the decision-facing project state and its most useful explanation."""
+    if project.get("status") == "completed":
+        return "completed", "已完成", "#2563eb", "#edf3ff", "项目已完成"
+    if project.get("status") in {"paused", "idea"}:
+        return "paused", STATUS_TEXT.get(project.get("status"), "暂缓"), "#7c3aed", "#f3edff", "当前不在主动推进"
+    blocker = str(project.get("blocker") or "").strip()
+    health = project_health_key(project)
+    if health == "blocked" or blocker:
+        return "blocked", "阻塞", "#b42318", "#fff0ee", blocker or "项目已标记阻塞"
+    if health == "attention":
+        return "attention", "需关注", "#b54708", "#fff4e5", "需要复核当前进展"
+    if not str(project.get("nextStep") or "").strip():
+        return "on_track", "正常", "#087443", "#e7f7ef", "尚未设置下一步"
+    return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
+
+
 def project_management_scope_matches(project, scope):
     """Filter projects by decisions the user can act on, not by decorative metrics."""
     if scope == "focus":
         return project_priority_key(project) == "focus"
     if scope == "needs_next":
         return project.get("status", "active") == "active" and not str(project.get("nextStep") or "").strip()
+    if scope == "attention":
+        return project_control_state(project)[0] in {"attention", "blocked"}
+    if scope == "blocked":
+        return project_control_state(project)[0] == "blocked"
     if scope == "paused":
         return project.get("status") in {"paused", "idea"}
     return True
@@ -815,7 +954,9 @@ def project_management_scope_matches(project, scope):
 
 def project_management_sort_key(project):
     priority_order = {"focus": 0, "normal": 1, "later": 2}
+    control_order = {"blocked": 0, "attention": 1, "on_track": 2, "paused": 3, "completed": 4}
     return (
+        control_order.get(project_control_state(project)[0], 2),
         priority_order.get(project_priority_key(project), 1),
         0 if project.get("nextStep") else 1,
         str(project.get("name") or "").casefold(),
@@ -1117,60 +1258,134 @@ class ProjectEditor(QDialog):
     def __init__(self, parent, project=None, categories=None):
         super().__init__(parent)
         self.project = project
+        self.insight_worker = None
         self.setWindowTitle("编辑项目" if project else "新建项目")
         self.setObjectName("projectEditor")
-        self.setMinimumWidth(640)
+        self.setMinimumSize(720, 650)
+        self.resize(760, 720)
         self.setStyleSheet(STYLE + """
             QDialog#projectEditor QLabel[fieldLabel='true'] { color: #4a586b; font-size: 12px; font-weight: 500; }
             QDialog#projectEditor QLineEdit, QDialog#projectEditor QComboBox { min-height: 24px; font-size: 13px; }
         """)
-        item = project or {"name": "", "category": "未分类", "path": "", "status": "active", "priority": "normal"}
-        layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 24); layout.setSpacing(10)
+        item = project or {
+            "name": "", "category": "未分类", "path": "", "status": "active", "priority": "normal",
+            "stage": "planning", "health": "on_track", "blocker": "",
+        }
+        layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 22); layout.setSpacing(12)
         title = QLabel("编辑项目" if project else "新建项目")
         title.setStyleSheet("font-size: 24px; font-weight: 600; color: #172033;")
         layout.addWidget(title)
         subtitle = QLabel("定义项目目标和下一步；项目中心不会修改或移动磁盘文件")
-        subtitle.setStyleSheet("color: #718096; font-size: 12px; margin-bottom: 8px;"); layout.addWidget(subtitle)
+        subtitle.setStyleSheet("color: #718096; font-size: 12px;"); layout.addWidget(subtitle)
         self.fields = {}
-        for label, key in [("项目名称", "name"), ("类别", "category"), ("本地路径", "path"), ("项目状态", "status"), ("管理优先级", "priority")]:
-            field_label = QLabel(label); field_label.setProperty("fieldLabel", True); layout.addWidget(field_label)
-            if key == "category":
-                control = QComboBox(); control.setEditable(False)
-                for category in (categories or load_categories())[1:]: control.addItem(category, category)
-                control.setCurrentIndex(max(0, control.findData(item[key])))
-            elif key == "status":
-                control = QComboBox()
-                for status, status_label in STATUS_TEXT.items(): control.addItem(status_label, status)
-                control.setCurrentIndex(max(0, control.findData(item[key])))
-            elif key == "priority":
-                control = QComboBox()
-                for priority, priority_label in PROJECT_PRIORITY.items(): control.addItem(priority_label, priority)
-                control.setCurrentIndex(max(0, control.findData(project_priority_key(item))))
-            else:
-                control = QLineEdit(item.get(key, ""))
-            control.setFixedHeight(40); control.setAccessibleName(label)
-            if key == "name": control.setPlaceholderText("例如：Desktop Analytics App")
-            if key == "path":
-                control.setPlaceholderText("选择项目所在文件夹")
-                path_row = QHBoxLayout(); path_row.setSpacing(8); path_row.addWidget(control, 1)
-                browse = QPushButton("选择文件夹"); browse.setFixedHeight(40); browse.setIcon(fluent_icon("\uE838", size=15)); browse.setIconSize(QSize(15, 15))
-                browse.clicked.connect(self.choose_folder); path_row.addWidget(browse); layout.addLayout(path_row)
-            else:
-                layout.addWidget(control)
-            self.fields[key] = control
+        name = QLineEdit(item.get("name", "")); name.setFixedHeight(40); name.setPlaceholderText("例如：Desktop Analytics App"); name.setAccessibleName("项目名称"); self.fields["name"] = name
+        category = QComboBox(); category.setFixedHeight(40); category.setAccessibleName("类别")
+        for category_name in (categories or load_categories())[1:]: category.addItem(category_name, category_name)
+        category.setCurrentIndex(max(0, category.findData(item.get("category", "未分类")))); self.fields["category"] = category
+        path = QLineEdit(item.get("path", "")); path.setFixedHeight(40); path.setPlaceholderText("选择项目所在文件夹"); path.setAccessibleName("本地路径"); self.fields["path"] = path
+        status = QComboBox(); status.setFixedHeight(40); status.setAccessibleName("项目状态")
+        for key, label in STATUS_TEXT.items(): status.addItem(label, key)
+        status.setCurrentIndex(max(0, status.findData(item.get("status", "active")))); self.fields["status"] = status
+        priority = QComboBox(); priority.setFixedHeight(40); priority.setAccessibleName("管理优先级")
+        for key, label in PROJECT_PRIORITY.items(): priority.addItem(label, key)
+        priority.setCurrentIndex(max(0, priority.findData(project_priority_key(item)))); self.fields["priority"] = priority
+        stage = QComboBox(); stage.setFixedHeight(40); stage.setAccessibleName("当前阶段")
+        for key, label in PROJECT_STAGE.items(): stage.addItem(label, key)
+        stage.setCurrentIndex(max(0, stage.findData(project_stage_key(item)))); self.fields["stage"] = stage
+        health = QComboBox(); health.setFixedHeight(40); health.setAccessibleName("项目健康度")
+        for key, label in PROJECT_HEALTH.items(): health.addItem(label, key)
+        health.setCurrentIndex(max(0, health.findData(project_health_key(item)))); self.fields["health"] = health
 
-        objective_label = QLabel("项目目标"); objective_label.setProperty("fieldLabel", True); layout.addWidget(objective_label)
-        self.objective = QTextEdit(); self.objective.setFixedHeight(72); self.objective.setPlainText(str(item.get("objective") or ""))
+        def field_label(text):
+            label = QLabel(text); label.setProperty("fieldLabel", True); return label
+
+        form = QGridLayout(); form.setHorizontalSpacing(10); form.setVerticalSpacing(6)
+        for column in range(6): form.setColumnStretch(column, 1)
+        form.addWidget(field_label("项目名称"), 0, 0, 1, 6); form.addWidget(name, 1, 0, 1, 6)
+        form.addWidget(field_label("类别"), 2, 0, 1, 3); form.addWidget(field_label("项目状态"), 2, 3, 1, 3)
+        form.addWidget(category, 3, 0, 1, 3); form.addWidget(status, 3, 3, 1, 3)
+        form.addWidget(field_label("本地路径"), 4, 0, 1, 6)
+        path_holder = QWidget(); path_layout = QHBoxLayout(path_holder); path_layout.setContentsMargins(0, 0, 0, 0); path_layout.setSpacing(7); path_layout.addWidget(path, 1)
+        browse = QPushButton("选择文件夹"); browse.setFixedHeight(40); browse.setIcon(fluent_icon("\uE838", size=15)); browse.setIconSize(QSize(15, 15)); browse.clicked.connect(self.choose_folder); path_layout.addWidget(browse)
+        form.addWidget(path_holder, 5, 0, 1, 6)
+        form.addWidget(field_label("管理优先级"), 6, 0, 1, 2); form.addWidget(field_label("当前阶段"), 6, 2, 1, 2); form.addWidget(field_label("项目健康度"), 6, 4, 1, 2)
+        form.addWidget(priority, 7, 0, 1, 2); form.addWidget(stage, 7, 2, 1, 2); form.addWidget(health, 7, 4, 1, 2)
+        layout.addLayout(form)
+
+        objective_label = field_label("项目目标"); layout.addWidget(objective_label)
+        self.objective = QTextEdit(); self.objective.setFixedHeight(76); self.objective.setPlainText(str(item.get("objective") or ""))
         self.objective.setPlaceholderText("这个项目最终要交付或解决什么？")
         self.objective.setAccessibleName("项目目标"); layout.addWidget(self.objective)
-        next_step_label = QLabel("明确下一步"); next_step_label.setProperty("fieldLabel", True); layout.addWidget(next_step_label)
+        decision = QGridLayout(); decision.setHorizontalSpacing(10); decision.setVerticalSpacing(6)
+        next_step_label = field_label("明确下一步"); decision.addWidget(next_step_label, 0, 0)
+        blocker_label = field_label("当前阻塞"); decision.addWidget(blocker_label, 0, 1)
         self.next_step = QLineEdit(str(item.get("nextStep") or "")); self.next_step.setFixedHeight(40)
         self.next_step.setPlaceholderText("一个可以直接开始的具体动作")
-        self.next_step.setAccessibleName("项目下一步"); layout.addWidget(self.next_step)
-        actions = QHBoxLayout(); actions.setContentsMargins(0, 10, 0, 0); actions.addStretch()
+        self.next_step.setAccessibleName("项目下一步"); decision.addWidget(self.next_step, 1, 0)
+        self.blocker = QLineEdit(str(item.get("blocker") or "")); self.blocker.setFixedHeight(40)
+        self.blocker.setPlaceholderText("没有阻塞可留空；有阻塞时写清具体原因")
+        self.blocker.setAccessibleName("项目阻塞项"); decision.addWidget(self.blocker, 1, 1); layout.addLayout(decision)
+        actions = QHBoxLayout(); actions.setContentsMargins(0, 10, 0, 0); actions.setSpacing(8)
+        self.insight_button = QPushButton("Codex 自动整理"); self.insight_button.setFixedHeight(38); self.insight_button.setIcon(fluent_icon("\uE945", color="#1d4ed8", size=14)); self.insight_button.setIconSize(QSize(14, 14)); self.insight_button.clicked.connect(self.start_codex_insight); actions.addWidget(self.insight_button)
+        self.insight_status = QLabel("选择文件夹后可让 Codex 填写项目态势"); self.insight_status.setMaximumWidth(280); self.insight_status.setStyleSheet("color: #748094; font-size: 11px;"); actions.addWidget(self.insight_status)
+        actions.addStretch()
         cancel = QPushButton("取消"); cancel.setFixedHeight(38); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
         save = QPushButton("保存项目"); save.setFixedHeight(38); save.setObjectName("primary"); save.clicked.connect(self.accept_project); actions.addWidget(save); layout.addLayout(actions)
         self.fields["name"].setFocus()
+
+    def start_codex_insight(self):
+        if self.insight_worker is not None:
+            return
+        path = Path(self.fields["path"].text().strip())
+        if not path.is_dir():
+            self.insight_status.setText("请先选择有效的项目文件夹")
+            self.fields["path"].setFocus()
+            return
+        draft = {**(self.project or {}), **self.value()}
+        if self.project:
+            draft["conversations"] = self.project.get("conversations") or []
+        project_id = (self.project or {}).get("id")
+        tasks = [task for task in getattr(self.parent(), "today_tasks", []) if project_id and task.get("projectId") == project_id]
+        worker = ProjectInsightWorker(draft, tasks, self)
+        worker.generated.connect(self.on_codex_insight)
+        worker.finished.connect(lambda: self.finish_codex_insight(worker))
+        self.insight_worker = worker
+        self.insight_button.setEnabled(False); self.insight_button.setText("Codex 整理中…")
+        self.insight_status.setText("正在只读分析目录、任务和对话")
+        worker.start()
+
+    def on_codex_insight(self, result):
+        if result.get("error"):
+            self.insight_status.setText("整理失败，稍后可重试")
+            self.insight_status.setToolTip(str(result.get("error")))
+            return
+        if result.get("objective"): self.objective.setPlainText(result["objective"])
+        if result.get("nextStep"): self.next_step.setText(result["nextStep"])
+        self.blocker.setText(result.get("blocker") or "")
+        for field_name, key in (("stage", "stage"), ("health", "health")):
+            field = self.fields[field_name]; index = field.findData(result.get(key))
+            if index >= 0: field.setCurrentIndex(index)
+        summary = str(result.get("summary") or "Codex 已生成建议")
+        self.insight_status.setText("已填入建议，请确认后保存")
+        self.insight_status.setToolTip(summary)
+
+    def finish_codex_insight(self, worker):
+        if self.insight_worker is worker:
+            self.insight_worker = None
+        self.insight_button.setEnabled(True); self.insight_button.setText("Codex 自动整理")
+        worker.deleteLater()
+
+    def closeEvent(self, event):
+        if self.insight_worker is not None:
+            self.insight_status.setText("Codex 正在整理，请完成后再关闭")
+            event.ignore(); return
+        super().closeEvent(event)
+
+    def reject(self):
+        if self.insight_worker is not None:
+            self.insight_status.setText("Codex 正在整理，请完成后再关闭")
+            return
+        super().reject()
 
     def choose_folder(self):
         start = self.fields.get("path").text().strip() or str(ROOT)
@@ -1196,6 +1411,7 @@ class ProjectEditor(QDialog):
         data["color"] = (self.project or {}).get("color", "#58d7f6")
         data["objective"] = self.objective.toPlainText().strip()
         data["nextStep"] = self.next_step.text().strip()
+        data["blocker"] = self.blocker.text().strip()
         return data
 
 
@@ -1397,7 +1613,9 @@ class ProjectMapRow(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setToolTip("打开项目管理面板；总览不展开具体对话")
-        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{state_text}")
+        control_key, control_label, control_color, _control_background, control_reason = project_control_state(project)
+        stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
+        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}，Codex {state_text}")
         self.setStyleSheet(
             "QFrame#projectMapRow { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 9px; }"
             "QFrame#projectMapRow:hover { background: #f5f8fc; border-color: #b8c8dc; }"
@@ -1408,7 +1626,8 @@ class ProjectMapRow(QFrame):
         layout.setSpacing(9)
         dot = QLabel()
         dot.setFixedSize(6, 6)
-        dot.setStyleSheet(f"background: {state_color}; border: none; border-radius: 3px;")
+        dot.setToolTip(f"项目健康度：{control_label} · {control_reason}")
+        dot.setStyleSheet(f"background: {control_color}; border: none; border-radius: 3px;")
         layout.addWidget(dot)
         text_box = QVBoxLayout(); text_box.setSpacing(1)
         title_row = QHBoxLayout(); title_row.setSpacing(6)
@@ -1422,9 +1641,13 @@ class ProjectMapRow(QFrame):
             title_row.addWidget(focus)
         text_box.addLayout(title_row)
         next_step = str(project.get("nextStep") or "").strip()
-        next_label = ElidedLabel(next_step or "需要明确下一步")
-        next_label.setToolTip(next_step or "此项目尚未设置下一步")
-        next_label.setStyleSheet(f"color: {'#66758a' if next_step else '#b54708'}; border: none; font-size: 10px;")
+        if control_key in {"blocked", "attention"}:
+            control_text = f"{stage_label} · {control_label}：{control_reason}"
+        else:
+            control_text = f"{stage_label} · {next_step or control_reason}"
+        next_label = ElidedLabel(control_text)
+        next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n{control_reason}\n下一步：{next_step or '尚未设置'}")
+        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'attention'} else '#66758a'}; border: none; font-size: 10px;")
         text_box.addWidget(next_label)
         layout.addLayout(text_box, 1)
         state = QLabel(state_text)
@@ -1519,13 +1742,16 @@ class ProjectMindMap(QGraphicsView):
         accent = QLabel(); accent.setFixedSize(4, 30); accent.setStyleSheet("background: #2563eb; border-radius: 2px;")
         overview_layout.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
-        title = QLabel("项目总览"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
-        subtitle = QLabel("按分类查看全部项目")
+        title = QLabel("项目驾驶舱"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
+        subtitle = QLabel("按分类掌握阶段、健康度和下一步")
         subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
         overview_layout.addLayout(title_box)
         overview_layout.addStretch(1)
-        summary = QLabel(f"{len(order)} 个分类    {len(projects)} 个项目")
+        focus_count = sum(project_priority_key(project) == "focus" for project in projects)
+        blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
+        attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
+        summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个需关注")
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         overview_layout.addWidget(summary)
         overview_proxy = self.map_scene.addWidget(overview)
@@ -1606,10 +1832,15 @@ class ProjectGroup(QFrame):
         if project_priority_key(project) == "focus":
             focus = QLabel("当前重点"); focus.setFixedSize(58, 20); focus.setAlignment(Qt.AlignCenter)
             focus.setStyleSheet("color: #7c3aed; background: #f1eaff; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(focus)
+        control_key, control_label, control_color, control_background, control_reason = project_control_state(project)
+        health = QLabel(control_label); health.setFixedSize(48, 20); health.setAlignment(Qt.AlignCenter); health.setToolTip(control_reason)
+        health.setStyleSheet(f"color: {control_color}; background: {control_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(health)
         name_box.addLayout(name_row)
         next_step = str(project.get("nextStep") or "").strip()
-        next_label = ElidedLabel(next_step or "需要明确下一步"); next_label.setToolTip(next_step or "此项目尚未设置下一步")
-        next_label.setStyleSheet(f"color: {'#66758a' if next_step else '#b54708'}; font-size: 10px; border: none;"); name_box.addWidget(next_label)
+        stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
+        detail_text = control_reason if control_key in {"blocked", "attention"} else (next_step or control_reason)
+        next_label = ElidedLabel(f"{stage_label} · {detail_text}"); next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n下一步：{next_step or '尚未设置'}")
+        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'attention'} else '#66758a'}; font-size: 10px; border: none;"); name_box.addWidget(next_label)
         layout.addLayout(name_box, 1)
         category_select = QComboBox(); category_select.setFixedSize(138, 34); category_select.addItems(window.categories[1:]); category_select.setCurrentText(project.get("category", "未分类")); category_select.setToolTip("调整项目分类"); category_select.setAccessibleName(f"{project['name']} 的项目分类")
         category_select.setStyleSheet("QComboBox { background: #f3f6fa; border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; color: #526071; font-size: 12px; } QComboBox:hover, QComboBox:focus { background: #eef3f8; border-color: #cbd7e5; } QComboBox::drop-down { border: none; width: 22px; }")
@@ -2045,6 +2276,9 @@ class ProjectWorkbenchDialog(QDialog):
         title = QLabel(project.get("name") or "未命名项目"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
         subtitle = QLabel(f"{project.get('category', '未分类')}  ·  在一个地方维护目标、下一步、任务和 Codex 对话")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        _control_key, control_text, control_color, control_background, control_reason = project_control_state(project)
+        control = QLabel(control_text); control.setAlignment(Qt.AlignCenter); control.setFixedSize(64, 30); control.setToolTip(control_reason)
+        control.setStyleSheet(f"color: {control_color}; background: {control_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(control)
         _state, state_text, state_color, state_background = project_display_state(project)
         state = QLabel(f"● {state_text}"); state.setAlignment(Qt.AlignCenter); state.setFixedSize(78, 30)
         state.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(state)
@@ -2057,14 +2291,18 @@ class ProjectWorkbenchDialog(QDialog):
         management_layout = QVBoxLayout(management); management_layout.setContentsMargins(18, 15, 18, 17); management_layout.setSpacing(10)
         management_title = QLabel("项目决策"); management_title.setProperty("sectionTitle", True); management_layout.addWidget(management_title)
         meta = QHBoxLayout(); meta.setSpacing(10)
-        self.priority_field = QComboBox(); self.status_field = QComboBox(); self.category_field = QComboBox()
+        self.priority_field = QComboBox(); self.status_field = QComboBox(); self.category_field = QComboBox(); self.stage_field = QComboBox(); self.health_field = QComboBox()
         for key, label in PROJECT_PRIORITY.items(): self.priority_field.addItem(label, key)
         self.priority_field.setCurrentIndex(max(0, self.priority_field.findData(project_priority_key(project))))
         for key, label in STATUS_TEXT.items(): self.status_field.addItem(label, key)
         self.status_field.setCurrentIndex(max(0, self.status_field.findData(project.get("status", "active"))))
         for category in parent.categories[1:]: self.category_field.addItem(category, category)
         self.category_field.setCurrentIndex(max(0, self.category_field.findData(project.get("category", "未分类"))))
-        for label_text, field in (("管理优先级", self.priority_field), ("项目状态", self.status_field), ("项目分类", self.category_field)):
+        for key, label in PROJECT_STAGE.items(): self.stage_field.addItem(label, key)
+        self.stage_field.setCurrentIndex(max(0, self.stage_field.findData(project_stage_key(project))))
+        for key, label in PROJECT_HEALTH.items(): self.health_field.addItem(label, key)
+        self.health_field.setCurrentIndex(max(0, self.health_field.findData(project_health_key(project))))
+        for label_text, field in (("管理优先级", self.priority_field), ("项目状态", self.status_field), ("项目分类", self.category_field), ("当前阶段", self.stage_field), ("项目健康度", self.health_field)):
             column = QVBoxLayout(); column.setSpacing(5); label = QLabel(label_text); label.setProperty("fieldLabel", True); column.addWidget(label)
             field.setFixedHeight(38); field.setAccessibleName(label_text); column.addWidget(field); meta.addLayout(column, 1)
         management_layout.addLayout(meta)
@@ -2074,6 +2312,8 @@ class ProjectWorkbenchDialog(QDialog):
         next_row = QHBoxLayout(); next_row.setSpacing(9)
         next_box = QVBoxLayout(); next_box.setSpacing(5); next_label = QLabel("明确下一步"); next_label.setProperty("fieldLabel", True); next_box.addWidget(next_label)
         self.next_step_field = QLineEdit(str(project.get("nextStep") or "")); self.next_step_field.setFixedHeight(40); self.next_step_field.setPlaceholderText("一个可以直接开始的具体动作"); next_box.addWidget(self.next_step_field); next_row.addLayout(next_box, 1)
+        blocker_box = QVBoxLayout(); blocker_box.setSpacing(5); blocker_label = QLabel("当前阻塞"); blocker_label.setProperty("fieldLabel", True); blocker_box.addWidget(blocker_label)
+        self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(self.save_changes); next_row.addWidget(save, 0, Qt.AlignBottom)
         management_layout.addLayout(next_row); root.addWidget(management)
 
@@ -2125,8 +2365,11 @@ class ProjectWorkbenchDialog(QDialog):
             "priority": self.priority_field.currentData(),
             "status": self.status_field.currentData(),
             "category": self.category_field.currentData(),
+            "stage": self.stage_field.currentData(),
+            "health": self.health_field.currentData(),
             "objective": self.objective_field.toPlainText().strip(),
             "nextStep": self.next_step_field.text().strip(),
+            "blocker": self.blocker_field.text().strip(),
         }
         self.window.update_project_management(self.project, data, notify=notify)
 
@@ -2316,7 +2559,7 @@ class MainWindow(QMainWindow):
         heading = QHBoxLayout(); heading.setSpacing(24)
         heading_text = QVBoxLayout(); heading_text.setSpacing(4)
         title = QLabel("项目"); title.setStyleSheet("font-size: 29px; font-weight: 720; color: #172033;"); heading_text.addWidget(title)
-        subtitle = QLabel("管理项目目标、下一步和 Codex 工作上下文")
+        subtitle = QLabel("集中管理项目阶段、健康度、阻塞项、下一步与 Codex 工作上下文")
         subtitle.setStyleSheet("color: #66758a; font-size: 13px;"); heading_text.addWidget(subtitle)
         heading.addLayout(heading_text); heading.addStretch()
         new_project = QPushButton("新建项目"); new_project.setIcon(fluent_icon("\uE710", color="#ffffff", size=15)); new_project.setIconSize(QSize(15, 15)); new_project.setObjectName("primary"); new_project.setFixedHeight(40); new_project.clicked.connect(lambda: self.edit_project(None)); heading.addWidget(new_project); main_layout.addLayout(heading)
@@ -2327,7 +2570,7 @@ class MainWindow(QMainWindow):
             self.status_filter.addItem(label, value)
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
-        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("需关注", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -2458,6 +2701,8 @@ class MainWindow(QMainWindow):
         signature = tuple(
             (
                 project.get("id"), project.get("name"), project.get("path"), project.get("category"),
+                project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
+                project.get("objective"), project.get("nextStep"), project.get("blocker"),
                 tuple(
                     (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
                     for session in project.get("conversations", [])
@@ -3019,8 +3264,11 @@ class MainWindow(QMainWindow):
                 "icon": project.get("icon", ""),
                 "color": project.get("color", "#58d7f6"),
                 "priority": project_priority_key(project),
+                "stage": project_stage_key(project),
+                "health": project_health_key(project),
                 "objective": project.get("objective", ""),
                 "nextStep": project.get("nextStep", ""),
+                "blocker": project.get("blocker", ""),
             }
             self.saved_projects.append(target)
         project["savedId"] = target["id"]
@@ -3031,10 +3279,13 @@ class MainWindow(QMainWindow):
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
+            "stage": data.get("stage") if data.get("stage") in PROJECT_STAGE else "execution",
+            "health": data.get("health") if data.get("health") in PROJECT_HEALTH else "on_track",
             "status": data.get("status") if data.get("status") in STATUS_TEXT else "active",
             "category": data.get("category") if data.get("category") in self.categories[1:] else previous_category,
             "objective": str(data.get("objective") or "").strip(),
             "nextStep": str(data.get("nextStep") or "").strip(),
+            "blocker": str(data.get("blocker") or "").strip(),
         })
         new_category = target.get("category", previous_category)
         if new_category != previous_category:
@@ -3042,7 +3293,7 @@ class MainWindow(QMainWindow):
             orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
             if project.get("id") not in orders.setdefault(new_category, []):
                 orders[new_category].append(project.get("id"))
-        for key in ("priority", "status", "category", "objective", "nextStep"):
+        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker"):
             project[key] = target.get(key)
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
@@ -3131,7 +3382,12 @@ class MainWindow(QMainWindow):
                 f"{conversation_name(conversation)} {conversation.get('summary', '')}"
                 for conversation in item.get("conversations", [])
             )
-            searchable = f"{item.get('name', '')} {item.get('category', '')} {item.get('path', '')} {item.get('objective', '')} {item.get('nextStep', '')} {PROJECT_PRIORITY.get(project_priority_key(item), '')} {conversations}".lower()
+            searchable = (
+                f"{item.get('name', '')} {item.get('category', '')} {item.get('path', '')} "
+                f"{item.get('objective', '')} {item.get('nextStep', '')} {item.get('blocker', '')} "
+                f"{PROJECT_PRIORITY.get(project_priority_key(item), '')} {PROJECT_STAGE.get(project_stage_key(item), '')} "
+                f"{PROJECT_HEALTH.get(project_health_key(item), '')} {project_control_state(item)[1]} {conversations}"
+            ).lower()
             if query and query not in searchable:
                 continue
             result.append(item)
@@ -3191,6 +3447,9 @@ class MainWindow(QMainWindow):
             f"继续项目：{project['name']}\n"
             f"项目目标：{project.get('objective') or '尚未明确'}\n"
             f"管理优先级：{PROJECT_PRIORITY.get(project_priority_key(project), '常规推进')}\n"
+            f"当前阶段：{PROJECT_STAGE.get(project_stage_key(project), '执行')}\n"
+            f"项目健康度：{project_control_state(project)[1]}\n"
+            f"当前阻塞：{project.get('blocker') or '无'}\n"
             f"工作目录：{project['path']}\n"
             f"当前下一步：{project.get('nextStep') or '请先判断下一步'}\n"
             f"最近动态：{recent}\n\n"

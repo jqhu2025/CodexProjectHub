@@ -50,6 +50,21 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_project_insight_requires_an_existing_project_folder(self):
+        with patch.object(APP, "find_summary_codex_binary", return_value="codex"):
+            result = APP.generate_project_insight({"path": "Z:/definitely-missing-project"})
+        self.assertEqual(result["error"], "请先选择有效的项目文件夹")
+
+    def test_control_state_prioritizes_blockers_and_missing_decisions(self):
+        blocked = {"status": "active", "health": "on_track", "blocker": "Waiting for calibration", "objective": "Ship", "nextStep": "Test"}
+        missing_next = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": ""}
+        healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        self.assertEqual(APP.project_control_state(blocked)[0], "blocked")
+        self.assertIn("calibration", APP.project_control_state(blocked)[4])
+        self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
+        self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
+        self.assertEqual(APP.project_control_state(healthy)[0], "on_track")
+
     def test_search_matches_conversation_title_and_status(self):
         search = SimpleNamespace(text=lambda: "benchmark")
         status_filter = SimpleNamespace(currentData=lambda: "running")
@@ -91,6 +106,15 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(paused, "paused"))
         self.assertFalse(APP.project_management_scope_matches(paused, "needs_next"))
 
+    def test_management_scope_surfaces_attention_and_blocked_projects(self):
+        blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
+        attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
+        healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        self.assertTrue(APP.project_management_scope_matches(blocked, "blocked"))
+        self.assertTrue(APP.project_management_scope_matches(blocked, "attention"))
+        self.assertTrue(APP.project_management_scope_matches(attention, "attention"))
+        self.assertFalse(APP.project_management_scope_matches(healthy, "attention"))
+
     def test_focus_projects_sort_before_regular_projects(self):
         projects = [
             {"name": "Regular", "priority": "normal", "nextStep": "Continue"},
@@ -98,6 +122,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         ]
         projects.sort(key=APP.project_management_sort_key)
         self.assertEqual([item["name"] for item in projects], ["Focus", "Regular"])
+
+    def test_blocked_project_sorts_before_healthy_focus_project(self):
+        projects = [
+            {"name": "Focus", "priority": "focus", "objective": "Ship", "nextStep": "Test"},
+            {"name": "Blocked", "priority": "normal", "objective": "Ship", "nextStep": "Wait", "blocker": "Missing input"},
+        ]
+        projects.sort(key=APP.project_management_sort_key)
+        self.assertEqual([item["name"] for item in projects], ["Blocked", "Focus"])
 
 
 class DailySummaryTests(unittest.TestCase):

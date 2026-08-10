@@ -36,7 +36,9 @@ All screenshots use fictional sample data. They do not contain real project path
 - Create, edit, remove, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
-- Define a project objective, management priority, lifecycle state, and concrete next action.
+- Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
+- Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning.
+- Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
 - Filter the portfolio by current focus, missing next action, or paused/idea state.
