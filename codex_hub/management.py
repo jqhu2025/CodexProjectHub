@@ -76,6 +76,7 @@ PROJECT_DECISION_SOURCES = {
     "calibration": "活跃组合校准",
 }
 PROJECT_REVIEW_BASELINE_SOURCES = {"manual", "editor", "codex", "created", "review_resolution"}
+PROJECT_REVIEW_BASELINE_FIELDS = ("objective", "successCriteria", "stage", "health", "nextStep", "blocker")
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 PROJECT_BLOCKER_LIFECYCLE_FIELDS = (
     "blockedAt",
@@ -786,6 +787,54 @@ def project_governance_gaps(project):
     if project.get("health") not in PROJECT_HEALTH:
         gaps.append("health")
     return gaps
+
+
+def project_review_snapshot(project, occurred_at=""):
+    """Freeze the decisions that a human actually confirmed at review time."""
+    project = project or {}
+    snapshot = {"at": str(occurred_at or project.get("reviewedAt") or "")}
+    snapshot.update({
+        field: normalized_decision_value(project.get(field))
+        for field in PROJECT_REVIEW_BASELINE_FIELDS
+    })
+    return snapshot
+
+
+def establish_project_review_baseline(project, occurred_at):
+    """Store one comparable review baseline without inventing legacy history."""
+    if not isinstance(project, dict):
+        return None
+    reviewed_at = str(occurred_at or "")
+    project["reviewedAt"] = reviewed_at
+    project["reviewBaseline"] = project_review_snapshot(project, reviewed_at)
+    return dict(project["reviewBaseline"])
+
+
+def project_review_drift(project):
+    """Return decision fields changed since the last stored review baseline.
+
+    Older projects that only have ``reviewedAt`` deliberately return no drift;
+    their first new confirmation establishes comparable evidence instead of
+    pretending that a historical snapshot existed.
+    """
+    project = project or {}
+    baseline = project.get("reviewBaseline")
+    if not isinstance(baseline, dict):
+        return []
+    changes = []
+    for field in PROJECT_REVIEW_BASELINE_FIELDS:
+        if field not in baseline:
+            continue
+        before = normalized_decision_value(baseline.get(field))
+        after = normalized_decision_value(project.get(field))
+        if before != after:
+            changes.append({
+                "field": field,
+                "label": PROJECT_DECISION_FIELDS.get(field, field),
+                "before": before,
+                "after": after,
+            })
+    return changes
 
 
 def project_change_establishes_review(project, source, has_changes=True):

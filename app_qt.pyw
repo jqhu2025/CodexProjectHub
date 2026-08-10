@@ -51,6 +51,7 @@ from codex_hub.management import (
     compact_project_decision_value,
     current_task_record,
     display_project_decision_value,
+    establish_project_review_baseline,
     format_project_decision_summary,
     format_project_decision_time,
     merge_missing_project_insight,
@@ -66,6 +67,7 @@ from codex_hub.management import (
     portfolio_execution_alignment_queue,
     project_review_status,
     project_review_phase,
+    project_review_drift,
     project_review_overdue_days,
     project_management_validation_error,
     project_blocker_age_seconds,
@@ -1214,6 +1216,8 @@ def project_control_state(project):
 def project_review_summary(project):
     due, age_days, cadence = project_review_status(project)
     reviewed_at = str((project or {}).get("reviewedAt") or "").strip()
+    drift_count = len(project_review_drift(project))
+    drift_text = f" · {drift_count} 项变化待确认" if drift_count else ""
     if reviewed_at and age_days is not None:
         overdue_days = project_review_overdue_days(project)
         state = (
@@ -1221,10 +1225,40 @@ def project_review_summary(project):
             if due else
             f"{max(0, cadence - (age_days or 0))} 天后复核"
         )
-        return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}"
+        return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}{drift_text}"
     if due:
         return f"尚未完成首次复核 · 确认后每 {cadence} 天自动提醒"
     return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
+
+
+def project_review_drift_presentation(project):
+    """Describe real changes since the last comparable management baseline."""
+    baseline = (project or {}).get("reviewBaseline")
+    changes = project_review_drift(project)
+    if not isinstance(baseline, dict):
+        legacy = bool(str((project or {}).get("reviewedAt") or "").strip())
+        return {
+            "state": "baseline", "count": 0, "changes": [],
+            "title": "本次确认后开始记录差异" if legacy else "首次确认将建立差异基线",
+            "detail": "历史复核没有可比较快照" if legacy else "之后每次复核会直接列出目标、验收标准、阶段、健康度、下一步和阻塞的变化",
+        }
+    if not changes:
+        return {
+            "state": "stable", "count": 0, "changes": [],
+            "title": "关键决策无变化",
+            "detail": "目标、验收标准、阶段、健康度、下一步和阻塞均与上次确认一致",
+        }
+    summaries = []
+    for change in changes:
+        before = compact_project_decision_value(change["field"], change["before"], 24)
+        after = compact_project_decision_value(change["field"], change["after"], 24)
+        summaries.append(f"{change['label']}：{before} → {after}")
+    return {
+        "state": "changed", "count": len(changes), "changes": changes,
+        "title": f"自上次确认后 {len(changes)} 项关键变化",
+        "detail": "；".join(summaries[:2]) + (f"；另 {len(summaries) - 2} 项" if len(summaries) > 2 else ""),
+        "tooltip": "\n".join(summaries),
+    }
 
 
 PROJECT_COMMAND_TONE_COLORS = {
@@ -1331,10 +1365,13 @@ def project_has_local_folder(project):
     return bool(raw_path) and Path(raw_path).is_dir()
 
 
-def project_confirmation_batch_summary(projects):
-    """Summarize the remaining review batch without adding another dashboard."""
+def project_confirmation_batch_summary(projects, include_routed=False):
+    """Summarize review work; queue dialogs may include already-routed edge cases."""
+    projects = list(projects or [])
     counts = project_confirmation_counts(projects)
-    if not counts["total"]:
+    routed = max(0, len(projects) - counts["total"]) if include_routed else 0
+    total = counts["total"] + routed
+    if not total:
         return "本轮已完成"
     parts = []
     if counts["governance"]:
@@ -1343,10 +1380,12 @@ def project_confirmation_batch_summary(projects):
         parts.append(f"建基线 {counts['baseline']}")
     if counts["overdue"]:
         parts.append(f"到期复核 {counts['overdue']}")
+    if routed:
+        parts.append(f"状态确认 {routed}")
     urgency = project_review_urgency_summary(projects)
     if urgency:
         parts.append(urgency)
-    return f"本轮剩余 {counts['total']} · " + " · ".join(parts)
+    return f"本轮剩余 {total} · " + " · ".join(parts)
 
 
 def next_step_decision_batch_summary(projects):
@@ -5281,8 +5320,10 @@ class PortfolioReviewDialog(QDialog):
         next_step_mode = getattr(self, "purpose", "review") == "next_step"
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
-        batch_summary = next_step_decision_batch_summary(self.pending) if next_step_mode else project_confirmation_batch_summary(self.pending)
+        batch_summary = next_step_decision_batch_summary(self.pending) if next_step_mode else project_confirmation_batch_summary(self.pending, include_routed=True)
         priority_hint = "先形成一个可直接开始的动作" if next_step_mode and remaining else project_confirmation_priority_hint(self.pending)
+        if remaining and not next_step_mode and not priority_hint:
+            priority_hint = "逐项确认现状"
         self.subtitle.setText(f"{batch_summary}；{priority_hint}" if remaining and priority_hint else batch_summary)
         batch_explanation = (
             f"{batch_summary}\n"
@@ -5365,7 +5406,7 @@ class PortfolioReviewDialog(QDialog):
         else:
             self.confirm_button.setText("确认现状")
             self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
-            self.confirm_button.setToolTip("确认当前目标、阶段、健康度和下一步，并启动复核周期")
+            self.confirm_button.setToolTip("确认当前目标、验收标准、阶段、健康度、下一步和阻塞，并保存为新的差异基线")
         _review_due, review_age, review_cadence = project_review_status(project)
         review_phase = project_review_phase(project)
         if next_step_mode:
@@ -5406,6 +5447,26 @@ class PortfolioReviewDialog(QDialog):
             text = ElidedLabel(value); text.setToolTip(value); text.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); metric_layout.addWidget(text); metrics.addWidget(metric, 1)
         self.card_layout.addLayout(metrics)
 
+        if not next_step_mode:
+            drift = project_review_drift_presentation(project)
+            drift_palette = {
+                "changed": ("#9a5b00", "#fff8e8", "#ead7a4", "\uE7BA"),
+                "stable": ("#087443", "#eef8f2", "#c8e5d3", "\uE73E"),
+                "baseline": ("#315f9b", "#f1f6ff", "#cfdbef", "\uE81C"),
+            }
+            drift_color, drift_background, drift_border, drift_glyph = drift_palette[drift["state"]]
+            drift_frame = QFrame(); drift_frame.setObjectName("reviewDrift")
+            drift_frame.setStyleSheet(f"QFrame#reviewDrift {{ background: {drift_background}; border: 1px solid {drift_border}; border-radius: 9px; }} QFrame#reviewDrift QLabel {{ background: transparent; border: none; }}")
+            drift_layout = QHBoxLayout(drift_frame); drift_layout.setContentsMargins(10, 7, 10, 7); drift_layout.setSpacing(9)
+            drift_icon = QLabel(); drift_icon.setFixedSize(28, 28); drift_icon.setAlignment(Qt.AlignCenter)
+            drift_icon.setPixmap(fluent_icon(drift_glyph, color=drift_color, size=14).pixmap(QSize(14, 14))); drift_icon.setStyleSheet("background: #ffffff; border-radius: 8px;"); drift_layout.addWidget(drift_icon)
+            drift_text = QVBoxLayout(); drift_text.setSpacing(1)
+            drift_title = QLabel(drift["title"]); drift_title.setStyleSheet(f"color: {drift_color}; font-size: 11px; font-weight: 700;"); drift_text.addWidget(drift_title)
+            drift_detail = ElidedLabel(drift["detail"]); drift_detail.setStyleSheet("color: #5f6f84; font-size: 10px;"); drift_detail.setToolTip(drift.get("tooltip") or drift["detail"]); drift_text.addWidget(drift_detail); drift_layout.addLayout(drift_text, 1)
+            drift_frame.setToolTip(drift.get("tooltip") or drift["detail"])
+            drift_frame.setAccessibleName(f"复核变化：{drift['title']}。{drift['detail']}")
+            self.card_layout.addWidget(drift_frame)
+
         evidence_frame = QFrame(); evidence_frame.setObjectName("reviewEvidence")
         evidence_frame.setStyleSheet("QFrame#reviewEvidence { background: #f6f9fd; border: 1px solid #d9e4f0; border-radius: 9px; } QFrame#reviewEvidence QLabel { background: transparent; border: none; }")
         evidence_layout = QHBoxLayout(evidence_frame); evidence_layout.setContentsMargins(11, 8, 10, 8); evidence_layout.setSpacing(9)
@@ -5439,13 +5500,22 @@ class PortfolioReviewDialog(QDialog):
         alignment_badge.setStyleSheet(f"color: {alignment_color}; background: {alignment_background}; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"); evidence_layout.addWidget(alignment_badge)
         self.card_layout.addWidget(evidence_frame)
 
+        definition_row = QHBoxLayout(); definition_row.setSpacing(9)
         for caption, value, fallback in (
             ("项目目标", project.get("objective"), "尚未明确项目目标"),
-            ("当前下一步", project.get("nextStep"), "尚未设置下一步"),
+            ("验收标准", project.get("successCriteria"), "尚未单独定义验收标准"),
         ):
-            label = QLabel(caption); label.setProperty("sectionLabel", True); self.card_layout.addWidget(label)
-            text = QLabel(str(value or fallback)); text.setWordWrap(True)
-            text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
+            box = QFrame(); box.setObjectName("reviewDefinition")
+            box.setStyleSheet("QFrame#reviewDefinition { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; } QFrame#reviewDefinition QLabel { background: transparent; border: none; }")
+            box_layout = QVBoxLayout(box); box_layout.setContentsMargins(10, 7, 10, 8); box_layout.setSpacing(2)
+            label = QLabel(caption); label.setProperty("sectionLabel", True); box_layout.addWidget(label)
+            value_text = str(value or fallback); text = ElidedLabel(value_text); text.setToolTip(value_text)
+            text.setStyleSheet("color: #34445c; font-size: 11px; font-weight: 600;"); box_layout.addWidget(text); definition_row.addWidget(box, 1)
+        self.card_layout.addLayout(definition_row)
+        next_label = QLabel("当前下一步"); next_label.setProperty("sectionLabel", True); self.card_layout.addWidget(next_label)
+        next_value = str(project.get("nextStep") or "尚未设置下一步")
+        next_text = QLabel(next_value); next_text.setWordWrap(True); next_text.setToolTip(next_value)
+        next_text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 8px 10px; font-size: 11px;"); self.card_layout.addWidget(next_text)
 
         if next_step_mode:
             self.feedback.setText(
@@ -5472,7 +5542,7 @@ class PortfolioReviewDialog(QDialog):
             self.feedback.setText(
                 "这是首次复核：确认后将建立管理基线，并按项目优先级启动自动复核周期。"
                 if baseline else
-                "确认后将按项目优先级重新计算下一次复核日期，不会修改目标、健康度或下一步。"
+                "确认后会把当前关键决策保存为新的差异基线，并按项目优先级重新计算下一次复核日期。"
             )
             self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
 
@@ -5523,6 +5593,7 @@ class PortfolioReviewDialog(QDialog):
             "status": project.get("status", "active"),
             "category": project.get("category", "未分类"),
             "objective": project.get("objective", ""),
+            "successCriteria": project.get("successCriteria", ""),
             "nextStep": project.get("nextStep", ""),
             "blocker": "",
         }
@@ -5849,7 +5920,10 @@ class ProjectWorkbenchDialog(QDialog):
         management_head = QHBoxLayout(); management_head.setSpacing(9)
         management_title = QLabel("项目资料与决策"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
         management_head.addStretch()
-        self.review_meta = QLabel(project_review_summary(project)); self.review_meta.setStyleSheet("color: #66758a; font-size: 10px;"); management_head.addWidget(self.review_meta)
+        self.review_meta = QLabel(project_review_summary(project))
+        initial_drift = project_review_drift_presentation(project)
+        self.review_meta.setToolTip(initial_drift.get("tooltip") or initial_drift["detail"])
+        self.review_meta.setStyleSheet(f"color: {'#9a5b00' if initial_drift['state'] == 'changed' else '#66758a'}; font-size: 10px; font-weight: {'650' if initial_drift['state'] == 'changed' else '500'};"); management_head.addWidget(self.review_meta)
         self.management_toggle = QPushButton("编辑项目资料"); self.management_toggle.setFixedHeight(32); self.management_toggle.setCheckable(True)
         self.management_toggle.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.management_toggle.setIconSize(QSize(13, 13)); self.management_toggle.clicked.connect(self.toggle_management_details); management_head.addWidget(self.management_toggle)
         review_button = QPushButton("确认现状"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
@@ -6241,6 +6315,9 @@ class ProjectWorkbenchDialog(QDialog):
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
         self.control_badge.setVisible(text != state_text)
         self.review_meta.setText(project_review_summary(self.project))
+        drift = project_review_drift_presentation(self.project)
+        self.review_meta.setToolTip(drift.get("tooltip") or drift["detail"])
+        self.review_meta.setStyleSheet(f"color: {'#9a5b00' if drift['state'] == 'changed' else '#66758a'}; font-size: 10px; font-weight: {'650' if drift['state'] == 'changed' else '500'};")
         if hasattr(self, "command_card"):
             self.refresh_command_state()
 
@@ -7343,6 +7420,7 @@ class MainWindow(QMainWindow):
                 project.get("objective"), project.get("successCriteria"), project.get("nextStep"), project.get("blocker"), project.get("blockedAt"), project.get("blockerUpdatedAt"),
                 project.get("blockedAtEstimated"), project_blocker_duration_label(project) if project.get("blocker") else "",
                 project.get("lastResolvedBlocker"), project.get("lastBlockerResolvedAt"), project.get("lastBlockerResolution"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
+                json.dumps(project.get("reviewBaseline") or {}, ensure_ascii=False, sort_keys=True),
                 project.get("executionAlignmentSignature"), project.get("executionAlignmentReviewedAt"),
                 project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
@@ -7885,8 +7963,9 @@ class MainWindow(QMainWindow):
             return False
         reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
         target = self.saved_record_for_project(project)
+        baseline = establish_project_review_baseline(project, reviewed_at)
         target["reviewedAt"] = reviewed_at
-        project["reviewedAt"] = reviewed_at
+        target["reviewBaseline"] = dict(baseline or {})
         entry = build_project_review_entry(project, reviewed_at) if audit else None
         if entry is not None:
             self.project_decisions.append(entry)
@@ -8622,6 +8701,7 @@ class MainWindow(QMainWindow):
                 "nextStep": project.get("nextStep", ""),
                 "blocker": project.get("blocker", ""),
                 "reviewedAt": project.get("reviewedAt", ""),
+                "reviewBaseline": project.get("reviewBaseline"),
             }
             for field in PROJECT_BLOCKER_LIFECYCLE_FIELDS:
                 if field in project:
@@ -8704,6 +8784,9 @@ class MainWindow(QMainWindow):
             task_category_updates = migrate_project_task_category_references(self.today_tasks, project, new_category)
         for key in ("priority", "stage", "health", "status", "category", "objective", "successCriteria", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionCriteriaSnapshot", "completionAcceptedAt", *PROJECT_BLOCKER_LIFECYCLE_FIELDS):
             project[key] = target.get(key)
+        for key in ("reviewedAt", "reviewBaseline"):
+            if key in target:
+                project[key] = target.get(key)
         if name_requested:
             project["name"] = target.get("name")
             if target.get("nameOverride"):
@@ -8719,8 +8802,9 @@ class MainWindow(QMainWindow):
             decision_after["name"] = project.get("name") or target.get("name")
         entry = self.record_project_decision(project, before, decision_after, decision_source, occurred_at)
         if project_change_establishes_review(target, decision_source, entry is not None):
-            target["reviewedAt"] = occurred_at
+            baseline = establish_project_review_baseline(target, occurred_at)
             project["reviewedAt"] = occurred_at
+            project["reviewBaseline"] = dict(baseline or {})
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         if task_category_updates:
@@ -9213,8 +9297,9 @@ class MainWindow(QMainWindow):
             return
         entry = self.record_project_decision(decision_project, before, target, source, occurred_at)
         if project_change_establishes_review(target, source, entry is not None):
-            target["reviewedAt"] = occurred_at
+            baseline = establish_project_review_baseline(target, occurred_at)
             decision_project["reviewedAt"] = occurred_at
+            decision_project["reviewBaseline"] = dict(baseline or {})
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         if task_category_updates:

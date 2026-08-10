@@ -525,6 +525,28 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("验证阶段", management.format_project_decision_summary(entry))
         self.assertIn("需关注", management.format_project_decision_summary(entry))
 
+    def test_review_baseline_reports_only_real_decision_drift_and_can_be_refreshed(self):
+        project = {
+            "status": "active", "objective": "Ship release", "successCriteria": "Pass 18 checks",
+            "stage": "validation", "health": "on_track", "nextStep": "Run checks", "blocker": "",
+        }
+        baseline = management.establish_project_review_baseline(project, "2026-08-01T09:00:00")
+        self.assertEqual(baseline["successCriteria"], "Pass 18 checks")
+        self.assertEqual(management.project_review_drift(project), [])
+
+        project.update({"successCriteria": "Pass 20 checks", "health": "attention", "nextStep": "Fix failures"})
+        drift = management.project_review_drift(project)
+        self.assertEqual([change["field"] for change in drift], ["successCriteria", "health", "nextStep"])
+        self.assertEqual(drift[0]["label"], "验收标准")
+
+        management.establish_project_review_baseline(project, "2026-08-10T12:00:00")
+        self.assertEqual(management.project_review_drift(project), [])
+        self.assertEqual(project["reviewBaseline"]["at"], "2026-08-10T12:00:00")
+
+        legacy = {**project, "reviewedAt": "2026-07-01T09:00:00"}
+        legacy.pop("reviewBaseline")
+        self.assertEqual(management.project_review_drift(legacy), [])
+
     def test_execution_alignment_only_surfaces_unreviewed_real_divergence(self):
         project = {
             "id": "runtime-id", "savedId": "stable-id", "name": "Release",

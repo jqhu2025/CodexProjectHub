@@ -261,6 +261,33 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(dialog.result(), APP.QDialog.Rejected)
         dialog.close(); parent.close()
 
+    def test_project_review_shows_decision_drift_from_the_last_confirmed_baseline(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "attention", "objective": "Ship release",
+            "successCriteria": "Pass 20 checks", "nextStep": "Fix failed checks", "blocker": "",
+            "reviewedAt": "2026-01-01T09:00:00", "conversations": [],
+            "reviewBaseline": {
+                "at": "2026-01-01T09:00:00", "objective": "Ship release",
+                "successCriteria": "Pass 18 checks", "stage": "validation", "health": "on_track",
+                "nextStep": "Run checks", "blocker": "",
+            },
+        }
+        parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
+        dialog = APP.PortfolioReviewDialog(parent, [project])
+
+        drift = dialog.findChild(APP.QFrame, "reviewDrift")
+        self.assertIsNotNone(drift)
+        self.assertIn("3 项关键变化", drift.accessibleName())
+        self.assertIn("验收标准", drift.toolTip())
+        self.assertIn("本轮剩余 1", dialog.subtitle.text())
+        self.assertIn("状态确认 1", dialog.subtitle.text())
+        self.assertNotIn("本轮已完成", dialog.subtitle.text())
+        labels = [label.text() for label in dialog.findChildren(APP.QLabel)]
+        self.assertIn("Pass 20 checks", labels)
+        self.assertIn("Fix failed checks", labels)
+        dialog.close(); parent.close()
+
     def test_lifecycle_calibration_returns_to_the_latest_queue_item_after_workspace(self):
         project = {
             "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
@@ -2113,6 +2140,8 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
             )
         self.assertEqual(project["reviewedAt"], "2026-08-10T12:00:00")
         self.assertEqual(target["reviewedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(project["reviewBaseline"]["health"], "attention")
+        self.assertEqual(target["reviewBaseline"]["nextStep"], "Verify")
         self.assertEqual(entry["kind"], "review")
         self.assertEqual(window.project_decisions[-1]["source"], "review")
         self.assertEqual(save.call_count, 2)
