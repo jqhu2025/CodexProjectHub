@@ -1362,18 +1362,38 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
         return f"{text} 等 {len(names)} 项" if len(names) > limit else text
 
     def finalize(decision):
-        secondary = []
-        if alignments and decision["scope"] != "alignment":
-            secondary.append(f"执行校准 {len(alignments)}")
-        if lifecycle_items and decision["scope"] != "lifecycle":
-            secondary.append(f"生命周期 {len(lifecycle_items)}")
-        if focus_commitments and decision["scope"] != "focus_commitment":
-            secondary.append(f"重点落地 {len(focus_commitments)}")
-        if overdue_tasks and decision["scope"] != "plan_backlog":
-            secondary.append(f"待安排计划 {len(overdue_tasks)}")
-        if completion_tasks and decision["scope"] != "completion_evidence":
-            secondary.append(f"待补成果 {len(completion_tasks)}")
-        decision["secondary"] = " · ".join(secondary)
+        focus_capacity_count = int(capacity_state.get("overBy") or 0)
+        if not focus_capacity_count:
+            focus_capacity_count = len(capacity_state.get("executionOutsideFocus") or [])
+        queue_counts = [
+            ("attention", "风险/阻塞", len(groups.get("attention") or [])),
+            ("task_wip", "WIP 超载", int(wip_state.get("overBy") or 0)),
+            ("alignment", "执行校准", len(alignments)),
+            ("completion_evidence", "待补成果", len(completion_tasks)),
+            ("plan_backlog", "待安排计划", len(overdue_tasks)),
+            ("needs_next", "待定下一步", len(groups.get("needs_next") or [])),
+            ("focus_capacity", "重点校准", focus_capacity_count),
+            ("focus_commitment", "重点落地", len(focus_commitments)),
+            ("review", "管理确认", len(groups.get("review") or [])),
+            ("lifecycle", "生命周期", len(lifecycle_items)),
+        ]
+        secondary_items = [
+            {"scope": scope, "label": label, "count": count}
+            for scope, label, count in queue_counts
+            if count and scope != decision["scope"]
+        ]
+        full_secondary = " · ".join(
+            f"{item['label']} {item['count']}" for item in secondary_items
+        )
+        visible_items = secondary_items[:3]
+        compact_secondary = " · ".join(
+            f"{item['label']} {item['count']}" for item in visible_items
+        )
+        if len(secondary_items) > len(visible_items):
+            compact_secondary += f" · 另 {len(secondary_items) - len(visible_items)} 类"
+        decision["secondaryItems"] = secondary_items
+        decision["secondary"] = compact_secondary
+        decision["secondaryFull"] = full_secondary
         return decision
 
     attention = list(groups.get("attention") or [])
@@ -1384,6 +1404,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
         return finalize({
             "scope": "attention", "count": len(attention), "title": "先处理风险与阻塞",
             "summary": f"{detail}：{preview(names)}", "names": names, "action": "进入处置",
+            "outcome": "每个风险项目都已确认处置方向和可执行下一步",
         })
 
     wip_over_by = int(wip_state.get("overBy") or 0)
@@ -1396,6 +1417,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "task_wip", "count": wip_over_by, "title": "收敛进行中任务",
             "summary": f"当前 {wip_state.get('count', len(tasks))}/{wip_state.get('limit', 0)}，超出容量 {wip_over_by} 项{protected_text}：{preview(names)}",
             "names": names, "action": "收敛并行",
+            "outcome": f"进行中任务恢复至 {wip_state.get('limit', 0)} 项以内",
         })
 
     if alignments:
@@ -1404,6 +1426,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "alignment", "count": len(alignments), "title": "校准实际执行方向",
             "summary": f"今日执行与项目已保存的下一步不一致：{preview(names)}",
             "names": names, "action": "逐项校准",
+            "outcome": "每项实际工作都已对齐项目下一步，或明确保留原方向",
         })
 
     if completion_tasks:
@@ -1412,6 +1435,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "completion_evidence", "count": len(completion_tasks), "title": "补齐任务完成成果",
             "summary": f"这些任务已结束，但日报和项目交接仍缺少可验证结果：{preview(names)}",
             "names": names, "action": "逐项补录",
+            "outcome": "每项已完成任务都有可验证的成果记录",
         })
 
     if overdue_tasks:
@@ -1421,6 +1445,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "plan_backlog", "count": len(overdue_tasks), "title": "重新安排历史计划",
             "summary": f"过去日期仍有未启动任务，最早来自 {oldest}：{preview(names)}",
             "names": names, "action": "逐项安排",
+            "outcome": "每项历史计划都已重新安排、修订或明确保留",
         })
 
     needs_next = list(groups.get("needs_next") or [])
@@ -1430,6 +1455,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "needs_next", "count": len(needs_next), "title": "明确项目下一步",
             "summary": f"这些活跃项目尚无可执行动作：{preview(names)}",
             "names": names, "action": "补齐决策",
+            "outcome": "每个活跃项目都有一个明确、可执行的下一步",
         })
 
     over_by = int(capacity_state.get("overBy") or 0)
@@ -1440,6 +1466,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "focus_capacity", "count": over_by, "title": "收敛战略重点",
             "summary": f"重点组合超出容量 {over_by} 项：{preview(names)}",
             "names": names, "action": "调整重点",
+            "outcome": f"战略重点不超过 {capacity_state.get('capacity', 0)} 项容量",
         })
     if outside_focus:
         names = names_for(outside_focus)
@@ -1447,6 +1474,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "focus_capacity", "count": len(outside_focus), "title": "校准战略重点",
             "summary": f"{portfolio_focus_guidance(capacity_state)}：{preview(names)}",
             "names": names, "action": "调整重点",
+            "outcome": "实际推进组合与已声明的战略重点保持一致",
         })
 
     if focus_commitments:
@@ -1455,6 +1483,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "focus_commitment", "count": len(focus_commitments), "title": "把战略重点落到任务板",
             "summary": f"已明确下一步，但尚未形成当前任务：{preview(names)}",
             "names": names, "action": "落实下一步",
+            "outcome": "每个战略重点的下一步都已形成当前任务",
         })
 
     review = list(groups.get("review") or [])
@@ -1464,6 +1493,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "review", "count": len(review), "title": "建立项目复核节奏",
             "summary": f"待建立或更新管理基线：{preview(names)}",
             "names": names, "action": "开始复核",
+            "outcome": "缺项已补全，首次基线或到期复核已确认",
         })
 
     if lifecycle_items:
@@ -1472,6 +1502,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "lifecycle", "count": len(lifecycle_items), "title": "校准活跃项目组合",
             "summary": f"长期静默项目需要确认继续或暂缓：{preview(names)}",
             "names": names, "action": "逐项确认",
+            "outcome": "每个静默项目都已明确继续推进或暂缓",
         })
     return None
 
@@ -6107,14 +6138,16 @@ class MainWindow(QMainWindow):
             decision_layout.addWidget(card, 1)
         layout.addWidget(decision_panel)
 
-        self.portfolio_priority_panel = ClickableFrame(); self.portfolio_priority_panel.setObjectName("portfolioPriorityPanel"); self.portfolio_priority_panel.setMinimumHeight(62)
+        self.portfolio_priority_panel = ClickableFrame(); self.portfolio_priority_panel.setObjectName("portfolioPriorityPanel"); self.portfolio_priority_panel.setMinimumHeight(76)
         self.portfolio_priority_panel.clicked.connect(self.open_portfolio_priority_decision)
         priority_layout = QHBoxLayout(self.portfolio_priority_panel); priority_layout.setContentsMargins(14, 9, 13, 9); priority_layout.setSpacing(11)
         self.portfolio_priority_icon = QLabel(); self.portfolio_priority_icon.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_icon.setFixedSize(34, 34); self.portfolio_priority_icon.setAlignment(Qt.AlignCenter); priority_layout.addWidget(self.portfolio_priority_icon)
         priority_text = QVBoxLayout(); priority_text.setSpacing(1)
         self.portfolio_priority_kicker = QLabel("下一项管理决策"); self.portfolio_priority_kicker.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_kicker.setStyleSheet("color: #718096; font-size: 10px; font-weight: 650; letter-spacing: 0.5px;"); priority_text.addWidget(self.portfolio_priority_kicker)
         self.portfolio_priority_title = QLabel(); self.portfolio_priority_title.setAttribute(Qt.WA_TransparentForMouseEvents); priority_text.addWidget(self.portfolio_priority_title)
-        self.portfolio_priority_summary = ElidedLabel(); self.portfolio_priority_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); priority_text.addWidget(self.portfolio_priority_summary); priority_layout.addLayout(priority_text, 1)
+        self.portfolio_priority_summary = ElidedLabel(); self.portfolio_priority_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); priority_text.addWidget(self.portfolio_priority_summary)
+        self.portfolio_priority_outcome = ElidedLabel(); self.portfolio_priority_outcome.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_outcome.setStyleSheet("color: #526071; font-size: 10px; font-weight: 650; border: none;"); priority_text.addWidget(self.portfolio_priority_outcome)
+        priority_layout.addLayout(priority_text, 1)
         self.portfolio_priority_count = QLabel("0"); self.portfolio_priority_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.portfolio_priority_count.setAlignment(Qt.AlignCenter); self.portfolio_priority_count.setFixedSize(34, 28); priority_layout.addWidget(self.portfolio_priority_count)
         self.portfolio_priority_action = QLabel("打开队列  →"); self.portfolio_priority_action.setAttribute(Qt.WA_TransparentForMouseEvents); priority_layout.addWidget(self.portfolio_priority_action)
         self.portfolio_priority_panel.hide(); layout.addWidget(self.portfolio_priority_panel)
@@ -6545,17 +6578,22 @@ class MainWindow(QMainWindow):
                 if decision.get("secondary"):
                     summary_text += f"  ·  后续：{decision['secondary']}"
                 self.portfolio_priority_summary.setText(summary_text)
+                outcome_text = f"完成标准：{decision['outcome']}"
+                self.portfolio_priority_outcome.setText(outcome_text)
+                self.portfolio_priority_outcome.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 650; border: none;")
                 self.portfolio_priority_count.setText(str(decision["count"]))
                 self.portfolio_priority_count.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid {border}; border-radius: 8px; font-size: 12px; font-weight: 750;")
                 self.portfolio_priority_action.setText(f"{decision['action']}  →")
                 self.portfolio_priority_action.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 700;")
                 tooltip = decision["title"] + "\n" + "\n".join(f"• {name}" for name in decision["names"])
-                if decision.get("secondary"):
-                    tooltip += f"\n后续队列：{decision['secondary']}"
+                tooltip += f"\n完成标准：{decision['outcome']}"
+                if decision.get("secondaryFull"):
+                    tooltip += f"\n后续队列：{decision['secondaryFull']}"
                 self.portfolio_priority_summary.setToolTip(tooltip)
+                self.portfolio_priority_outcome.setToolTip(tooltip)
                 self.portfolio_priority_panel.setToolTip(tooltip)
                 self.portfolio_priority_panel.setAccessibleName(
-                    f"下一项管理决策：{decision['title']}，{decision['count']} 项。{summary_text}"
+                    f"下一项管理决策：{decision['title']}，{decision['count']} 项。{summary_text}。{outcome_text}"
                 )
 
     def refresh(self, silent=False, scan=True):

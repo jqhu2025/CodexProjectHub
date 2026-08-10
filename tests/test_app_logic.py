@@ -1112,7 +1112,12 @@ class ProjectManagementInteractionTests(unittest.TestCase):
 
         decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
         self.assertEqual((decision["scope"], decision["title"]), ("attention", "先处理风险与阻塞"))
-        self.assertEqual(decision["secondary"], "执行校准 1 · 生命周期 1")
+        self.assertEqual(decision["secondary"], "执行校准 1 · 待定下一步 1 · 重点校准 1 · 另 2 类")
+        self.assertEqual(
+            decision["secondaryFull"],
+            "执行校准 1 · 待定下一步 1 · 重点校准 1 · 管理确认 1 · 生命周期 1",
+        )
+        self.assertIn("处置方向", decision["outcome"])
 
         groups["attention"] = []
         wip = {
@@ -1125,10 +1130,12 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         )
         self.assertEqual((wip_decision["scope"], wip_decision["count"]), ("task_wip", 1))
         self.assertIn("Codex 运行保护", wip_decision["summary"])
+        self.assertEqual(wip_decision["outcome"], "进行中任务恢复至 3 项以内")
+        self.assertIn("管理确认 1", wip_decision["secondaryFull"])
 
         alignment_decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
         self.assertEqual(alignment_decision["scope"], "alignment")
-        self.assertEqual(alignment_decision["secondary"], "生命周期 1")
+        self.assertEqual(alignment_decision["secondary"], "待定下一步 1 · 重点校准 1 · 管理确认 1 · 另 1 类")
         backlog = [{"title": "Recheck experiment", "date": "2026-08-07"}]
         completion = [{"title": "Publish validation result", "date": "2026-08-08"}]
         completion_decision = APP.portfolio_priority_decision(
@@ -1136,13 +1143,13 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         )
         self.assertEqual(completion_decision["scope"], "completion_evidence")
         self.assertIn("可验证结果", completion_decision["summary"])
-        self.assertEqual(completion_decision["secondary"], "生命周期 1 · 待安排计划 1")
+        self.assertEqual(completion_decision["secondary"], "待安排计划 1 · 待定下一步 1 · 重点校准 1 · 另 2 类")
         backlog_decision = APP.portfolio_priority_decision(
             groups, capacity, [], [lifecycle], overdue_tasks=backlog
         )
         self.assertEqual(backlog_decision["scope"], "plan_backlog")
         self.assertIn("2026-08-07", backlog_decision["summary"])
-        self.assertEqual(backlog_decision["secondary"], "生命周期 1")
+        self.assertEqual(backlog_decision["secondary"], "待定下一步 1 · 重点校准 1 · 管理确认 1 · 另 1 类")
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "needs_next")
 
         groups["needs_next"] = []
