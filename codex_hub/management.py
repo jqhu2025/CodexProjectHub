@@ -248,7 +248,7 @@ def project_completion_outcome(project):
     return str(project.get("completionSummary") or "").strip()
 
 
-def record_project_completion_outcome(project, outcome, occurred_at, source="closeout"):
+def record_project_completion_outcome(project, outcome, occurred_at, source="closeout", objective_snapshot=""):
     """Store a project's final outcome while retaining every real revision."""
     if not isinstance(project, dict) or project.get("status") != "completed":
         return False
@@ -256,7 +256,12 @@ def record_project_completion_outcome(project, outcome, occurred_at, source="clo
     if not text:
         return False
     previous = str(project.get("completionSummary") or "").strip()
-    if normalized_decision_value(previous) == normalized_decision_value(text):
+    objective = normalized_decision_value(objective_snapshot or project.get("objective"))
+    previous_objective = normalized_decision_value(project.get("completionObjectiveSnapshot"))
+    if (
+        normalized_decision_value(previous) == normalized_decision_value(text)
+        and previous_objective == objective
+    ):
         return False
     history = project.get("completionHistory")
     if not isinstance(history, list):
@@ -266,9 +271,14 @@ def record_project_completion_outcome(project, outcome, occurred_at, source="clo
         "previous": previous,
         "text": text,
         "source": str(source or "closeout"),
+        "objective": objective,
+        "accepted": bool(objective),
     })
     project["completionHistory"] = history[-40:]
     project["completionSummary"] = text
+    if objective:
+        project["completionObjectiveSnapshot"] = objective
+        project["completionAcceptedAt"] = str(occurred_at or "")
     if not previous or not project.get("completedAt"):
         project["completedAt"] = str(occurred_at or "")
     return True
@@ -291,10 +301,14 @@ def clear_project_completion_outcome(project, occurred_at, source="reopen"):
         "text": "",
         "source": str(source or "reopen"),
         "completedAt": completed_at,
+        "objective": normalized_decision_value(project.get("completionObjectiveSnapshot")),
+        "acceptedAt": str(project.get("completionAcceptedAt") or ""),
     })
     project["completionHistory"] = history[-40:]
     project.pop("completionSummary", None)
     project.pop("completedAt", None)
+    project.pop("completionObjectiveSnapshot", None)
+    project.pop("completionAcceptedAt", None)
     return True
 
 
@@ -835,6 +849,8 @@ def build_project_lifecycle_entry(project, action, occurred_at, entry_id=None):
             "lastBlockerResolvedAt": str((project or {}).get("lastBlockerResolvedAt") or ""),
             "completionSummary": normalized_decision_value((project or {}).get("completionSummary")),
             "completedAt": str((project or {}).get("completedAt") or ""),
+            "completionObjectiveSnapshot": normalized_decision_value((project or {}).get("completionObjectiveSnapshot")),
+            "completionAcceptedAt": str((project or {}).get("completionAcceptedAt") or ""),
         },
     }
 
@@ -861,6 +877,8 @@ def build_project_closeout_entry(project, action, outcome, occurred_at, entry_id
         "snapshot": {
             "outcome": summary,
             "completedAt": str((project or {}).get("completedAt") or occurred_at or ""),
+            "objective": normalized_decision_value((project or {}).get("completionObjectiveSnapshot")),
+            "acceptedAt": str((project or {}).get("completionAcceptedAt") or ""),
         },
     }
 
@@ -909,12 +927,13 @@ def format_project_decision_summary(entry, max_changes=2):
     if (entry or {}).get("kind") == "closeout":
         snapshot = (entry or {}).get("snapshot") or {}
         outcome = compact_project_decision_value("completionSummary", snapshot.get("outcome"), 64)
+        objective = compact_project_decision_value("objective", snapshot.get("objective"), 42)
         action = (entry or {}).get("action")
         if action == "reopen":
             return f"重新打开项目 · 原完成成果保留在历史：{outcome}"
         if action == "revise":
-            return f"修订项目完成成果：{outcome}"
-        return f"完成项目 · 最终成果：{outcome}"
+            return f"修订项目完成成果 · 验收目标：{objective} · 成果：{outcome}" if normalized_decision_value(snapshot.get("objective")) else f"修订项目完成成果：{outcome}"
+        return f"完成项目 · 验收目标：{objective} · 成果：{outcome}" if normalized_decision_value(snapshot.get("objective")) else f"完成项目 · 最终成果：{outcome}"
     changes = (entry or {}).get("changes") or []
     parts = [
         f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："

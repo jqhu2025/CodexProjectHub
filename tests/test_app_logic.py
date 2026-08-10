@@ -127,6 +127,28 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_project_closeout_requires_an_objective_outcome_and_explicit_acceptance(self):
+        accepted = Mock()
+        checkbox = SimpleNamespace(isChecked=lambda: False)
+        dialog = SimpleNamespace(
+            objective_snapshot="", value=lambda: "Delivered release", acceptance=checkbox, accept=accepted,
+        )
+        with patch.object(APP.QMessageBox, "information") as information:
+            APP.ProjectCloseoutDialog.accept_outcome(dialog)
+        self.assertIn("项目目标缺失", information.call_args.args[1])
+        accepted.assert_not_called()
+
+        dialog.objective_snapshot = "Deliver a validated release"
+        with patch.object(APP.QMessageBox, "information") as information:
+            APP.ProjectCloseoutDialog.accept_outcome(dialog)
+        self.assertIn("尚未确认验收", information.call_args.args[1])
+        accepted.assert_not_called()
+
+        dialog.acceptance = SimpleNamespace(isChecked=lambda: True)
+        APP.ProjectCloseoutDialog.accept_outcome(dialog)
+        accepted.assert_called_once_with()
+        self.assertEqual(APP.ProjectCloseoutDialog.acceptance_objective(dialog), "Deliver a validated release")
+
     def test_project_next_step_becomes_a_stably_linked_daily_task(self):
         project = {
             "id": "current-id", "savedId": "stable-id", "name": "Release", "category": "Research",
@@ -788,21 +810,32 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertIn("另 1 项", summary)
 
     def test_project_completion_lifecycle_keeps_current_truth_and_history_together(self):
-        project = {"id": "runtime", "savedId": "stable", "name": "Release", "status": "active"}
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release",
+            "status": "active", "objective": "Deliver a validated release package",
+        }
         before = dict(project)
-        target = {"id": "stable", "name": "Release", "status": "completed"}
+        target = {
+            "id": "stable", "name": "Release", "status": "completed",
+            "objective": "Deliver a validated release package",
+        }
         window = SimpleNamespace(record_project_closeout=Mock())
         self.assertTrue(APP.MainWindow.apply_project_completion_lifecycle(
             window,
             project,
             before,
             target,
-            {"status": "completed", "completionSummary": "Passed all release checks."},
+            {
+                "status": "completed", "completionSummary": "Passed all release checks.",
+                "completionObjectiveSnapshot": "Deliver a validated release package",
+            },
             "2026-08-10T12:00:00",
             "manual",
         ))
         self.assertEqual(project["completionSummary"], "Passed all release checks.")
         self.assertEqual(target["completedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(target["completionObjectiveSnapshot"], "Deliver a validated release package")
+        self.assertEqual(target["completionAcceptedAt"], "2026-08-10T12:00:00")
         args = window.record_project_closeout.call_args.args
         self.assertEqual((args[0]["savedId"], args[1:]), ("stable", ("complete", "Passed all release checks.", "2026-08-10T12:00:00")))
 
@@ -813,6 +846,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
             window, project, completed, target, {"status": "active"}, "2026-08-10T13:00:00", "manual"
         ))
         self.assertNotIn("completionSummary", project)
+        self.assertNotIn("completionObjectiveSnapshot", project)
         self.assertEqual(target["completionHistory"][-1]["source"], "reopen")
         args = window.record_project_closeout.call_args.args
         self.assertEqual((args[0]["savedId"], args[1:]), ("stable", ("reopen", "Passed all release checks.", "2026-08-10T13:00:00")))
@@ -1205,7 +1239,11 @@ class DailySummaryTests(unittest.TestCase):
         self.assertTrue(any("保留下一步" in item["summary"] for item in payload["projectDecisions"]))
 
     def test_daily_summary_treats_only_confirmed_project_closeout_as_completion_evidence(self):
-        project = {"id": "runtime", "savedId": "stable", "name": "Release"}
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release",
+            "completionObjectiveSnapshot": "Deliver a validated release package",
+            "completionAcceptedAt": "2026-08-08T15:00:00",
+        }
         decisions = [
             APP.build_project_closeout_entry(project, "complete", "Passed 18 release checks.", "2026-08-08T15:00:00", "closeout-1"),
             APP.build_project_closeout_entry(project, "reopen", "Passed 18 release checks.", "2026-08-08T16:00:00", "closeout-2"),
@@ -1213,6 +1251,7 @@ class DailySummaryTests(unittest.TestCase):
         payload = APP.build_daily_summary_payload([], [project], "2026-08-08", decisions)
         self.assertEqual([item["kind"] for item in payload["projectDecisions"]], ["项目收尾", "项目收尾"])
         self.assertEqual([item["isCompletionEvidence"] for item in payload["projectDecisions"]], [True, False])
+        self.assertIn("验收目标", payload["projectDecisions"][0]["summary"])
         prompt = APP.daily_summary_prompt(payload)
         self.assertIn("isCompletionEvidence 为 true", prompt)
         self.assertIn("重新打开都不能写入 completed", prompt)

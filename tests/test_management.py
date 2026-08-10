@@ -77,12 +77,14 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.task_completion_revisions(None), [])
 
     def test_project_completion_outcome_forms_a_reopen_safe_audit_chain(self):
-        project = {"id": "project-1", "status": "completed"}
+        project = {"id": "project-1", "status": "completed", "objective": "Deliver a validated release package"}
         self.assertTrue(management.record_project_completion_outcome(
             project, "Delivered the validated release package.", "2026-08-10T12:00:00"
         ))
         self.assertEqual(management.project_completion_outcome(project), "Delivered the validated release package.")
         self.assertEqual(project["completedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(project["completionObjectiveSnapshot"], "Deliver a validated release package")
+        self.assertEqual(project["completionAcceptedAt"], "2026-08-10T12:00:00")
         self.assertTrue(management.record_project_completion_outcome(
             project, "Delivered the package and passed 18 release checks.", "2026-08-10T12:30:00", "closeout_editor"
         ))
@@ -93,7 +95,10 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertTrue(management.clear_project_completion_outcome(project, "2026-08-10T13:00:00"))
         self.assertNotIn("completionSummary", project)
         self.assertNotIn("completedAt", project)
+        self.assertNotIn("completionObjectiveSnapshot", project)
+        self.assertNotIn("completionAcceptedAt", project)
         self.assertEqual(project["completionHistory"][-1]["source"], "reopen")
+        self.assertEqual(project["completionHistory"][-1]["objective"], "Deliver a validated release package")
         self.assertEqual(
             management.latest_project_completion_outcome(project),
             "Delivered the package and passed 18 release checks.",
@@ -108,7 +113,12 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertNotIn("completionSummary", completed)
 
     def test_project_closeout_event_distinguishes_completion_from_reopen(self):
-        project = {"id": "runtime", "savedId": "stable", "name": "Release", "completedAt": "2026-08-10T12:00:00"}
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release",
+            "completedAt": "2026-08-10T12:00:00",
+            "completionObjectiveSnapshot": "Deliver a validated release package",
+            "completionAcceptedAt": "2026-08-10T12:00:00",
+        }
         completed = management.build_project_closeout_entry(
             project, "complete", "Passed the release gate.", "2026-08-10T12:00:00", "closeout-1"
         )
@@ -116,7 +126,8 @@ class ManagementModuleTests(unittest.TestCase):
             project, "reopen", "Passed the release gate.", "2026-08-10T13:00:00", "closeout-2"
         )
         self.assertEqual((completed["projectId"], completed["kind"], completed["action"]), ("stable", "closeout", "complete"))
-        self.assertIn("最终成果", management.format_project_decision_summary(completed))
+        self.assertEqual(completed["snapshot"]["objective"], "Deliver a validated release package")
+        self.assertIn("验收目标", management.format_project_decision_summary(completed))
         self.assertIn("重新打开", management.format_project_decision_summary(reopened))
         self.assertIsNone(management.build_project_closeout_entry(project, "archive", "Result", "2026-08-10T14:00:00"))
 

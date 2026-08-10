@@ -1566,6 +1566,7 @@ class ProjectEditor(QDialog):
         self.insight_worker = None
         self.insight_applied = False
         self.completion_summary = None
+        self.completion_objective_snapshot = None
         self.setWindowTitle("编辑项目" if project else "新建项目")
         self.setObjectName("projectEditor")
         self.setMinimumSize(720, 650)
@@ -1729,10 +1730,11 @@ class ProjectEditor(QDialog):
         if (not self.project or self.project.get("status", "active") != "completed") and data.get("status") == "completed":
             pending = open_project_tasks(getattr(self.parent(), "today_tasks", []), self.project)
             initial = str((self.project or {}).get("lastCompletedOutcome") or "").strip() or latest_project_completion_outcome(self.project)
-            closeout = ProjectCloseoutDialog(self, self.project, len(pending), initial)
+            closeout = ProjectCloseoutDialog(self, {**(self.project or {}), **data}, len(pending), initial)
             if closeout.exec_() != QDialog.Accepted:
                 return
             self.completion_summary = closeout.value()
+            self.completion_objective_snapshot = closeout.acceptance_objective()
         self.accept()
 
     def value(self):
@@ -1747,6 +1749,7 @@ class ProjectEditor(QDialog):
         data["blocker"] = self.blocker.text().strip()
         if self.completion_summary is not None:
             data["completionSummary"] = self.completion_summary
+            data["completionObjectiveSnapshot"] = self.completion_objective_snapshot or data["objective"]
         return normalize_project_management_decision(self.project, data)[0]
 
 
@@ -2883,12 +2886,15 @@ class ProjectCloseoutDialog(QDialog):
     def __init__(self, parent, project, pending_count=0, initial_outcome=""):
         super().__init__(parent)
         self.project = project or {}
+        self.objective_snapshot = str(
+            self.project.get("objective") or self.project.get("completionObjectiveSnapshot") or ""
+        ).strip()
         existing = project_completion_outcome(self.project)
         self.editing = bool(existing)
         self.setWindowTitle("项目收尾记录" if self.editing else "确认项目完成")
         self.setObjectName("projectCloseoutDialog")
         self.setMinimumWidth(650)
-        self.resize(680, 440 if pending_count else 400)
+        self.resize(680, 530 if pending_count else 490)
         self.setStyleSheet(STYLE + """
             QDialog#projectCloseoutDialog { background: #f7f9fc; }
             QDialog#projectCloseoutDialog QTextEdit { background: #ffffff; border: 1px solid #cbd7e6; border-radius: 10px; padding: 10px; font-size: 13px; line-height: 1.5; }
@@ -2907,7 +2913,15 @@ class ProjectCloseoutDialog(QDialog):
 
         project_name = QLabel(str(self.project.get("name") or "未命名项目")); project_name.setWordWrap(True)
         project_name.setStyleSheet("color: #34445c; background: #eef3f8; border: 1px solid #dce5ef; border-radius: 9px; padding: 10px 12px; font-size: 14px; font-weight: 650;"); root.addWidget(project_name)
-        hint = QLabel("写下整个项目最终交付了什么、验证到了什么程度。这里记录的是项目成果，不是最近完成的一项任务。")
+        objective_frame = QFrame(); objective_frame.setObjectName("closeoutObjective")
+        objective_frame.setStyleSheet("QFrame#closeoutObjective { background: #f1f6ff; border: 1px solid #cfdbef; border-radius: 10px; } QFrame#closeoutObjective QLabel { background: transparent; border: none; }")
+        objective_layout = QVBoxLayout(objective_frame); objective_layout.setContentsMargins(12, 9, 12, 10); objective_layout.setSpacing(3)
+        objective_title = QLabel("验收依据 · 项目目标"); objective_title.setStyleSheet("color: #315f9b; font-size: 10px; font-weight: 750;"); objective_layout.addWidget(objective_title)
+        objective_text = QLabel(self.objective_snapshot or "尚未明确项目目标")
+        objective_text.setWordWrap(True); objective_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        objective_text.setStyleSheet(f"color: {'#34445c' if self.objective_snapshot else '#9a5b00'}; font-size: 12px; font-weight: 600;"); objective_layout.addWidget(objective_text)
+        root.addWidget(objective_frame)
+        hint = QLabel("对照上述目标，写下整个项目最终交付了什么、验证到了什么程度。这里记录的是项目成果，不是最近完成的一项任务。")
         hint.setWordWrap(True); hint.setStyleSheet("color: #5f6f84; font-size: 12px;"); root.addWidget(hint)
 
         if pending_count:
@@ -2919,6 +2933,14 @@ class ProjectCloseoutDialog(QDialog):
         self.outcome_field.setPlaceholderText("例如：交付可复现的分析流程并通过三组数据验证，核心结论已写入报告，未遗留阻断问题。")
         self.outcome_field.setAccessibleName("项目完成成果"); root.addWidget(self.outcome_field)
 
+        acceptance_text = "我已核对项目目标，确认当前成果足以完成项目"
+        if pending_count:
+            acceptance_text = "我已核对项目目标与未完成任务，确认当前成果仍足以完成项目"
+        self.acceptance = QCheckBox(acceptance_text)
+        self.acceptance.setAccessibleName("确认项目验收")
+        self.acceptance.setStyleSheet("QCheckBox { color: #34445c; background: #ffffff; border: 1px solid #d5deea; border-radius: 9px; padding: 9px 11px; font-size: 12px; font-weight: 600; } QCheckBox::indicator { width: 17px; height: 17px; }")
+        root.addWidget(self.acceptance)
+
         footer = QHBoxLayout(); footer.setSpacing(8)
         evidence = QLabel("保存后会写入项目档案与每日总结；重新打开项目也不会删除这次成果。")
         evidence.setWordWrap(True); evidence.setStyleSheet("color: #718096; font-size: 10px;"); footer.addWidget(evidence, 1)
@@ -2927,13 +2949,22 @@ class ProjectCloseoutDialog(QDialog):
         root.addLayout(footer); self.outcome_field.setFocus()
 
     def accept_outcome(self):
+        if not self.objective_snapshot:
+            QMessageBox.information(self, "项目目标缺失", "请先返回项目面板明确项目目标，再进行完成验收。")
+            return
         if not self.value():
             QMessageBox.information(self, "还没有项目成果", "请写下项目最终交付或验证的结果；如果还没有形成结果，可以先保持“进行中”。")
+            return
+        if not self.acceptance.isChecked():
+            QMessageBox.information(self, "尚未确认验收", "请核对项目目标与完成成果，并勾选验收确认。")
             return
         self.accept()
 
     def value(self):
         return self.outcome_field.toPlainText().strip()
+
+    def acceptance_objective(self):
+        return self.objective_snapshot if self.acceptance.isChecked() else ""
 
 
 class TodayTaskCard(QFrame):
@@ -4439,9 +4470,18 @@ class ProjectWorkbenchDialog(QDialog):
         recent_task = str(self.project.get("lastCompletedOutcome") or "").strip()
         if self.project.get("status", "active") == "completed":
             completed_at = format_project_decision_time(self.project.get("completedAt"), compact=True)
-            self.outcome_title.setText(f"项目完成成果 · {completed_at}" if self.project.get("completedAt") else "项目完成成果")
+            acceptance_objective = str(self.project.get("completionObjectiveSnapshot") or "").strip()
+            title_parts = ["项目完成成果"]
+            if acceptance_objective:
+                title_parts.append("已按目标验收")
+            if self.project.get("completedAt"):
+                title_parts.append(completed_at)
+            self.outcome_title.setText(" · ".join(title_parts))
             self.outcome_text.setText((closeout or "尚未记录最终交付成果").replace("\n", " "))
-            self.outcome_text.setToolTip(closeout or "这是旧版完成项目；补充成果后会形成可追溯收尾记录。")
+            tooltip = closeout or "这是旧版完成项目；补充成果后会形成可追溯收尾记录。"
+            if acceptance_objective:
+                tooltip = f"验收目标：{acceptance_objective}\n\n完成成果：{closeout}"
+            self.outcome_text.setToolTip(tooltip)
             self.outcome_icon.setPixmap(fluent_icon("\uE73E" if closeout else "\uE7BA", color="#16803c" if closeout else "#a15c00", size=14).pixmap(QSize(14, 14)))
             self.outcome_title.setStyleSheet(f"color: {'#17623b' if closeout else '#8a5800'}; font-size: 11px; font-weight: 700;")
             self.outcome_text.setStyleSheet(f"color: {'#456a55' if closeout else '#7d6537'}; font-size: 11px;")
@@ -4512,7 +4552,7 @@ class ProjectWorkbenchDialog(QDialog):
         dialog = ProjectCloseoutDialog(self, self.project, len(pending), latest_project_completion_outcome(self.project))
         if dialog.exec_() != QDialog.Accepted:
             return
-        if self.window.update_project_completion_summary(self.project, dialog.value()):
+        if self.window.update_project_completion_summary(self.project, dialog.value(), dialog.acceptance_objective()):
             self.render_project_outcome(); self.render_decision_history()
 
     def render_decision_history(self):
@@ -4592,10 +4632,11 @@ class ProjectWorkbenchDialog(QDialog):
         if self.project.get("status", "active") != "completed" and data.get("status") == "completed":
             pending = open_project_tasks(self.window.today_tasks, self.project)
             initial = str(self.project.get("lastCompletedOutcome") or "").strip() or latest_project_completion_outcome(self.project)
-            closeout = ProjectCloseoutDialog(self, self.project, len(pending), initial)
+            closeout = ProjectCloseoutDialog(self, {**self.project, **data}, len(pending), initial)
             if closeout.exec_() != QDialog.Accepted:
                 return False
             data["completionSummary"] = closeout.value()
+            data["completionObjectiveSnapshot"] = closeout.acceptance_objective()
         saved = self.window.update_project_management(self.project, data, notify=notify)
         if saved is None:
             return False
@@ -5672,15 +5713,27 @@ class MainWindow(QMainWindow):
 
         if current_status == "completed":
             requested_outcome = str((requested or {}).get("completionSummary") or "").strip()
+            acceptance_objective = str(
+                (requested or {}).get("completionObjectiveSnapshot")
+                or (target or {}).get("objective")
+                or (before or {}).get("objective")
+                or ""
+            ).strip()
             if previous_status != "completed" and not requested_outcome:
                 requested_outcome = latest_project_completion_outcome(before) or latest_project_completion_outcome(target)
+            if previous_status != "completed" and not acceptance_objective:
+                return False
             if previous_status != "completed":
                 target.pop("completionSummary", None)
                 target.pop("completedAt", None)
             changed = bool(requested_outcome) and record_project_completion_outcome(
-                target, requested_outcome, occurred_at, "closeout" if previous_status != "completed" else source
+                target,
+                requested_outcome,
+                occurred_at,
+                "closeout" if previous_status != "completed" else source,
+                acceptance_objective,
             )
-            for key in ("completionSummary", "completedAt", "completionHistory"):
+            for key in ("completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionAcceptedAt"):
                 if key in target:
                     identity[key] = target.get(key)
             if changed:
@@ -5690,7 +5743,7 @@ class MainWindow(QMainWindow):
         if previous_status == "completed":
             previous_outcome = str((before or {}).get("completionSummary") or "").strip() or latest_project_completion_outcome(before)
             changed = clear_project_completion_outcome(target, occurred_at, "reopen")
-            for key in ("completionSummary", "completedAt"):
+            for key in ("completionSummary", "completedAt", "completionObjectiveSnapshot", "completionAcceptedAt"):
                 identity.pop(key, None)
             if "completionHistory" in target:
                 identity["completionHistory"] = target.get("completionHistory")
@@ -6340,6 +6393,13 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage("完成项目需要先记录最终交付成果", 4000)
                 return None
             data["completionSummary"] = closeout
+            if not str(data.get("objective") or "").strip():
+                if notify:
+                    self.statusBar().showMessage("完成项目前需要先明确项目目标", 4000)
+                return None
+            data["completionObjectiveSnapshot"] = str(
+                data.get("completionObjectiveSnapshot") or data.get("objective") or ""
+            ).strip()
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
@@ -6364,9 +6424,9 @@ class MainWindow(QMainWindow):
             orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
             if project.get("id") not in orders.setdefault(new_category, []):
                 orders[new_category].append(project.get("id"))
-        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory", *PROJECT_BLOCKER_LIFECYCLE_FIELDS):
+        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionAcceptedAt", *PROJECT_BLOCKER_LIFECYCLE_FIELDS):
             project[key] = target.get(key)
-        for key in ("completionSummary", "completedAt", "blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
+        for key in ("completionSummary", "completedAt", "completionObjectiveSnapshot", "completionAcceptedAt", "blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
             if key not in target:
                 project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
@@ -6393,7 +6453,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message, 3500 if blocker_event or normalization_notes else 2500)
         return dict(target)
 
-    def update_project_completion_summary(self, project, outcome):
+    def update_project_completion_summary(self, project, outcome, objective_snapshot=""):
         if (project or {}).get("status", "active") != "completed":
             self.statusBar().showMessage("项目尚未完成，不能记录项目级完成成果", 3500)
             return False
@@ -6401,13 +6461,17 @@ class MainWindow(QMainWindow):
         if not text:
             self.statusBar().showMessage("项目完成成果不能为空", 3000)
             return False
+        acceptance_objective = str(objective_snapshot or project.get("objective") or "").strip()
+        if not acceptance_objective:
+            self.statusBar().showMessage("项目目标缺失，无法确认完成验收", 3500)
+            return False
         target = self.saved_record_for_project(project)
         previous = project_completion_outcome(target)
         occurred_at = datetime.now().isoformat(timespec="seconds")
-        if not record_project_completion_outcome(target, text, occurred_at, "closeout_editor"):
+        if not record_project_completion_outcome(target, text, occurred_at, "closeout_editor", acceptance_objective):
             self.statusBar().showMessage("项目完成成果没有变化", 2300)
             return False
-        for key in ("completionSummary", "completedAt", "completionHistory"):
+        for key in ("completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionAcceptedAt"):
             project[key] = target.get(key)
         self.record_project_closeout(project, "revise" if previous else "complete", text, occurred_at)
         save_json(PROJECTS_FILE, self.saved_projects)
