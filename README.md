@@ -63,6 +63,7 @@ Removing a project from the application does not delete its folder or Codex conv
 - Drag a task by its handle between Planned, In Progress, and Completed; the status selector remains available as an accessible fallback.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
+- Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, or daily rollover—and feed that evidence into daily reviews.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
 - Keep the home review compact and open the full completed / in-progress / next-focus breakdown on click.

@@ -62,6 +62,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(task["title"], "Run validation set")
         self.assertEqual(task["origin"], "project_next_step")
         self.assertEqual(task["status"], "planned")
+        self.assertEqual(task["statusHistory"][0]["source"], "project")
 
     def test_project_next_step_duplicate_detection_ignores_spacing_and_case(self):
         project = {"id": "current-id", "savedId": "stable-id"}
@@ -300,6 +301,43 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertIn("另 1 项", summary)
 
 
+class TaskStatusHistoryTests(unittest.TestCase):
+    def test_status_history_records_real_transitions_and_sources(self):
+        task = {"id": "task-1", "status": "planned"}
+        self.assertTrue(APP.record_task_status_event(task, "planned", "doing", "2026-08-10T09:00:00", "drag"))
+        self.assertFalse(APP.record_task_status_event(task, "doing", "doing", "2026-08-10T09:01:00", "selector"))
+        self.assertTrue(APP.record_task_status_event(task, "doing", "done", "2026-08-10T10:00:00", "codex"))
+        self.assertEqual([event["source"] for event in task["statusHistory"]], ["drag", "codex"])
+        self.assertEqual(task["statusHistory"][-1]["to"], "done")
+
+    def test_task_events_are_sorted_and_legacy_tasks_get_a_truthful_fallback(self):
+        tasks = [
+            {"id": "legacy", "title": "Legacy", "status": "doing", "updatedAt": "2026-08-10T09:30:00", "autoStartedAt": "2026-08-10T09:30:00"},
+            {
+                "id": "tracked", "title": "Tracked", "status": "done",
+                "statusHistory": [
+                    {"at": "2026-08-10T08:00:00", "from": "", "to": "planned", "source": "manual"},
+                    {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"},
+                ],
+            },
+        ]
+        events = APP.task_status_events(tasks)
+        self.assertEqual([event["task"]["id"] for event in events], ["tracked", "legacy", "tracked"])
+        self.assertEqual(events[1]["source"], "codex")
+
+    def test_rollover_starts_a_new_daily_history_without_copying_old_events(self):
+        tasks = [{
+            "id": "old", "title": "Continue work", "status": "doing", "date": "2026-08-09",
+            "statusHistory": [{"at": "2026-08-09T09:00:00", "from": "planned", "to": "doing", "source": "manual"}],
+        }]
+        rolled, changed = APP.rollover_in_progress_tasks(tasks, "2026-08-10")
+        self.assertTrue(changed)
+        carried = next(task for task in rolled if task.get("carriedFromTaskId") == "old")
+        self.assertEqual(len(carried["statusHistory"]), 1)
+        self.assertEqual(carried["statusHistory"][0]["source"], "rollover")
+        self.assertEqual(carried["statusHistory"][0]["to"], "doing")
+
+
 class DailySummaryTests(unittest.TestCase):
     def test_payload_uses_only_requested_date_and_resolves_project(self):
         tasks = [
@@ -311,6 +349,21 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 1)
         self.assertEqual(payload["tasks"][0]["project"], "Denoising")
         self.assertEqual(payload["tasks"][0]["status"], "进行中")
+        self.assertEqual(payload["tasks"][0]["statusTransitions"][0]["source"], "历史记录")
+
+    def test_payload_includes_ordered_task_status_transitions(self):
+        tasks = [{
+            "date": "2026-08-08", "title": "Validate", "status": "done", "projectId": "p1",
+            "statusHistory": [
+                {"at": "2026-08-08T09:00:00", "from": "", "to": "planned", "source": "manual"},
+                {"at": "2026-08-08T10:00:00", "from": "planned", "to": "doing", "source": "codex"},
+                {"at": "2026-08-08T11:00:00", "from": "doing", "to": "done", "source": "drag"},
+            ],
+        }]
+        payload = APP.build_daily_summary_payload(tasks, [{"id": "p1", "name": "Denoising"}], "2026-08-08")
+        transitions = payload["tasks"][0]["statusTransitions"]
+        self.assertEqual([item["to"] for item in transitions], ["计划", "进行中", "已完成"])
+        self.assertEqual(transitions[-1]["source"], "看板拖放")
 
     def test_payload_resolves_tasks_saved_with_a_stable_project_id(self):
         tasks = [{"date": "2026-08-08", "title": "Validate", "status": "doing", "projectId": "stable-id"}]

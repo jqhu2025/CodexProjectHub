@@ -42,6 +42,16 @@ STATUS_TEXT = {"active": "进行中", "paused": "暂停", "idea": "想法库", "
 STATUS_COLOR = {"active": "#16803c", "paused": "#a15c00", "idea": "#7c3aed", "completed": "#2563eb"}
 TASK_STATUS = {"planned": "计划", "doing": "进行中", "done": "已完成"}
 TASK_COLORS = {"planned": "#7c3aed", "doing": "#2563eb", "done": "#16803c"}
+TASK_EVENT_SOURCES = {
+    "manual": "手动",
+    "selector": "状态选择",
+    "drag": "看板拖放",
+    "editor": "任务编辑",
+    "codex": "Codex 自动",
+    "project": "项目下一步",
+    "rollover": "自动延续",
+    "legacy": "历史记录",
+}
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}
 PROJECT_STAGE = {
     "discovery": "探索",
@@ -130,6 +140,51 @@ def save_json(path, data):
     os.replace(temp, path)
 
 
+def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
+    if not isinstance(task, dict) or status not in TASK_STATUS:
+        return False
+    previous = previous_status if previous_status in TASK_STATUS else ""
+    if previous == status:
+        return False
+    history = task.get("statusHistory")
+    if not isinstance(history, list):
+        history = []
+    event = {
+        "at": str(occurred_at or ""),
+        "from": previous,
+        "to": status,
+        "source": source if source in TASK_EVENT_SOURCES else "manual",
+    }
+    history.append(event)
+    task["statusHistory"] = history[-80:]
+    return True
+
+
+def task_status_events(tasks):
+    events = []
+    for task in tasks or []:
+        history = task.get("statusHistory") if isinstance(task.get("statusHistory"), list) else []
+        if not history:
+            fallback_source = (
+                "codex" if task.get("autoStartedAt") else
+                "rollover" if task.get("carriedFromTaskId") else
+                "project" if task.get("origin") == "project_next_step" else
+                "legacy"
+            )
+            history = [{
+                "at": task.get("updatedAt") or task.get("createdAt") or "",
+                "from": "",
+                "to": task.get("status", "planned"),
+                "source": fallback_source,
+            }]
+        for event in history:
+            target = event.get("to")
+            if target not in TASK_STATUS:
+                continue
+            events.append({**event, "task": task})
+    return sorted(events, key=lambda event: str(event.get("at") or ""), reverse=True)
+
+
 def rollover_in_progress_tasks(tasks, today=None):
     """Preserve each day's record and carry unfinished active work forward one day at a time."""
     today = today or datetime.now().date().isoformat()
@@ -159,6 +214,8 @@ def rollover_in_progress_tasks(tasks, today=None):
         carried["date"] = next_date
         carried["createdAt"] = now
         carried["updatedAt"] = now
+        carried["statusHistory"] = []
+        record_task_status_event(carried, None, "doing", now, "rollover")
         carried["carriedFromTaskId"] = source.get("id")
         carried["carriedFromDate"] = source.get("date")
         carried.pop("carriedToTaskId", None)
@@ -1041,7 +1098,7 @@ def build_project_next_step_task(project, target_date, now, conversation=None, t
     title = str((project or {}).get("nextStep") or "").strip()
     stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
     conversation = conversation or {}
-    return {
+    task = {
         "id": task_id or str(uuid.uuid4()),
         "title": title,
         "category": (project or {}).get("category") or "未分类",
@@ -1056,6 +1113,8 @@ def build_project_next_step_task(project, target_date, now, conversation=None, t
         "createdAt": now,
         "updatedAt": now,
     }
+    record_task_status_event(task, None, "planned", now, "project")
+    return task
 
 
 def project_next_step_completion_update(project, task, completed_at):
@@ -1219,12 +1278,22 @@ def build_daily_summary_payload(tasks, projects, target_date):
         if str(task.get("date") or "") != target_date:
             continue
         project = project_index.get(str(task.get("projectId") or ""), {})
+        transitions = [
+            {
+                "at": str(event.get("at") or ""),
+                "from": TASK_STATUS.get(event.get("from"), "新建"),
+                "to": TASK_STATUS.get(event.get("to"), "更新"),
+                "source": TASK_EVENT_SOURCES.get(event.get("source"), "手动"),
+            }
+            for event in reversed(task_status_events([task])[:8])
+        ]
         selected_tasks.append({
             "title": str(task.get("title") or "未命名任务"),
             "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
             "project": str(project.get("name") or "未关联项目"),
             "notes": str(task.get("notes") or "").strip(),
             "conversation": str(task.get("conversationTitle") or "").strip(),
+            "statusTransitions": transitions,
         })
 
     local_timezone = datetime.now().astimezone().tzinfo
@@ -1912,7 +1981,7 @@ class TaskDropColumn(QFrame):
         if not task_status_transition_allowed(task, self.status):
             event.ignore(); return
         event.acceptProposedAction()
-        self.window.set_task_status(task.get("id"), self.status)
+        self.window.set_task_status(task.get("id"), self.status, source="drag")
 
 
 class ProjectReorderContainer(QWidget):
@@ -2445,7 +2514,7 @@ class TodayTaskCard(QFrame):
         for value, label in TASK_STATUS.items(): status.addItem(label, value)
         status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
         status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
-        status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData())); actions.addWidget(status); actions.addStretch()
+        status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData(), source="selector")); actions.addWidget(status); actions.addStretch()
         if task.get("sessionId"):
             open_codex = QPushButton("打开 Codex")
             open_codex.setFixedSize(96, 30)
@@ -2487,7 +2556,16 @@ class TaskHistoryRow(QFrame):
             carry_text = f" · 延续自 {task.get('carriedFromDate', '前一天')}"
         elif task.get("carriedToTaskId"):
             carry_text = f" · 已延续至 {task.get('carriedToDate', '下一天')}"
-        meta = QLabel(f"{project_name}{carry_text}"); meta.setStyleSheet("color: #718096; font-size: 11px; border: none;"); content.addWidget(meta)
+        latest_events = task_status_events([task])
+        event_text = ""
+        if latest_events:
+            latest = latest_events[0]
+            try:
+                event_time_text = datetime.fromisoformat(str(latest.get("at") or "")).strftime("%H:%M")
+            except ValueError:
+                event_time_text = "—"
+            event_text = f" · {TASK_EVENT_SOURCES.get(latest.get('source'), '手动')} {event_time_text}"
+        meta = QLabel(f"{project_name}{carry_text}{event_text}"); meta.setStyleSheet("color: #718096; font-size: 11px; border: none;"); content.addWidget(meta)
         layout.addLayout(content, 1)
         state = QLabel(TASK_STATUS.get(status, status)); state.setAlignment(Qt.AlignCenter); state.setFixedSize(62, 26)
         state.setStyleSheet(f"color: {color}; background: {tint}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600;"); layout.addWidget(state)
@@ -3633,6 +3711,7 @@ class MainWindow(QMainWindow):
                 continue
             if str(task.get("sessionId") or "") not in running_sessions:
                 continue
+            record_task_status_event(task, "planned", "doing", now, "codex")
             task["status"] = "doing"
             task["autoStartedAt"] = now
             task["updatedAt"] = now
@@ -3686,15 +3765,18 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "activity_rows_layout"):
             return
         self._clear_layout(self.activity_rows_layout)
-        recent = sorted(tasks, key=lambda task: task.get("updatedAt") or task.get("createdAt") or "", reverse=True)[:6]
+        recent = task_status_events(tasks)[:6]
         if not recent:
             empty = QLabel("当天还没有任务记录"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #6b809e; padding: 24px; font-size: 12px;")
             self.activity_rows_layout.addWidget(empty)
             return
-        action_names = {"planned": "任务计划", "doing": "任务推进", "done": "任务完成"}
-        for index, task in enumerate(recent):
-            status = task.get("status", "planned"); accent = TASK_COLORS.get(status, "#64748b")
+        action_names = {"planned": "加入计划", "doing": "开始推进", "done": "完成任务"}
+        for index, event in enumerate(recent):
+            task = event.get("task") or {}
+            status = event.get("to", "planned"); accent = TASK_COLORS.get(status, "#64748b")
             row = QFrame(); row.setObjectName("activityRow"); row.setFixedHeight(46)
+            previous_label = TASK_STATUS.get(event.get("from"), "新建")
+            row.setToolTip(f"{previous_label} → {TASK_STATUS.get(status, '更新')} · {TASK_EVENT_SOURCES.get(event.get('source'), '手动')} · {event.get('at') or '时间未知'}")
             border = "border-bottom: 1px solid #e5eaf0;" if index < len(recent) - 1 else "border: none;"
             row.setStyleSheet(f"QFrame#activityRow {{ background: transparent; {border} }} QFrame#activityRow:hover {{ background: #f5f8fc; }}")
             row_layout = QHBoxLayout(row); row_layout.setContentsMargins(8, 4, 8, 4); row_layout.setSpacing(11)
@@ -3703,10 +3785,10 @@ class MainWindow(QMainWindow):
             kind = QLabel(action_names.get(status, "任务更新")); kind.setFixedWidth(76); kind.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(kind)
             project = self.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
             description = ElidedLabel(f"{task.get('title') or '未命名任务'}  ·  {project_name}"); description.setStyleSheet("color: #34445c; font-size: 12px;"); row_layout.addWidget(description, 1)
-            source_text = "项目" if task.get("origin") == "project_next_step" else ("Codex" if task.get("sessionId") else "手动")
+            source_text = TASK_EVENT_SOURCES.get(event.get("source"), "手动")
             source = QLabel(source_text); source.setStyleSheet("color: #748094; font-size: 11px;"); row_layout.addWidget(source)
             try:
-                updated = datetime.fromisoformat(task.get("updatedAt") or task.get("createdAt") or "").strftime("%H:%M")
+                updated = datetime.fromisoformat(str(event.get("at") or "")).strftime("%H:%M")
             except ValueError:
                 updated = "—"
             time_label = QLabel(updated); time_label.setFixedWidth(44); time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter); time_label.setStyleSheet("color: #53647a; font-size: 11px; font-weight: 600;"); row_layout.addWidget(time_label)
@@ -3733,10 +3815,15 @@ class MainWindow(QMainWindow):
             return
         now = datetime.now().isoformat(timespec="seconds")
         previous_status = task.get("status", "planned") if task is not None else None
-        if task is None:
+        created = task is None
+        if created:
             task = {"id": str(uuid.uuid4()), "createdAt": now}
             self.today_tasks.append(task)
         task.update(data); task["updatedAt"] = now
+        if created:
+            record_task_status_event(task, None, task.get("status", "planned"), now, "manual")
+        else:
+            record_task_status_event(task, previous_status, task.get("status", "planned"), now, "editor")
         completed_handoff = previous_status != "done" and task.get("status") == "done" and self.complete_project_next_step(task, now)
         save_json(TASKS_FILE, self.today_tasks)
         task_date = QDate.fromString(task.get("date", ""), Qt.ISODate)
@@ -3753,12 +3840,13 @@ class MainWindow(QMainWindow):
         elif not completed_handoff:
             self.statusBar().showMessage("今日任务已保存", 2500)
 
-    def set_task_status(self, task_id, status):
+    def set_task_status(self, task_id, status, source="manual"):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
         if not task_status_transition_allowed(task, status):
             return
         previous_status = task.get("status", "planned")
         now = datetime.now().isoformat(timespec="seconds")
+        record_task_status_event(task, previous_status, status, now, source)
         task["status"] = status; task["updatedAt"] = now
         completed_handoff = previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
         save_json(TASKS_FILE, self.today_tasks)
