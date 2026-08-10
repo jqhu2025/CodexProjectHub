@@ -147,6 +147,22 @@ class PortfolioModuleTests(unittest.TestCase):
         state = portfolio.portfolio_focus_capacity_state(projects, 3)
         self.assertEqual(portfolio.portfolio_focus_guidance(state), "容量已满 · 1 项执行在重点外")
 
+    def test_focus_change_impact_requires_confirmation_only_when_crossing_capacity(self):
+        focused = {"id": "focused", "priority": "focus", "status": "active"}
+        candidate = {"id": "candidate", "priority": "normal", "status": "active"}
+        state = portfolio.portfolio_focus_capacity_state([focused, candidate], 1)
+
+        addition = portfolio.portfolio_focus_change_impact(candidate, True, state)
+        self.assertEqual((addition["selectedBefore"], addition["selectedAfter"]), (1, 2))
+        self.assertEqual(addition["overBy"], 1)
+        self.assertTrue(addition["requiresConfirmation"])
+
+        removal = portfolio.portfolio_focus_change_impact(focused, False, state)
+        self.assertEqual(removal["selectedAfter"], 0)
+        self.assertFalse(removal["requiresConfirmation"])
+        noop = portfolio.portfolio_focus_change_impact(focused, True, state)
+        self.assertFalse(noop["changes"])
+
     def test_focus_commitment_only_queues_a_declared_action_without_other_live_work(self):
         projects = [
             {"id": "ready", "status": "active", "priority": "focus", "nextStep": "Run validation"},

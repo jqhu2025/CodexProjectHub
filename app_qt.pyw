@@ -106,6 +106,7 @@ from codex_hub.portfolio import (
     migrate_project_task_category_references,
     portfolio_focus_commitment_queue,
     portfolio_focus_capacity_state,
+    portfolio_focus_change_impact,
     portfolio_focus_guidance,
     portfolio_lifecycle_calibration_queue,
     project_activity_evidence,
@@ -1219,6 +1220,30 @@ def project_baseline_batch_candidates(projects, today_tasks=None, today=None):
         for project in projects or []
         if project_baseline_batch_eligibility(project, today_tasks, today)[0]
     ]
+
+
+def project_confirmation_workload(projects, today_tasks=None, today=None):
+    """Separate one-click baseline setup from decisions that need a person.
+
+    A healthy, complete and execution-aligned first baseline can be established
+    as one guarded batch.  It should not inflate the dashboard number labelled
+    as work that the manager must decide project by project.
+    """
+    queued = [
+        project
+        for project in projects or []
+        if project_management_scope_matches(project, "review")
+    ]
+    batch = project_baseline_batch_candidates(queued, today_tasks, today)
+    batch_ids = {id(project) for project in batch}
+    manual = [project for project in queued if id(project) not in batch_ids]
+    return {
+        "total": len(queued),
+        "manual": manual,
+        "manualCount": len(manual),
+        "batch": batch,
+        "batchCount": len(batch),
+    }
 
 
 def project_review_urgency_summary(projects, now=None):
@@ -4973,10 +4998,11 @@ class FocusCapacityDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.window = parent
+        self.view_mode = None
         self.setWindowTitle("重点容量")
         self.setObjectName("focusCapacityDialog")
-        self.setMinimumSize(760, 540)
-        self.resize(820, 620)
+        self.setMinimumSize(780, 580)
+        self.resize(860, 700)
         self.setStyleSheet(STYLE)
         root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
 
@@ -5003,8 +5029,15 @@ class FocusCapacityDialog(QDialog):
         self.alignment_metric = self.metric_widget("组合判断", "待校准", "#315f9b"); summary_layout.addWidget(self.alignment_metric[0], 2)
         root.addWidget(self.summary)
 
-        hint = QLabel("先比较项目目标、健康度、下一步和执行证据，再选择不超过容量的战略重点。重点不等于正在忙；未选项目仍可继续执行。")
-        hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
+        hint_frame = QFrame(); hint_frame.setObjectName("focusScopeBar")
+        hint_frame.setStyleSheet("QFrame#focusScopeBar { background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; } QFrame#focusScopeBar QLabel { background: transparent; border: none; }")
+        hint_layout = QHBoxLayout(hint_frame); hint_layout.setContentsMargins(11, 7, 9, 7); hint_layout.setSpacing(10)
+        hint = QLabel("先比较项目目标、健康度、下一步和执行证据，再选择不超过容量的战略重点。重点不等于正在忙。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #526071; font-size: 11px;"); hint_layout.addWidget(hint, 1)
+        self.scope_selector = QComboBox(); self.scope_selector.setFixedSize(156, 34)
+        self.scope_selector.setToolTip("切换实际推进、已选重点或全部活跃项目")
+        self.scope_selector.currentIndexChanged.connect(self.change_scope); hint_layout.addWidget(self.scope_selector)
+        root.addWidget(hint_frame)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
         self.rows_widget = QWidget(); self.rows_widget.setObjectName("focusRows"); self.rows_widget.setStyleSheet("QWidget#focusRows { background: #f7f9fc; }")
@@ -5033,7 +5066,23 @@ class FocusCapacityDialog(QDialog):
         self.clear_rows()
         capacity = portfolio_focus_capacity()
         state = portfolio_focus_capacity_state(self.window.projects, capacity)
+        self.focus_state = state
         strategic_count = len(state["strategic"]); execution_count = len(state["executing"])
+        active = [project for project in self.window.projects if project.get("status", "active") == "active"]
+        if self.view_mode not in {"executing", "strategic", "all"}:
+            self.view_mode = "executing" if state["executing"] else "all"
+        scope_options = (
+            (f"实际推进  {execution_count}", "executing"),
+            (f"战略重点  {strategic_count}", "strategic"),
+            (f"全部活跃  {len(active)}", "all"),
+        )
+        self.scope_selector.blockSignals(True)
+        self.scope_selector.clear()
+        for label, value in scope_options:
+            self.scope_selector.addItem(label, value)
+        self.scope_selector.setCurrentIndex(max(0, self.scope_selector.findData(self.view_mode)))
+        self.scope_selector.blockSignals(False)
+        self.scope_selector.setAccessibleName(f"重点校准视图：{self.scope_selector.currentText()}")
         provider = getattr(self.window, "actionable_focus_commitment_queue", None)
         commitment_due = provider() if callable(provider) else portfolio_focus_commitment_queue(state["strategic"], self.window.today_tasks)
         self.capacity_button.setText(f"重点容量 {capacity}")
@@ -5058,16 +5107,24 @@ class FocusCapacityDialog(QDialog):
         self.alignment_metric[1].setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 720;")
         self.summary.setStyleSheet(f"QFrame#focusCapacitySummary {{ background: {background}; border: 1px solid #d8e1eb; border-radius: 12px; }} QFrame#focusCapacitySummary QLabel {{ background: transparent; border: none; }}")
 
-        active = [project for project in self.window.projects if project.get("status", "active") == "active"]
-        active.sort(key=lambda project: (
+        if self.view_mode == "executing":
+            shown = list(state["executing"])
+            empty_text = "当前没有实际推进项目；可切换到“全部活跃”选择未来重点"
+        elif self.view_mode == "strategic":
+            shown = list(state["strategic"])
+            empty_text = "尚未选择战略重点；可切换到“实际推进”或“全部活跃”"
+        else:
+            shown = list(active)
+            empty_text = "当前没有活跃项目"
+        shown.sort(key=lambda project: (
             0 if project_priority_key(project) == "focus" else 1,
             0 if project_live_work_state(project)[0] else 1,
             str(project.get("name") or "").casefold(),
         ))
-        if not active:
-            empty = QLabel("当前没有活跃项目"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;")
+        if not shown:
+            empty = QLabel(empty_text); empty.setWordWrap(True); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;")
             self.rows_layout.addWidget(empty)
-        for project in active:
+        for project in shown:
             self.rows_layout.addWidget(self.project_row(project))
         self.rows_layout.addStretch()
 
@@ -5125,9 +5182,16 @@ class FocusCapacityDialog(QDialog):
                     commit.setToolTip("打开项目面板，先明确一个可执行的下一步")
                     commit.clicked.connect(lambda _checked=False, value=project: self.open_project_for_next_step(value))
                 layout.addWidget(commit)
+        impact = portfolio_focus_change_impact(project, not is_focus, getattr(self, "focus_state", {}))
         action = QPushButton("移出重点" if is_focus else "设为重点"); action.setFixedSize(92, 34)
         if not is_focus:
             action.setStyleSheet("QPushButton { color: #6d3fc0; background: #f7f2ff; border: 1px solid #d7c6f3; border-radius: 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #eee4ff; border-color: #ab87df; }")
+            if impact["requiresConfirmation"]:
+                action.setToolTip(f"当前重点容量已满；继续会变为 {impact['selectedAfter']} / {impact['capacity']}，需要再次确认")
+            else:
+                action.setToolTip(f"设为重点后占用 {impact['selectedAfter']} / {impact['capacity']} 个重点名额")
+        else:
+            action.setToolTip(f"移出后保留 {impact['selectedAfter']} / {impact['capacity']} 个战略重点；不会停止实际工作")
         action.clicked.connect(lambda _checked=False, value=project, enabled=not is_focus: self.set_focus(value, enabled)); layout.addWidget(action)
         return row
 
@@ -5142,7 +5206,28 @@ class FocusCapacityDialog(QDialog):
         self.render_state()
 
     def set_focus(self, project, enabled):
+        state = portfolio_focus_capacity_state(self.window.projects, portfolio_focus_capacity())
+        impact = portfolio_focus_change_impact(project, enabled, state)
+        if impact["requiresConfirmation"]:
+            answer = QMessageBox.question(
+                self,
+                "重点容量已满",
+                f"当前战略重点为 {impact['selectedBefore']} / {impact['capacity']}。\n\n"
+                f"继续把“{project.get('name') or '未命名项目'}”设为重点后，将变为 "
+                f"{impact['selectedAfter']} / {impact['capacity']}，超出容量 {impact['overBy']} 项。\n\n"
+                "系统不会自动移出其他重点，并会在主页持续提示收敛。是否仍要继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         if self.window.set_project_focus_priority(project, enabled):
+            self.render_state()
+
+    def change_scope(self, _index=None):
+        value = self.scope_selector.currentData()
+        if value in {"executing", "strategic", "all"} and value != self.view_mode:
+            self.view_mode = value
             self.render_state()
 
     def change_capacity(self):
@@ -7353,9 +7438,26 @@ class MainWindow(QMainWindow):
                 controls["frame"].setAccessibleName(f"重点容量，{len(strategic)} / {capacity_state['capacity']}；{len(executing)} 项实际推进。{summary}")
                 continue
             projects = groups.get(scope, [])
+            confirmation_workload = {
+                "manual": [], "manualCount": 0, "batch": [], "batchCount": 0,
+            }
+            manual_projects = []
+            batch_projects = []
             if scope == "review":
                 confirmation_counts = project_confirmation_counts(projects)
-                review_caption = project_confirmation_caption(confirmation_counts)
+                confirmation_workload = project_confirmation_workload(
+                    projects,
+                    self.today_tasks,
+                    QDate.currentDate().toString(Qt.ISODate),
+                )
+                manual_projects = confirmation_workload["manual"]
+                batch_projects = confirmation_workload["batch"]
+                if manual_projects:
+                    review_caption = "需你确认"
+                elif batch_projects:
+                    review_caption = "首次基线"
+                else:
+                    review_caption = project_confirmation_caption(confirmation_counts)
                 controls["caption"] = review_caption
                 controls["title"].setText(review_caption)
                 prefixes["review"] = review_caption
@@ -7368,20 +7470,30 @@ class MainWindow(QMainWindow):
                 f"{route_labels.get(owner, owner)} {count}"
                 for owner, count in routed_to.items()
             )
-            controls["count"].setText(str(len(projects)))
+            visible_count = (
+                confirmation_workload["manualCount"]
+                if scope == "review" and confirmation_workload["manualCount"]
+                else confirmation_workload["batchCount"]
+                if scope == "review" and confirmation_workload["batchCount"]
+                else len(projects)
+            )
+            controls["count"].setText(str(visible_count))
             if projects:
-                names = [str(project.get("name") or "未命名项目") for project in projects]
+                preview_projects = (
+                    manual_projects
+                    if scope == "review" and manual_projects
+                    else projects
+                )
+                names = [str(project.get("name") or "未命名项目") for project in preview_projects]
                 preview = "、".join(names[:2])
                 if len(names) > 2:
                     preview += f" 等 {len(names)} 项"
                 if scope == "review":
                     parts = []
-                    if confirmation_counts["governance"]:
-                        parts.append(f"补全 {confirmation_counts['governance']}")
-                    if confirmation_counts["baseline"]:
-                        parts.append(f"建基线 {confirmation_counts['baseline']}")
-                    if confirmation_counts["overdue"]:
-                        parts.append(f"到期 {confirmation_counts['overdue']}")
+                    if manual_projects:
+                        parts.append(f"逐项判断 {len(manual_projects)}")
+                    if batch_projects:
+                        parts.append(f"可一次建基线 {len(batch_projects)}")
                     urgency = project_review_urgency_summary(projects)
                     if urgency:
                         parts.append(urgency)
@@ -7393,8 +7505,16 @@ class MainWindow(QMainWindow):
                 elif scope == "review":
                     details = [
                         f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}"
-                        for project in projects
+                        for project in manual_projects
                     ]
+                    if batch_projects:
+                        batch_names = "、".join(
+                            str(project.get("name") or "未命名项目")
+                            for project in batch_projects[:8]
+                        )
+                        details.append(
+                            f"• 可一次建立首次基线 {len(batch_projects)} 项：{batch_names}"
+                        )
                 else:
                     details = [f"• {name}" for name in names]
                 tooltip = f"{prefixes[scope]}\n" + "\n".join(details)
@@ -7410,7 +7530,7 @@ class MainWindow(QMainWindow):
             controls["preview"].setText(summary)
             controls["preview"].setToolTip(tooltip)
             controls["frame"].setToolTip(tooltip)
-            controls["frame"].setAccessibleName(f"{controls['caption']}，{len(projects)} 个项目。{summary}")
+            controls["frame"].setAccessibleName(f"{controls['caption']}，{visible_count} 个项目。{summary}")
         if hasattr(self, "portfolio_priority_panel"):
             alignments = routing["queues"].get("alignment", [])
             lifecycle_items = routing["queues"].get("lifecycle", [])

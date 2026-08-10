@@ -616,6 +616,26 @@ def portfolio_focus_guidance(state):
     return "尚未选择重点"
 
 
+def portfolio_focus_change_impact(project, enabled, state):
+    """Preview one deliberate focus change before it can cross capacity."""
+    state = state or {}
+    capacity = normalized_portfolio_focus_capacity(state.get("capacity"))
+    current = len(state.get("strategic") or [])
+    is_focus = _project_priority_key(project or {}) == "focus"
+    requested = bool(enabled)
+    delta = 1 if requested and not is_focus else -1 if not requested and is_focus else 0
+    selected_after = max(0, current + delta)
+    over_by = max(0, selected_after - capacity)
+    return {
+        "capacity": capacity,
+        "selectedBefore": current,
+        "selectedAfter": selected_after,
+        "overBy": over_by,
+        "changes": bool(delta),
+        "requiresConfirmation": bool(delta > 0 and over_by),
+    }
+
+
 def parsed_portfolio_evidence_time(value):
     text = str(value or "").strip()
     if not text:

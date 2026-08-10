@@ -168,6 +168,31 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("目标：Ship verified release", row.accessibleName())
         dialog.close(); parent.close()
 
+    def test_focus_dialog_defaults_to_real_execution_and_can_reveal_all_projects(self):
+        parent = APP.QWidget(); parent.today_tasks = []
+        parent.projects = [
+            {
+                "id": "live", "name": "Live Project", "status": "active", "priority": "normal",
+                "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test",
+                "activeTaskCount": 1, "conversations": [],
+            },
+            {
+                "id": "idle", "name": "Idle Project", "status": "active", "priority": "normal",
+                "stage": "planning", "health": "on_track", "objective": "Explore", "nextStep": "Define",
+                "activeTaskCount": 0, "conversations": [],
+            },
+        ]
+        with patch.object(APP, "portfolio_focus_capacity", return_value=3):
+            dialog = APP.FocusCapacityDialog(parent)
+        self.assertEqual(dialog.view_mode, "executing")
+        self.assertEqual(len(dialog.findChildren(APP.QFrame, "focusProjectRow")), 1)
+        self.assertIn("实际推进", dialog.scope_selector.currentText())
+
+        dialog.scope_selector.setCurrentIndex(dialog.scope_selector.findData("all"))
+        self.assertEqual(dialog.view_mode, "all")
+        self.assertEqual(len(dialog.findChildren(APP.QFrame, "focusProjectRow")), 2)
+        dialog.close(); parent.close()
+
     def test_project_row_can_show_strategy_and_execution_without_merging_them(self):
         project = {
             "id": "both", "name": "Validation", "status": "active", "priority": "focus",
@@ -1143,6 +1168,24 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(update["priority"], "focus")
         self.assertEqual(window.update_project_management.call_args.kwargs["source"], "focus")
 
+    def test_focus_dialog_requires_explicit_confirmation_before_crossing_capacity(self):
+        focused = {"id": "focused", "name": "Focused", "status": "active", "priority": "focus"}
+        candidate = {"id": "candidate", "name": "Candidate", "status": "active", "priority": "normal"}
+        window = SimpleNamespace(projects=[focused, candidate], set_project_focus_priority=Mock(return_value=True))
+        dialog = SimpleNamespace(window=window, render_state=Mock())
+        with patch.object(APP, "portfolio_focus_capacity", return_value=1), patch.object(
+            APP.QMessageBox, "question", return_value=APP.QMessageBox.No
+        ):
+            APP.FocusCapacityDialog.set_focus(dialog, candidate, True)
+        window.set_project_focus_priority.assert_not_called()
+
+        with patch.object(APP, "portfolio_focus_capacity", return_value=1), patch.object(
+            APP.QMessageBox, "question", return_value=APP.QMessageBox.Yes
+        ):
+            APP.FocusCapacityDialog.set_focus(dialog, candidate, True)
+        window.set_project_focus_priority.assert_called_once_with(candidate, True)
+        dialog.render_state.assert_called_once_with()
+
     def test_focus_commitment_action_reuses_the_project_next_step_scheduler(self):
         project = {"id": "focus", "nextStep": "Run validation"}
         task = {"id": "task"}
@@ -2024,6 +2067,26 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1 · 最久逾期 4 天",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
+
+    def test_confirmation_workload_counts_only_real_one_by_one_decisions_as_manual(self):
+        healthy = {
+            "status": "active", "stage": "execution", "health": "on_track",
+            "objective": "Ship", "nextStep": "Test", "conversations": [],
+        }
+        attention = {**healthy, "name": "Needs judgement", "health": "attention"}
+        aligned = {**healthy, "name": "Safe baseline"}
+        current = {
+            **healthy, "name": "Already current",
+            "reviewedAt": datetime.now().isoformat(timespec="seconds"),
+        }
+        workload = APP.project_confirmation_workload(
+            [attention, aligned, current], [], APP.QDate.currentDate().toString(APP.Qt.ISODate)
+        )
+        self.assertEqual(workload["total"], 2)
+        self.assertEqual(workload["manual"], [attention])
+        self.assertEqual(workload["manualCount"], 1)
+        self.assertEqual(workload["batch"], [aligned])
+        self.assertEqual(workload["batchCount"], 1)
 
     def test_confirmation_caption_explains_a_homogeneous_queue_instead_of_hiding_it(self):
         self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 9, "overdue": 0, "total": 9}), "首次基线")
