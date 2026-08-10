@@ -354,6 +354,39 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertIn("当前阶段：规划 → 执行", summary)
         self.assertIn("另 1 项", summary)
 
+    def test_project_decision_rollback_uses_the_normal_update_engine_and_audits_it(self):
+        project = {"id": "current", "savedId": "stable", "objective": "New objective", "status": "active"}
+        entry = {
+            "projectId": "stable",
+            "changes": [{"field": "objective", "before": "Previous objective", "after": "New objective"}],
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(project_decisions=[], statusBar=lambda: status_bar)
+
+        def update_project(_project, data, notify=True, source="manual"):
+            self.assertFalse(notify)
+            self.assertEqual(source, "undo")
+            self.assertEqual(data["objective"], "Previous objective")
+            window.project_decisions.append({"source": source})
+            return data
+
+        window.update_project_management = Mock(side_effect=update_project)
+        changed = APP.MainWindow.rollback_project_decision(window, project, entry)
+        self.assertTrue(changed)
+        window.update_project_management.assert_called_once()
+        self.assertEqual(window.project_decisions[-1]["source"], "undo")
+
+    def test_project_decision_rollback_rejects_a_record_from_another_project(self):
+        status_bar = Mock()
+        window = SimpleNamespace(project_decisions=[], statusBar=lambda: status_bar, update_project_management=Mock())
+        changed = APP.MainWindow.rollback_project_decision(
+            window,
+            {"id": "project-a", "savedId": "stable-a", "objective": "A"},
+            {"projectId": "stable-b", "changes": [{"field": "objective", "before": "Old", "after": "A"}]},
+        )
+        self.assertFalse(changed)
+        window.update_project_management.assert_not_called()
+
 
 class TaskStatusHistoryTests(unittest.TestCase):
     def test_status_history_records_real_transitions_and_sources(self):

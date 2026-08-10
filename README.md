@@ -45,6 +45,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
 - Keep a local, source-labelled history of real project-decision changes, including manual edits, Codex suggestions, category moves, and completed next-action handoffs.
+- Restore any recorded project decision selectively: only fields touched by that event are rolled back, newer conflicting edits are disclosed before confirmation, and the rollback is preserved as a new audit event.
 - Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links.
 - Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, and completion warns when linked tasks remain open without rewriting them.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.

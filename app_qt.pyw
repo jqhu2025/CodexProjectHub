@@ -36,6 +36,7 @@ from codex_hub.management import (
     TASK_STATUS,
     archive_project_layout,
     build_project_decision_entry,
+    build_project_decision_rollback,
     compact_project_decision_value,
     display_project_decision_value,
     format_project_decision_summary,
@@ -2593,6 +2594,9 @@ class DailySummaryDialog(QDialog):
 class ProjectDecisionHistoryDialog(QDialog):
     def __init__(self, parent, project, entries):
         super().__init__(parent)
+        self.window = getattr(parent, "window", parent)
+        self.project = project
+        self.rolled_back = False
         self.setWindowTitle(f"项目决策记录 · {project.get('name', '未命名项目')}")
         self.setObjectName("projectDecisionHistory")
         self.setMinimumSize(780, 560)
@@ -2619,7 +2623,10 @@ class ProjectDecisionHistoryDialog(QDialog):
             timestamp = QLabel(format_project_decision_time(entry.get("at"))); timestamp.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); header.addWidget(timestamp)
             header.addStretch()
             source_text = PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策")
-            source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source); card_layout.addLayout(header)
+            source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source)
+            rollback = QPushButton("恢复到变更前"); rollback.setFixedHeight(30); rollback.setIcon(fluent_icon("\uE7A7", color="#526071", size=12)); rollback.setIconSize(QSize(12, 12))
+            rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
+            rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback); card_layout.addLayout(header)
             for change in entry.get("changes") or []:
                 field = change.get("field")
                 before = display_project_decision_value(field, change.get("before"))
@@ -2629,6 +2636,37 @@ class ProjectDecisionHistoryDialog(QDialog):
             rows.addWidget(card)
         rows.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
         actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("关闭"); close.setFixedHeight(36); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+
+    def rollback_entry(self, entry):
+        requested, affected, conflicts = build_project_decision_rollback(self.project, entry)
+        if not affected:
+            QMessageBox.information(self, "无需恢复", "当前项目已经与这条记录变更前的值一致。")
+            return
+        preview = []
+        for detail in affected[:5]:
+            current = display_project_decision_value(detail["field"], detail["current"])
+            target = display_project_decision_value(detail["field"], detail["target"])
+            preview.append(f"• {detail['label']}：{current} → {target}")
+        if len(affected) > 5:
+            preview.append(f"• 另 {len(affected) - 5} 项")
+        notes = ["将只恢复这条记录涉及的字段：", *preview]
+        if conflicts:
+            labels = "、".join(detail["label"] for detail in conflicts)
+            notes.extend(["", f"注意：{labels} 在此后又发生过变化，本次恢复会覆盖这些字段的当前值。"])
+        pending = open_project_tasks(self.window.today_tasks, self.project) if requested.get("status") == "completed" else []
+        if pending:
+            notes.extend(["", f"项目仍关联 {len(pending)} 项未完成任务；恢复项目状态不会改写这些任务。"])
+        notes.extend(["", "回滚完成后会新增一条“撤销操作”记录，历史不会被删除。是否继续？"])
+        answer = QMessageBox.question(
+            self,
+            "恢复项目决策",
+            "\n".join(notes),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes and self.window.rollback_project_decision(self.project, entry):
+            self.rolled_back = True
+            self.accept()
 
 
 class ProjectWorkbenchDialog(QDialog):
@@ -2776,7 +2814,11 @@ class ProjectWorkbenchDialog(QDialog):
 
     def show_decision_history(self):
         entries = self.window.project_decisions_for(self.project)
-        ProjectDecisionHistoryDialog(self, self.project, entries).exec_()
+        dialog = ProjectDecisionHistoryDialog(self, self.project, entries)
+        dialog.exec_()
+        if dialog.rolled_back:
+            self.apply_management_values(self.project)
+            self.render_decision_history()
 
     def apply_management_values(self, data):
         for control, key in (
@@ -3974,7 +4016,7 @@ class MainWindow(QMainWindow):
         project["savedId"] = target["id"]
         return target
 
-    def update_project_management(self, project, data, notify=True):
+    def update_project_management(self, project, data, notify=True, source="manual"):
         previous_category = project.get("category", "未分类")
         before = dict(project)
         data, normalization_notes = normalize_project_management_decision(project, data)
@@ -4004,7 +4046,7 @@ class MainWindow(QMainWindow):
                 orders[new_category].append(project.get("id"))
         for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded"):
             project[key] = target.get(key)
-        self.record_project_decision(project, before, target, "manual")
+        self.record_project_decision(project, before, target, source if source in PROJECT_DECISION_SOURCES else "manual")
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
@@ -4013,6 +4055,22 @@ class MainWindow(QMainWindow):
             message = normalization_notes[0] if normalization_notes else "项目目标与下一步已保存"
             self.statusBar().showMessage(message, 3500 if normalization_notes else 2500)
         return dict(target)
+
+    def rollback_project_decision(self, project, entry):
+        if str((entry or {}).get("projectId") or "") not in project_reference_ids(project):
+            self.statusBar().showMessage("这条决策记录不属于当前项目，无法恢复", 3500)
+            return False
+        requested, affected, _conflicts = build_project_decision_rollback(project, entry)
+        if not affected:
+            self.statusBar().showMessage("当前项目已经是目标状态，无需恢复", 3000)
+            return False
+        previous_count = len(self.project_decisions)
+        saved = self.update_project_management(project, requested, notify=False, source="undo")
+        if saved is None or len(self.project_decisions) == previous_count:
+            self.statusBar().showMessage("项目规则未允许产生有效回滚，请检查当前状态", 4000)
+            return False
+        self.statusBar().showMessage(f"已恢复 {len(affected)} 项项目决策，并保留回滚记录", 4000)
+        return True
 
     def open_project_workspace(self, project):
         ProjectWorkbenchDialog(self, project).exec_()

@@ -274,6 +274,33 @@ def project_decision_changes(before, after):
     return changes
 
 
+def build_project_decision_rollback(project, entry):
+    """Prepare a selective rollback and report fields changed again since then."""
+    requested = dict(project or {})
+    affected = []
+    conflicts = []
+    for change in (entry or {}).get("changes") or []:
+        field = change.get("field")
+        if field not in PROJECT_DECISION_FIELDS:
+            continue
+        current_value = normalized_decision_value((project or {}).get(field))
+        before_value = normalized_decision_value(change.get("before"))
+        after_value = normalized_decision_value(change.get("after"))
+        requested[field] = before_value
+        if current_value == before_value:
+            continue
+        detail = {
+            "field": field,
+            "label": change.get("label") or PROJECT_DECISION_FIELDS[field],
+            "current": current_value,
+            "target": before_value,
+        }
+        affected.append(detail)
+        if current_value != after_value:
+            conflicts.append(detail)
+    return requested, affected, conflicts
+
+
 def build_project_decision_entry(project, before, after, source, occurred_at, entry_id=None):
     changes = project_decision_changes(before, after)
     if not changes:

@@ -104,6 +104,32 @@ class ManagementModuleTests(unittest.TestCase):
         changes = management.project_decision_changes(before, after)
         self.assertEqual([change["field"] for change in changes], ["health"])
 
+    def test_decision_rollback_is_selective_and_detects_newer_changes(self):
+        project = {"objective": "Validated model", "health": "blocked", "nextStep": "Publish report"}
+        entry = {"changes": [
+            {"field": "objective", "label": "项目目标", "before": "Baseline model", "after": "Validated model"},
+            {"field": "health", "label": "项目健康度", "before": "on_track", "after": "attention"},
+        ]}
+        requested, affected, conflicts = management.build_project_decision_rollback(project, entry)
+        self.assertEqual(requested["objective"], "Baseline model")
+        self.assertEqual(requested["health"], "on_track")
+        self.assertEqual(requested["nextStep"], "Publish report")
+        self.assertEqual([item["field"] for item in affected], ["objective", "health"])
+        self.assertEqual([item["field"] for item in conflicts], ["health"])
+
+    def test_latest_decision_rollback_has_no_false_conflict(self):
+        project = {"stage": "validation", "health": "attention"}
+        entry = {"changes": [
+            {"field": "stage", "before": "execution", "after": "validation"},
+            {"field": "health", "before": "on_track", "after": "attention"},
+            {"field": "unsupported", "before": "x", "after": "y"},
+        ]}
+        requested, affected, conflicts = management.build_project_decision_rollback(project, entry)
+        self.assertEqual(requested["stage"], "execution")
+        self.assertEqual(requested["health"], "on_track")
+        self.assertEqual(len(affected), 2)
+        self.assertEqual(conflicts, [])
+
 
 if __name__ == "__main__":
     unittest.main()
