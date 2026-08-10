@@ -87,6 +87,26 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         task = {"origin": "project_next_step", "projectNextStep": "Run validation set"}
         self.assertIsNone(APP.project_next_step_completion_update(project, task, "2026-08-10T10:00:00"))
 
+    def test_reopening_completed_next_step_restores_the_project_handoff(self):
+        project = {
+            "status": "active", "nextStep": "", "nextStepReviewNeeded": True,
+            "lastCompletedNextStep": "Run validation set", "lastCompletedNextStepAt": "2026-08-10T10:00:00",
+        }
+        task = {"origin": "project_next_step", "projectNextStep": "Run validation set"}
+        update = APP.project_next_step_reopen_update(project, task)
+        self.assertEqual(update["nextStep"], "Run validation set")
+        self.assertFalse(update["nextStepReviewNeeded"])
+        self.assertEqual(update["lastCompletedNextStep"], "")
+
+    def test_reopening_never_overwrites_a_newer_project_decision(self):
+        project = {
+            "status": "active", "nextStep": "Review final report", "nextStepReviewNeeded": False,
+            "lastCompletedNextStep": "Run validation set",
+        }
+        task = {"origin": "project_next_step", "projectNextStep": "Run validation set"}
+        self.assertIsNone(APP.project_next_step_reopen_update(project, task))
+        self.assertIsNone(APP.project_next_step_reopen_update({**project, "status": "completed", "nextStep": ""}, task))
+
     def test_project_reference_ids_keep_tasks_linked_after_codex_id_changes(self):
         project = {"id": "current-id", "savedId": "stable-id", "codexProjectId": "codex-id"}
         self.assertTrue(APP.task_matches_project({"projectId": "stable-id"}, project))
@@ -309,6 +329,8 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertTrue(APP.record_task_status_event(task, "doing", "done", "2026-08-10T10:00:00", "codex"))
         self.assertEqual([event["source"] for event in task["statusHistory"]], ["drag", "codex"])
         self.assertEqual(task["statusHistory"][-1]["to"], "done")
+        self.assertTrue(APP.record_task_status_event(task, "done", "doing", "2026-08-10T10:01:00", "undo"))
+        self.assertEqual(task["statusHistory"][-1]["source"], "undo")
 
     def test_task_events_are_sorted_and_legacy_tasks_get_a_truthful_fallback(self):
         tasks = [
@@ -336,6 +358,46 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertEqual(len(carried["statusHistory"]), 1)
         self.assertEqual(carried["statusHistory"][0]["source"], "rollover")
         self.assertEqual(carried["statusHistory"][0]["to"], "doing")
+
+    def test_manual_status_move_offers_an_undo_without_bypassing_the_normal_engine(self):
+        task = {"id": "task-1", "status": "planned", "statusHistory": []}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task],
+            complete_project_next_step=Mock(return_value=False),
+            reopen_project_next_step=Mock(return_value=False),
+            sync_project_workload=Mock(),
+            render_today_tasks=Mock(),
+            render=Mock(),
+            statusBar=lambda: status_bar,
+            offer_task_undo=Mock(),
+            view_signature=None,
+        )
+        with patch.object(APP, "save_json"):
+            changed = APP.MainWindow.set_task_status(window, "task-1", "doing", source="drag")
+        self.assertTrue(changed)
+        self.assertEqual(task["status"], "doing")
+        self.assertEqual(task["statusHistory"][-1]["source"], "drag")
+        window.offer_task_undo.assert_called_once()
+
+    def test_undo_reenters_the_status_engine_and_rejects_stale_transitions(self):
+        event = {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"}
+        task = {"id": "task-1", "status": "done", "statusHistory": [event]}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            pending_task_undo={"taskId": "task-1", "from": "doing", "to": "done", "at": event["at"]},
+            today_tasks=[task],
+            clear_task_undo=Mock(),
+            set_task_status=Mock(return_value=True),
+            statusBar=lambda: status_bar,
+        )
+        APP.MainWindow.undo_last_task_transition(window)
+        window.set_task_status.assert_called_once_with("task-1", "doing", source="undo", allow_undo=False)
+
+        window.set_task_status.reset_mock()
+        task["statusHistory"].append({"at": "2026-08-10T10:01:00", "from": "done", "to": "planned", "source": "selector"})
+        APP.MainWindow.undo_last_task_transition(window)
+        window.set_task_status.assert_not_called()
 
 
 class DailySummaryTests(unittest.TestCase):

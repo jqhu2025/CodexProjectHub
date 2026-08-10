@@ -61,6 +61,7 @@ Removing a project from the application does not delete its folder or Codex conv
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
 - Create a task directly in any board column with that state preselected.
 - Drag a task by its handle between Planned, In Progress, and Completed; the status selector remains available as an accessible fallback.
+- Undo a recent manual status move from the status bar; reopening a completed project-next-action task restores the project handoff unless a newer next action already exists.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
 - Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, or daily rollover—and feed that evidence into daily reviews.

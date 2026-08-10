@@ -50,6 +50,7 @@ TASK_EVENT_SOURCES = {
     "codex": "Codex 自动",
     "project": "项目下一步",
     "rollover": "自动延续",
+    "undo": "撤销操作",
     "legacy": "历史记录",
 }
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}
@@ -77,6 +78,8 @@ PROJECT_DECISION_SOURCES = {
     "editor": "项目编辑",
     "codex": "Codex 建议",
     "task_completion": "任务完成",
+    "task_reopen": "任务重新打开",
+    "undo": "撤销操作",
     "created": "建立项目",
     "category": "分类调整",
 }
@@ -1128,6 +1131,24 @@ def project_next_step_completion_update(project, task, completed_at):
         "lastCompletedNextStepAt": completed_at,
         "nextStep": "",
         "nextStepReviewNeeded": True,
+    }
+
+
+def project_next_step_reopen_update(project, task):
+    if (task or {}).get("origin") != "project_next_step":
+        return None
+    if (project or {}).get("status", "active") != "active":
+        return None
+    reopened_step = str((task or {}).get("projectNextStep") or (task or {}).get("title") or "").strip()
+    if not reopened_step or normalized_decision_value((project or {}).get("nextStep")):
+        return None
+    if normalized_action_text((project or {}).get("lastCompletedNextStep")) != normalized_action_text(reopened_step):
+        return None
+    return {
+        "nextStep": reopened_step,
+        "nextStepReviewNeeded": False,
+        "lastCompletedNextStep": "",
+        "lastCompletedNextStepAt": "",
     }
 
 
@@ -3041,6 +3062,7 @@ class MainWindow(QMainWindow):
         self.view_signature = None
         self.last_scan_at = None
         self.home_scroll_reset_done = False
+        self.pending_task_undo = None
         self.setWindowTitle("Codex 项目中心")
         self.resize(1360, 840); self.setMinimumSize(1120, 700); self.setStyleSheet(STYLE)
         self.build_ui(); self.refresh(); self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.refresh(silent=True)); self.timer.start(15000)
@@ -3129,7 +3151,13 @@ class MainWindow(QMainWindow):
         history_nav = QPushButton("今日任务记录"); history_nav.setObjectName("nav"); history_nav.setIcon(fluent_icon("\uE81C", color="#315b94", size=16)); history_nav.setIconSize(QSize(16, 16)); history_nav.clicked.connect(lambda: self.show_task_history(0)); side_layout.addWidget(history_nav)
         body.addWidget(side)
         self.pages = QStackedWidget(); self.home_page = self.build_home_page(); self.projects_page = self.build_projects_page(); self.pages.addWidget(self.home_page); self.pages.addWidget(self.projects_page); body.addWidget(self.pages, 1)
-        self.setStatusBar(QStatusBar()); self.select_section("home")
+        status_bar = QStatusBar(); self.setStatusBar(status_bar)
+        self.undo_task_button = QPushButton("撤销状态"); self.undo_task_button.setFixedHeight(26); self.undo_task_button.setIcon(fluent_icon("\uE7A7", color="#1d4ed8", size=13)); self.undo_task_button.setIconSize(QSize(13, 13))
+        self.undo_task_button.setToolTip("撤销最近一次手动任务状态切换"); self.undo_task_button.setAccessibleName("撤销最近一次任务状态切换")
+        self.undo_task_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #bfd1ef; border-radius: 7px; padding: 3px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #8eace0; }")
+        self.undo_task_button.clicked.connect(self.undo_last_task_transition); self.undo_task_button.hide(); status_bar.addPermanentWidget(self.undo_task_button)
+        self.undo_task_timer = QTimer(self); self.undo_task_timer.setSingleShot(True); self.undo_task_timer.timeout.connect(self.clear_task_undo)
+        self.select_section("home")
 
     def build_projects_page(self):
         main = QWidget(); main.setObjectName("projectsPage"); main.setStyleSheet("QWidget#projectsPage { background: #f5f7fb; } QWidget#projectsPage QLabel { background: transparent; }"); main_layout = QVBoxLayout(main); main_layout.setContentsMargins(32, 26, 28, 24); main_layout.setSpacing(16)
@@ -3824,40 +3852,88 @@ class MainWindow(QMainWindow):
             record_task_status_event(task, None, task.get("status", "planned"), now, "manual")
         else:
             record_task_status_event(task, previous_status, task.get("status", "planned"), now, "editor")
-        completed_handoff = previous_status != "done" and task.get("status") == "done" and self.complete_project_next_step(task, now)
+        current_status = task.get("status", "planned")
+        completed_handoff = previous_status != "done" and current_status == "done" and self.complete_project_next_step(task, now)
+        reopened_handoff = previous_status == "done" and current_status != "done" and self.reopen_project_next_step(task, now, "task_reopen")
         save_json(TASKS_FILE, self.today_tasks)
         task_date = QDate.fromString(task.get("date", ""), Qt.ISODate)
         if task_date.isValid(): self.board_date_field.setDate(task_date)
-        if completed_handoff:
+        if completed_handoff or reopened_handoff:
             self.view_signature = None
             self.refresh(silent=True, scan=False)
-            self.statusBar().showMessage("任务已完成；项目已回到“需要下一步”，请明确后续动作", 4500)
+            message = "任务已完成；项目已回到“需要下一步”，请明确后续动作" if completed_handoff else "任务已重新打开；项目下一步已同步恢复"
+            self.statusBar().showMessage(message, 4500)
         else:
             self.sync_project_workload(); self.view_signature = None
             self.render_today_tasks(); self.render()
-        if dialog.codex_requested and not completed_handoff:
+        if not created and previous_status != current_status:
+            self.offer_task_undo(task, previous_status, current_status, now)
+        if dialog.codex_requested and not completed_handoff and not reopened_handoff:
             self.plan_task_in_codex(task)
-        elif not completed_handoff:
+        elif not completed_handoff and not reopened_handoff:
             self.statusBar().showMessage("今日任务已保存", 2500)
 
-    def set_task_status(self, task_id, status, source="manual"):
+    def set_task_status(self, task_id, status, source="manual", allow_undo=True):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
         if not task_status_transition_allowed(task, status):
-            return
+            return False
         previous_status = task.get("status", "planned")
         now = datetime.now().isoformat(timespec="seconds")
         record_task_status_event(task, previous_status, status, now, source)
         task["status"] = status; task["updatedAt"] = now
         completed_handoff = previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
+        reopened_handoff = previous_status == "done" and status != "done" and self.reopen_project_next_step(task, now, "undo" if source == "undo" else "task_reopen")
         save_json(TASKS_FILE, self.today_tasks)
-        if completed_handoff:
+        if completed_handoff or reopened_handoff:
             self.view_signature = None
             self.refresh(silent=True, scan=False)
-            self.statusBar().showMessage("任务已完成；项目已回到“需要下一步”，请明确后续动作", 4500)
+            message = "任务已完成；项目已回到“需要下一步”，请明确后续动作" if completed_handoff else "任务已重新打开；项目下一步已同步恢复"
+            self.statusBar().showMessage(message, 4500)
         else:
             self.sync_project_workload(); self.view_signature = None
             self.render_today_tasks(); self.render()
             self.statusBar().showMessage(f"任务已移至“{TASK_STATUS[status]}”", 2200)
+        if allow_undo and source in {"manual", "selector", "drag"}:
+            self.offer_task_undo(task, previous_status, status, now)
+        return True
+
+    def offer_task_undo(self, task, previous_status, status, occurred_at):
+        if previous_status not in TASK_STATUS or status not in TASK_STATUS or previous_status == status:
+            return
+        self.pending_task_undo = {
+            "taskId": task.get("id"),
+            "from": previous_status,
+            "to": status,
+            "at": occurred_at,
+        }
+        self.undo_task_button.setText(f"撤销到{TASK_STATUS[previous_status]}")
+        self.undo_task_button.show()
+        self.undo_task_timer.start(8000)
+
+    def clear_task_undo(self):
+        self.pending_task_undo = None
+        if hasattr(self, "undo_task_timer"):
+            self.undo_task_timer.stop()
+        if hasattr(self, "undo_task_button"):
+            self.undo_task_button.hide()
+
+    def undo_last_task_transition(self):
+        transition = dict(self.pending_task_undo or {})
+        task = next((item for item in self.today_tasks if item.get("id") == transition.get("taskId")), None)
+        history = task.get("statusHistory") if isinstance((task or {}).get("statusHistory"), list) else []
+        latest = history[-1] if history else {}
+        still_current = (
+            task is not None
+            and task.get("status", "planned") == transition.get("to")
+            and str(latest.get("at") or "") == str(transition.get("at") or "")
+            and latest.get("to") == transition.get("to")
+        )
+        self.clear_task_undo()
+        if not still_current:
+            self.statusBar().showMessage("任务已经发生新的变化，无法撤销之前的状态", 3500)
+            return
+        if self.set_task_status(task.get("id"), transition.get("from"), source="undo", allow_undo=False):
+            self.statusBar().showMessage(f"已撤销，任务恢复为“{TASK_STATUS[transition['from']]}”", 3200)
 
     def delete_today_task(self, task):
         if QMessageBox.question(self, "删除任务", f"确定删除“{task.get('title', '未命名任务')}”吗？") != QMessageBox.Yes:
@@ -4093,6 +4169,22 @@ class MainWindow(QMainWindow):
         target.update(update)
         project.update(update)
         self.record_project_decision(project, before, target, "task_completion", completed_at)
+        save_json(PROJECTS_FILE, self.saved_projects)
+        return True
+
+    def reopen_project_next_step(self, task, now=None, source="task_reopen"):
+        project = self.project_by_id(task.get("projectId"))
+        if project is None:
+            return False
+        before = dict(project)
+        reopened_at = now or datetime.now().isoformat(timespec="seconds")
+        update = project_next_step_reopen_update(project, task)
+        if update is None:
+            return False
+        target = self.saved_record_for_project(project)
+        target.update(update)
+        project.update(update)
+        self.record_project_decision(project, before, target, source if source in PROJECT_DECISION_SOURCES else "task_reopen", reopened_at)
         save_json(PROJECTS_FILE, self.saved_projects)
         return True
 
