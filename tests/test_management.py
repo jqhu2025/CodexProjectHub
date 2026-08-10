@@ -16,12 +16,13 @@ class ManagementModuleTests(unittest.TestCase):
         }
         incomplete = {**complete, "objective": ""}
 
-        for source in ("manual", "editor", "codex", "created"):
+        for source in ("manual", "editor", "codex", "created", "review_resolution"):
             self.assertTrue(management.project_change_establishes_review(complete, source, True))
         for source in ("focus", "calibration", "alignment", "category", "undo"):
             self.assertFalse(management.project_change_establishes_review(complete, source, True))
         self.assertFalse(management.project_change_establishes_review(incomplete, "editor", True))
         self.assertFalse(management.project_change_establishes_review(complete, "editor", False))
+        self.assertEqual(management.PROJECT_DECISION_SOURCES["review_resolution"], "复核校准")
 
     def test_task_history_records_only_real_transitions(self):
         task = {"id": "task-1", "status": "planned"}

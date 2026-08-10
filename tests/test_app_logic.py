@@ -42,6 +42,22 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertTrue(planning.undo_move.isHidden())
         wip.close(); planning.close(); parent.close()
 
+    def test_legacy_attention_review_exposes_two_explicit_health_decisions(self):
+        parent = APP.QWidget(); parent.today_tasks = []
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "execution", "health": "attention", "objective": "Ship release",
+            "nextStep": "Validate candidate", "blocker": "", "conversations": [],
+        }
+
+        dialog = APP.PortfolioReviewDialog(parent, [project])
+
+        self.assertEqual(dialog.confirm_button.text(), "仍需关注")
+        self.assertFalse(dialog.recover_button.isHidden())
+        self.assertIn("风险仍在", dialog.feedback.text())
+        self.assertIn("风险已解除", dialog.feedback.text())
+        dialog.close(); parent.close()
+
 
 class StorageRecoveryNoticeTests(unittest.TestCase):
     def test_recovered_files_get_a_calm_status_notice(self):
@@ -1185,6 +1201,29 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(alignment_dialog.call_args.args[1][0]["project"], project)
         alignment_dialog.return_value.exec_.assert_called_once_with()
         window.record_project_review.assert_not_called()
+
+    def test_recovering_legacy_attention_is_one_audited_baseline_decision(self):
+        project = {
+            "id": "project", "status": "active", "priority": "focus", "category": "Research",
+            "stage": "validation", "health": "attention", "objective": "Ship",
+            "nextStep": "Validate release", "blocker": "Old risk",
+        }
+        window = SimpleNamespace(update_project_management=Mock(return_value={"reviewedAt": "now"}))
+        dialog = SimpleNamespace(
+            current_project=lambda: project, window=window, pending=[project], reviewed_count=0,
+            feedback=Mock(), render_current=Mock(),
+        )
+
+        APP.PortfolioReviewDialog.recover_current(dialog)
+
+        data = window.update_project_management.call_args.args[1]
+        self.assertEqual(data["health"], "on_track")
+        self.assertEqual(data["blocker"], "")
+        self.assertEqual((data["priority"], data["stage"], data["objective"]), ("focus", "validation", "Ship"))
+        self.assertEqual(window.update_project_management.call_args.kwargs, {"notify": False, "source": "review_resolution"})
+        self.assertEqual(dialog.pending, [])
+        self.assertEqual(dialog.reviewed_count, 1)
+        dialog.render_current.assert_called_once_with()
 
     def test_review_queue_prioritizes_incomplete_governance_records(self):
         ready = {"id": "ready", "status": "active", "objective": "Ship", "nextStep": "Test", "stage": "execution", "health": "on_track"}

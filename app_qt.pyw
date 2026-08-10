@@ -4742,6 +4742,10 @@ class PortfolioReviewDialog(QDialog):
         actions.addStretch()
         self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
         self.skip_button = QPushButton("稍后处理"); self.skip_button.clicked.connect(self.skip_current); actions.addWidget(self.skip_button)
+        self.recover_button = QPushButton("已恢复正常"); self.recover_button.setIcon(fluent_icon("\uE73E", color="#087443", size=14)); self.recover_button.setIconSize(QSize(14, 14))
+        self.recover_button.setToolTip("将历史需关注状态校准为正常，并建立本次复核基线"); self.recover_button.setAccessibleName("确认项目已经恢复正常")
+        self.recover_button.setStyleSheet("QPushButton { color: #087443; background: #eef9f3; border: 1px solid #b9dfca; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #e2f4ea; border-color: #78bd98; }")
+        self.recover_button.clicked.connect(self.recover_current); self.recover_button.hide(); actions.addWidget(self.recover_button)
         self.confirm_button = QPushButton("确认现状"); self.confirm_button.setObjectName("primary"); self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.confirm_button.setIconSize(QSize(14, 14)); self.confirm_button.clicked.connect(self.confirm_current); actions.addWidget(self.confirm_button)
         root.addLayout(actions)
         self.render_current()
@@ -4772,7 +4776,7 @@ class PortfolioReviewDialog(QDialog):
             f"{self.reviewed_count + 1} / {total} · 总待确认 {self.portfolio_total}"
             if remaining else f"本轮完成 {self.reviewed_count}"
         )
-        self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1)
+        self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1); self.recover_button.hide()
         self.confirm_button.setText("确认现状" if remaining else "关闭")
         if not remaining:
             done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
@@ -4796,6 +4800,7 @@ class PortfolioReviewDialog(QDialog):
         gaps = project_governance_gaps(project)
         gap_text = project_governance_gap_text(project)
         has_project_folder = Path(str(project.get("path") or "")).is_dir()
+        legacy_attention = project_health_key(project) == "attention" and not str(project.get("reviewedAt") or "").strip()
         today = QDate.currentDate().toString(Qt.ISODate)
         review_evidence = project_review_evidence(project, self.window.today_tasks, today)
         alignment_pending = review_evidence["alignmentState"] == "divergent"
@@ -4811,6 +4816,11 @@ class PortfolioReviewDialog(QDialog):
             self.confirm_button.setText("先校准执行方向")
             self.confirm_button.setIcon(fluent_icon("\uE8A7", color="#ffffff", size=14))
             self.confirm_button.setToolTip("今日实际执行与已保存下一步不同；请先确认哪一个应作为项目方向")
+        elif legacy_attention:
+            self.confirm_button.setText("仍需关注")
+            self.confirm_button.setIcon(fluent_icon("\uE7BA", color="#ffffff", size=14))
+            self.confirm_button.setToolTip("确认风险仍然存在，并把需关注状态写入本次复核记录")
+            self.recover_button.show()
         else:
             self.confirm_button.setText("确认现状")
             self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
@@ -4888,7 +4898,6 @@ class PortfolioReviewDialog(QDialog):
             text = QLabel(str(value or fallback)); text.setWordWrap(True)
             text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
 
-        legacy_attention = project_health_key(project) == "attention" and not str(project.get("reviewedAt") or "").strip()
         if gaps:
             self.feedback.setText(
                 "Codex 将只读检查项目目录并给出缺项建议；你审核并应用后，系统才会建立复核基线。"
@@ -4900,7 +4909,7 @@ class PortfolioReviewDialog(QDialog):
             self.feedback.setText("今日实际执行与项目已保存的下一步不同；请先校准执行方向，再建立或刷新复核基线。")
             self.feedback.setStyleSheet("color: #9a3412; background: #fff3e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         elif legacy_attention:
-            self.feedback.setText("当前保存的是历史“需关注”状态：若风险仍存在，可确认现状；若已恢复正常，请先打开项目面板修改健康度。")
+            self.feedback.setText("这是一次健康度校准：风险仍在请选择“仍需关注”；风险已解除请选择“已恢复正常”。两种选择都会保留决策记录并建立复核基线。")
             self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         else:
             baseline = not str(project.get("reviewedAt") or "").strip()
@@ -4923,6 +4932,28 @@ class PortfolioReviewDialog(QDialog):
             return
         self.accept()
         self.window.open_project_workspace(project)
+
+    def recover_current(self):
+        project = self.current_project()
+        if project is None:
+            return
+        data = {
+            "priority": project_priority_key(project),
+            "stage": project_stage_key(project),
+            "health": "on_track",
+            "status": project.get("status", "active"),
+            "category": project.get("category", "未分类"),
+            "objective": project.get("objective", ""),
+            "nextStep": project.get("nextStep", ""),
+            "blocker": "",
+        }
+        if self.window.update_project_management(project, data, notify=False, source="review_resolution") is None:
+            self.feedback.setText("没有成功写入健康度校准，请保留当前项目并稍后重试。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+        self.pending.pop(0)
+        self.reviewed_count += 1
+        self.render_current()
 
     def confirm_current(self):
         project = self.current_project()

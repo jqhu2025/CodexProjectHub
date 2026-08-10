@@ -66,6 +66,7 @@ PROJECT_DECISION_SOURCES = {
     "created": "建立项目",
     "category": "分类调整",
     "review": "状态复核",
+    "review_resolution": "复核校准",
     "alignment": "执行对齐",
     "archive": "项目归档",
     "restore": "项目恢复",
@@ -73,7 +74,7 @@ PROJECT_DECISION_SOURCES = {
     "focus": "战略重点调整",
     "calibration": "活跃组合校准",
 }
-PROJECT_REVIEW_BASELINE_SOURCES = {"manual", "editor", "codex", "created"}
+PROJECT_REVIEW_BASELINE_SOURCES = {"manual", "editor", "codex", "created", "review_resolution"}
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 PROJECT_BLOCKER_LIFECYCLE_FIELDS = (
     "blockedAt",
