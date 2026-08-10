@@ -41,6 +41,7 @@ from codex_hub.management import (
     build_project_decision_entry,
     build_project_alignment_entry,
     build_project_decision_rollback,
+    build_project_lifecycle_entry,
     build_project_review_entry,
     clear_task_completion_outcome,
     compact_project_decision_value,
@@ -1200,7 +1201,7 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
         decisions.append({
             "project": str(entry.get("projectName") or project.get("name") or "未命名项目"),
             "at": str(entry.get("at") or ""),
-            "kind": {"review": "项目复核", "alignment": "执行方向确认"}.get(kind, "项目决策"),
+            "kind": {"review": "项目复核", "alignment": "执行方向确认", "lifecycle": "项目生命周期"}.get(kind, "项目决策"),
             "source": PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策"),
             "summary": format_project_decision_summary(entry),
             "changes": [
@@ -2564,7 +2565,7 @@ class ArchivedProjectsDialog(QDialog):
             empty_hint = QLabel("从项目列表归档的项目会安全保存在这里"); empty_hint.setStyleSheet("color: #748094; font-size: 11px;"); empty_layout.addWidget(empty_hint, 0, Qt.AlignCenter)
             self.rows.addWidget(empty); self.rows.addStretch(); return
         for project in self.projects:
-            row = QFrame(); row.setObjectName("archivedProjectRow"); row.setFixedHeight(68)
+            row = QFrame(); row.setObjectName("archivedProjectRow"); row.setFixedHeight(76)
             row.setStyleSheet("QFrame#archivedProjectRow { background: #ffffff; border: 1px solid #dbe3ee; border-radius: 10px; }")
             row_layout = QHBoxLayout(row); row_layout.setContentsMargins(14, 8, 10, 8); row_layout.setSpacing(12)
             project_icon = QLabel(); project_icon.setFixedSize(34, 34); project_icon.setAlignment(Qt.AlignCenter)
@@ -2572,7 +2573,14 @@ class ArchivedProjectsDialog(QDialog):
             text = QVBoxLayout(); text.setSpacing(2)
             name = ElidedLabel(project.get("name") or "未命名项目"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 680;"); text.addWidget(name)
             origin = "Codex 同步项目" if project.get("codexProjectId") else "本地手建项目"
-            meta = QLabel(f"{project.get('category', '未分类')}  ·  {origin}"); meta.setStyleSheet("color: #748094; font-size: 11px;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            lifecycle = [entry for entry in self.window.project_decisions_for(project) if entry.get("kind") == "lifecycle"]
+            archive_events = [entry for entry in lifecycle if entry.get("action") == "archive"]
+            latest_archive = archive_events[0] if archive_events else None
+            archive_text = f"{format_project_decision_time(latest_archive.get('at'), compact=True)} 归档" if latest_archive else "历史归档 · 时间未记录"
+            cycle_text = f"  ·  已归档 {len(archive_events)} 次" if len(archive_events) > 1 else ""
+            meta = QLabel(f"{project.get('category', '未分类')}  ·  {origin}  ·  {archive_text}{cycle_text}"); meta.setStyleSheet("color: #748094; font-size: 11px;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            audit = QToolButton(); audit.setFixedSize(34, 34); audit.setIcon(fluent_icon("\uE81C", color="#315f9b", size=14)); audit.setIconSize(QSize(14, 14)); audit.setToolTip("查看项目决策与归档记录")
+            audit.setAccessibleName(f"查看归档项目 {project.get('name', '')} 的完整记录"); audit.clicked.connect(lambda _checked=False, value=project: self.window.show_project_decision_history(value, read_only=True)); row_layout.addWidget(audit)
             restore = QPushButton("恢复项目"); restore.setFixedSize(92, 36); restore.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); restore.setIconSize(QSize(13, 13))
             restore.setToolTip("恢复到原分类和原有排序"); restore.clicked.connect(lambda _checked=False, value=project: self.restore_project(value)); row_layout.addWidget(restore)
             self.rows.addWidget(row)
@@ -3211,10 +3219,11 @@ class DailySummaryDialog(QDialog):
 
 
 class ProjectDecisionHistoryDialog(QDialog):
-    def __init__(self, parent, project, entries):
+    def __init__(self, parent, project, entries, allow_rollback=True):
         super().__init__(parent)
         self.window = getattr(parent, "window", parent)
         self.project = project
+        self.allow_rollback = allow_rollback
         self.rolled_back = False
         self.setWindowTitle(f"项目决策记录 · {project.get('name', '未命名项目')}")
         self.setObjectName("projectDecisionHistory")
@@ -3227,13 +3236,13 @@ class ProjectDecisionHistoryDialog(QDialog):
         icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=19).pixmap(QSize(19, 19))); icon.setStyleSheet("background: #eaf1ff; border-radius: 10px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("项目决策记录"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel(f"{project.get('name', '未命名项目')}  ·  {len(entries)} 条决策与复核记录")
+        subtitle = QLabel(f"{project.get('name', '未命名项目')}  ·  {len(entries)} 条决策、复核与生命周期记录")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box); heading.addStretch(); root.addLayout(heading)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
         content = QWidget(); content.setObjectName("decisionHistoryContent"); content.setStyleSheet("QWidget#decisionHistoryContent { background: #f7f9fc; }")
         rows = QVBoxLayout(content); rows.setContentsMargins(10, 10, 10, 10); rows.setSpacing(8)
         if not entries:
-            empty = QLabel("暂无项目决策或复核记录\n保存真实字段变更或确认当前状态后，会在这里形成可审计历史")
+            empty = QLabel("暂无项目决策、复核或生命周期记录\n旧版归档可能没有时间记录；后续操作会在这里形成可审计历史")
             empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; font-size: 12px; padding: 80px 20px;"); rows.addWidget(empty)
         for entry in entries:
             card = QFrame(); card.setObjectName("decisionHistoryCard"); card.setStyleSheet("QFrame#decisionHistoryCard { background: #ffffff; border: 1px solid #dce4ed; border-radius: 10px; }")
@@ -3243,12 +3252,12 @@ class ProjectDecisionHistoryDialog(QDialog):
             header.addStretch()
             source_text = PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策")
             source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source)
-            if entry.get("changes"):
+            if entry.get("changes") and self.allow_rollback:
                 rollback = QPushButton("恢复到变更前"); rollback.setFixedHeight(30); rollback.setIcon(fluent_icon("\uE7A7", color="#526071", size=12)); rollback.setIconSize(QSize(12, 12))
                 rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
                 rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback)
             card_layout.addLayout(header)
-            if entry.get("kind") in {"review", "alignment"}:
+            if entry.get("kind") in {"review", "alignment", "lifecycle"}:
                 review_line = QLabel(format_project_decision_summary(entry)); review_line.setWordWrap(True)
                 review_line.setStyleSheet("color: #526071; background: #f7f9fc; border: none; border-radius: 7px; padding: 7px 9px; font-size: 12px;"); card_layout.addWidget(review_line)
             for change in entry.get("changes") or []:
@@ -4601,12 +4610,36 @@ class MainWindow(QMainWindow):
             reverse=True,
         )
 
+    def show_project_decision_history(self, project, read_only=False):
+        dialog = ProjectDecisionHistoryDialog(
+            self,
+            project,
+            self.project_decisions_for(project),
+            allow_rollback=not read_only,
+        )
+        dialog.exec_()
+        return dialog.rolled_back
+
     def record_project_decision(self, project, before, after, source="manual", occurred_at=None):
         entry = build_project_decision_entry(
             project,
             before,
             after,
             source,
+            occurred_at or datetime.now().isoformat(timespec="seconds"),
+        )
+        if entry is None:
+            return None
+        self.project_decisions.append(entry)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        return entry
+
+    def record_project_lifecycle(self, project, action, occurred_at=None):
+        entry = build_project_lifecycle_entry(
+            project,
+            action,
             occurred_at or datetime.now().isoformat(timespec="seconds"),
         )
         if entry is None:
@@ -5419,6 +5452,7 @@ class MainWindow(QMainWindow):
         if not changed:
             return False
         self.project_layout = updated_layout
+        self.record_project_lifecycle(project, "restore")
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
@@ -5426,22 +5460,42 @@ class MainWindow(QMainWindow):
         return True
 
     def delete_project(self, project):
+        pending_tasks = open_project_tasks(self.today_tasks, project)
+        running_conversations = [
+            conversation for conversation in (project.get("conversations") or [])
+            if codex_state(conversation)[0] == "running"
+        ]
+        if pending_tasks or running_conversations:
+            details = []
+            if pending_tasks:
+                details.append(f"{len(pending_tasks)} 项未完成任务")
+            if running_conversations:
+                details.append(f"{len(running_conversations)} 个运行中的 Codex 对话")
+            QMessageBox.information(
+                self,
+                "项目仍在执行",
+                f"暂不能归档“{project.get('name', '未命名项目')}”，因为仍有{'、'.join(details)}。\n\n"
+                "请先完成或移除关联任务，并等待 Codex 对话结束；这样归档后不会产生失去项目归属的活动记录。",
+            )
+            return False
         message = (
             f"确定归档“{project.get('name', '未命名项目')}”吗？\n\n"
             "项目会离开当前项目列表，但保留全部本地管理信息；之后可从“归档箱”恢复。\n"
             "不会删除磁盘文件，也不会删除 Codex 对话。"
         )
-        if QMessageBox.question(self, "归档项目", message) != QMessageBox.Yes:
-            return
+        if QMessageBox.question(self, "归档项目", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return False
         project_id = project.get("id")
         self.project_layout, changed = archive_project_layout(self.project_layout, project_id)
         if not changed:
             self.statusBar().showMessage("项目已经在归档箱中", 2000)
-            return
+            return False
+        self.record_project_lifecycle(project, "archive")
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
         self.statusBar().showMessage("项目已归档，可随时从归档箱恢复", 2800)
+        return True
 
     def shown(self):
         query = self.search.text().strip().lower()

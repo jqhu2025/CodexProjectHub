@@ -68,6 +68,49 @@ class ProjectArchiveTests(unittest.TestCase):
             archived = APP.archived_project_catalog([], layout)
         self.assertEqual([project["id"] for project in archived], ["codex-project-id"])
 
+    def test_restore_records_project_lifecycle_before_refresh(self):
+        project = {"id": "project-1", "name": "Release"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            project_layout={"hiddenProjectIds": ["project-1"], "categoryOrders": {}},
+            record_project_lifecycle=Mock(), refresh=Mock(), view_signature="old", statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json") as save:
+            restored = APP.MainWindow.restore_project(window, project)
+        self.assertTrue(restored)
+        window.record_project_lifecycle.assert_called_once_with(project, "restore")
+        save.assert_called_once_with(APP.PROJECT_LAYOUT_FILE, window.project_layout)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+
+    def test_archive_records_project_lifecycle_without_deleting_files(self):
+        project = {"id": "project-1", "name": "Release"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            project_layout={"hiddenProjectIds": [], "categoryOrders": {}},
+            today_tasks=[], record_project_lifecycle=Mock(), refresh=Mock(), view_signature="old", statusBar=lambda: status_bar,
+        )
+        with patch.object(APP.QMessageBox, "question", return_value=APP.QMessageBox.Yes), patch.object(APP, "save_json") as save:
+            APP.MainWindow.delete_project(window, project)
+        self.assertEqual(window.project_layout["hiddenProjectIds"], ["project-1"])
+        window.record_project_lifecycle.assert_called_once_with(project, "archive")
+        save.assert_called_once_with(APP.PROJECT_LAYOUT_FILE, window.project_layout)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+
+    def test_archive_is_blocked_while_project_still_has_live_work(self):
+        project = {"id": "project-1", "savedId": "stable-1", "name": "Release", "conversations": [{"state": "working"}]}
+        task = {"id": "task-1", "projectId": "stable-1", "status": "doing"}
+        window = SimpleNamespace(
+            project_layout={"hiddenProjectIds": [], "categoryOrders": {}}, today_tasks=[task],
+            record_project_lifecycle=Mock(), refresh=Mock(), view_signature="old", statusBar=lambda: Mock(),
+        )
+        with patch.object(APP.QMessageBox, "information") as information, patch.object(APP.QMessageBox, "question") as question:
+            archived = APP.MainWindow.delete_project(window, project)
+        self.assertFalse(archived)
+        self.assertEqual(window.project_layout["hiddenProjectIds"], [])
+        information.assert_called_once()
+        question.assert_not_called()
+        window.record_project_lifecycle.assert_not_called()
+
 
 class ProjectDisplayStateTests(unittest.TestCase):
     def test_running_conversation_takes_priority(self):
@@ -752,13 +795,14 @@ class DailySummaryTests(unittest.TestCase):
             },
             APP.build_project_review_entry({"savedId": "stable-id", "name": "Denoising", "stage": "validation", "health": "on_track", "nextStep": "Verify"}, "2026-08-08T10:00:00", "review-1"),
             APP.build_project_alignment_entry({"savedId": "stable-id", "name": "Denoising", "nextStep": "Verify"}, [{"title": "Repair benchmark"}], "2026-08-08T11:00:00", "alignment-1"),
+            APP.build_project_lifecycle_entry({"savedId": "stable-id", "name": "Denoising", "category": "Research"}, "archive", "2026-08-08T12:00:00", "archive-1"),
             {"at": "2026-08-09T09:00:00", "projectId": "stable-id", "source": "editor", "changes": []},
         ]
         payload = APP.build_daily_summary_payload([], projects, "2026-08-08", decisions)
-        self.assertEqual(len(payload["projectDecisions"]), 3)
-        self.assertEqual([item["kind"] for item in payload["projectDecisions"]], ["项目决策", "项目复核", "执行方向确认"])
+        self.assertEqual(len(payload["projectDecisions"]), 4)
+        self.assertEqual([item["kind"] for item in payload["projectDecisions"]], ["项目决策", "项目复核", "执行方向确认", "项目生命周期"])
         self.assertEqual(payload["projectDecisions"][0]["changes"][0]["after"], "验证")
-        self.assertIn("保留下一步", payload["projectDecisions"][-1]["summary"])
+        self.assertTrue(any("保留下一步" in item["summary"] for item in payload["projectDecisions"]))
 
     def test_prompt_requires_specific_structured_output(self):
         prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [], "codexActivities": []})

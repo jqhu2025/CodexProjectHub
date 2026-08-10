@@ -57,6 +57,8 @@ PROJECT_DECISION_SOURCES = {
     "category": "分类调整",
     "review": "状态复核",
     "alignment": "执行对齐",
+    "archive": "项目归档",
+    "restore": "项目恢复",
 }
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 
@@ -569,6 +571,34 @@ def build_project_alignment_entry(project, tasks, occurred_at, entry_id=None):
     }
 
 
+def build_project_lifecycle_entry(project, action, occurred_at, entry_id=None):
+    """Audit a recoverable project archive or restore operation."""
+    if action not in {"archive", "restore"}:
+        return None
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    if not stable_project_id:
+        return None
+    return {
+        "id": entry_id or str(uuid.uuid4()),
+        "projectId": stable_project_id,
+        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "at": str(occurred_at or ""),
+        "source": action,
+        "kind": "lifecycle",
+        "action": action,
+        "changes": [],
+        "snapshot": {
+            "category": normalized_decision_value((project or {}).get("category")),
+            "status": normalized_decision_value((project or {}).get("status") or "active"),
+            "stage": normalized_decision_value((project or {}).get("stage") or "execution"),
+            "health": normalized_decision_value((project or {}).get("health") or "on_track"),
+            "objective": normalized_decision_value((project or {}).get("objective")),
+            "nextStep": normalized_decision_value((project or {}).get("nextStep")),
+            "blocker": normalized_decision_value((project or {}).get("blocker")),
+        },
+    }
+
+
 def compact_project_decision_value(field, value, limit=36):
     text = display_project_decision_value(field, value)
     return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "…"
@@ -590,6 +620,17 @@ def format_project_decision_summary(entry, max_changes=2):
         if len(active) > 2:
             active_text += f" 等 {len(active)} 项"
         return f"确认保留下一步：{next_step} · 当前执行：{active_text}"
+    if (entry or {}).get("kind") == "lifecycle":
+        snapshot = (entry or {}).get("snapshot") or {}
+        category = normalized_decision_value(snapshot.get("category")) or "未分类"
+        if (entry or {}).get("action") == "restore":
+            return f"从归档箱恢复 · 回到“{category}”分类"
+        status = display_project_decision_value("status", snapshot.get("status"))
+        stage = display_project_decision_value("stage", snapshot.get("stage"))
+        blocker = compact_project_decision_value("blocker", snapshot.get("blocker"), 30)
+        next_step = compact_project_decision_value("nextStep", snapshot.get("nextStep"), 30)
+        context = f"阻塞：{blocker}" if normalized_decision_value(snapshot.get("blocker")) else f"下一步：{next_step}"
+        return f"归档项目 · {status} / {stage}阶段 · {context}"
     changes = (entry or {}).get("changes") or []
     parts = [
         f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："

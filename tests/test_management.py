@@ -278,6 +278,16 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("保留下一步", summary)
         self.assertIn("Investigate failed benchmark", summary)
 
+    def test_project_archive_and_restore_are_lifecycle_audit_events(self):
+        project = {"id": "runtime", "savedId": "stable", "name": "Release", "category": "Operations", "status": "active", "stage": "validation", "nextStep": "Verify package"}
+        archived = management.build_project_lifecycle_entry(project, "archive", "2026-08-10T12:00:00", "archive-1")
+        restored = management.build_project_lifecycle_entry(project, "restore", "2026-08-10T13:00:00", "restore-1")
+        self.assertEqual((archived["kind"], archived["source"], archived["projectId"]), ("lifecycle", "archive", "stable"))
+        self.assertIn("验证阶段", management.format_project_decision_summary(archived))
+        self.assertIn("Verify package", management.format_project_decision_summary(archived))
+        self.assertIn("Operations", management.format_project_decision_summary(restored))
+        self.assertIsNone(management.build_project_lifecycle_entry(project, "delete", "2026-08-10T14:00:00"))
+
     def test_decision_diff_ignores_cosmetic_whitespace(self):
         before = {"objective": "Validate   the model", "health": "on_track"}
         after = {"objective": " Validate the model ", "health": "attention"}
