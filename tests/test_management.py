@@ -525,6 +525,25 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("验证阶段", management.format_project_decision_summary(entry))
         self.assertIn("需关注", management.format_project_decision_summary(entry))
 
+        batched = management.build_project_review_entry(
+            project,
+            "2026-08-10T12:00:00",
+            "review-2",
+            batch_id="batch-1",
+            previous_review={"reviewedAt": "", "reviewBaseline": None},
+        )
+        self.assertEqual(batched["batchId"], "batch-1")
+        self.assertEqual(batched["previousReview"]["reviewedAt"], "")
+        undone = management.build_project_review_entry(
+            project,
+            "2026-08-10T12:05:00",
+            "review-undo-1",
+            action="undo",
+        )
+        undone["source"] = "review_undo"
+        self.assertEqual(management.PROJECT_DECISION_SOURCES["review_undo"], "撤销复核")
+        self.assertIn("撤销本次复核", management.format_project_decision_summary(undone))
+
     def test_review_baseline_reports_only_real_decision_drift_and_can_be_refreshed(self):
         project = {
             "status": "active", "objective": "Ship release", "successCriteria": "Pass 18 checks",

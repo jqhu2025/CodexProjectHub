@@ -1188,6 +1188,38 @@ def project_confirmation_caption(counts):
     return "管理确认"
 
 
+def project_baseline_batch_eligibility(project, today_tasks=None, today=None):
+    """Allow batching only for a calm, complete first-baseline decision.
+
+    Missing governance, an existing baseline, non-normal health, or live work
+    that contradicts the saved next step all require deliberate one-by-one
+    handling.  This keeps the convenience action from hiding a real decision.
+    """
+    project = project or {}
+    if project.get("status", "active") != "active":
+        return False, "项目当前不是进行中"
+    if project_governance_gaps(project):
+        return False, "管理资料尚未完整"
+    if project_review_phase(project) != "baseline":
+        return False, "已经建立过管理基线"
+    if project_health_key(project) != "on_track":
+        return False, "健康度需要逐项确认"
+    date_key = today or QDate.currentDate().toString(Qt.ISODate)
+    evidence = project_review_evidence(project, today_tasks or [], date_key)
+    if evidence.get("alignmentState") == "divergent":
+        return False, "实际执行方向需要先校准"
+    return True, "可批量建立首次基线"
+
+
+def project_baseline_batch_candidates(projects, today_tasks=None, today=None):
+    """Return only projects that can truthfully share one baseline action."""
+    return [
+        project
+        for project in projects or []
+        if project_baseline_batch_eligibility(project, today_tasks, today)[0]
+    ]
+
+
 def project_review_urgency_summary(projects, now=None):
     """Describe only measured cadence debt; setup work is intentionally neutral."""
     overdue_days = [
@@ -5208,7 +5240,7 @@ class PortfolioRiskDialog(QDialog):
 
 
 class PortfolioReviewDialog(QDialog):
-    """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
+    """A deliberate review flow with a guarded first-baseline batch action."""
     def __init__(self, parent, projects, total_count=None, purpose="review"):
         super().__init__(parent)
         self.window = parent
@@ -5216,6 +5248,8 @@ class PortfolioReviewDialog(QDialog):
         self.pending = list(projects or [])
         self.portfolio_total = max(len(self.pending), int(total_count or len(self.pending)))
         self.reviewed_count = 0
+        self.last_batch_result = None
+        self.batch_candidates = []
         next_step_mode = purpose == "next_step"
         self.setWindowTitle("明确项目下一步" if next_step_mode else "项目确认")
         self.setObjectName("portfolioReviewDialog")
@@ -5246,6 +5280,10 @@ class PortfolioReviewDialog(QDialog):
         self.feedback = QLabel(); self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
         actions = QHBoxLayout(); actions.setSpacing(8)
         close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close)
+        self.undo_batch_button = QPushButton("撤销本次批量确认")
+        self.undo_batch_button.setIcon(fluent_icon("\uE7A7", color="#526071", size=13)); self.undo_batch_button.setIconSize(QSize(13, 13))
+        self.undo_batch_button.setToolTip("仅撤销刚刚批量建立的管理基线；不会修改项目资料")
+        self.undo_batch_button.clicked.connect(self.undo_last_batch); self.undo_batch_button.hide(); actions.addWidget(self.undo_batch_button)
         actions.addStretch()
         self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14))
         self.open_button.setToolTip("查看完整项目资料；关闭项目面板后返回本轮确认")
@@ -5256,6 +5294,10 @@ class PortfolioReviewDialog(QDialog):
         self.recover_button.setToolTip("将历史需关注状态校准为正常，并建立本次复核基线"); self.recover_button.setAccessibleName("确认项目已经恢复正常")
         self.recover_button.setStyleSheet("QPushButton { color: #087443; background: #eef9f3; border: 1px solid #b9dfca; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #e2f4ea; border-color: #78bd98; }")
         self.recover_button.clicked.connect(self.recover_current); self.recover_button.hide(); actions.addWidget(self.recover_button)
+        self.batch_button = QPushButton("批量建立基线")
+        self.batch_button.setIcon(fluent_icon("\uE8B7", color="#1d4ed8", size=14)); self.batch_button.setIconSize(QSize(14, 14))
+        self.batch_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
+        self.batch_button.clicked.connect(self.confirm_baseline_batch); self.batch_button.hide(); actions.addWidget(self.batch_button)
         self.confirm_button = QPushButton("确认现状"); self.confirm_button.setObjectName("primary"); self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.confirm_button.setIconSize(QSize(14, 14)); self.confirm_button.clicked.connect(self.confirm_current); actions.addWidget(self.confirm_button)
         root.addLayout(actions)
         self.render_current()
@@ -5310,6 +5352,26 @@ class PortfolioReviewDialog(QDialog):
             if remaining else f"本轮完成 {self.reviewed_count}"
         )
         self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1); self.recover_button.hide()
+        self.undo_batch_button.setVisible(bool(self.last_batch_result))
+        self.batch_candidates = []
+        self.batch_button.hide()
+        if remaining and not next_step_mode:
+            self.batch_candidates = project_baseline_batch_candidates(
+                self.pending,
+                self.window.today_tasks,
+                QDate.currentDate().toString(Qt.ISODate),
+            )
+            if len(self.batch_candidates) >= 2:
+                self.batch_button.setText(f"批量建基线 {len(self.batch_candidates)}")
+                excluded = remaining - len(self.batch_candidates)
+                detail = "全部满足批量条件" if not excluded else f"另有 {excluded} 项需要逐项处理"
+                self.batch_button.setToolTip(f"一次确认 {len(self.batch_candidates)} 个资料完整、健康正常且执行方向一致的项目；{detail}")
+                batch_hint = f"{len(self.batch_candidates)} 项可批量建立"
+                if excluded:
+                    batch_hint += f"，{excluded} 项需逐项判断"
+                self.subtitle.setText(f"{batch_summary}；{batch_hint}")
+                self.subtitle.setAccessibleName(f"项目确认批次。{batch_summary}。{batch_hint}")
+                self.batch_button.show()
         self.confirm_button.setText("确认现状" if remaining else "关闭")
         if not remaining:
             done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
@@ -5514,6 +5576,66 @@ class PortfolioReviewDialog(QDialog):
             return
         self.pending.append(self.pending.pop(0))
         self.render_current()
+
+    def confirm_baseline_batch(self):
+        candidates = project_baseline_batch_candidates(
+            self.pending,
+            self.window.today_tasks,
+            QDate.currentDate().toString(Qt.ISODate),
+        )
+        if len(candidates) < 2:
+            self.feedback.setText("当前不足 2 个安全可合并的首次基线，请继续逐项确认。")
+            return
+        names = "\n".join(f"• {project.get('name') or '未命名项目'}" for project in candidates)
+        message = (
+            f"将为以下 {len(candidates)} 个项目建立首次管理基线：\n\n{names}\n\n"
+            "系统会保存当前目标、验收标准、阶段、健康度、下一步和阻塞状态，"
+            "并按项目优先级启动 3 / 7 / 14 天复核周期。\n\n"
+            "此操作不会修改项目内容；风险、缺项和执行方向冲突项目不在本次范围内。"
+        )
+        answer = QMessageBox.question(
+            self,
+            "批量建立首次基线",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        result = self.window.record_project_review_batch(candidates)
+        if not result or not result.get("count"):
+            self.feedback.setText("批量确认没有写入；项目状态可能刚刚发生变化，请重新检查。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+        confirmed = {str(value) for value in result.get("projectIds") or []}
+        self.pending = [
+            project for project in self.pending
+            if not (project_reference_ids(project) & confirmed)
+        ]
+        self.reviewed_count += int(result.get("count") or 0)
+        self.last_batch_result = result
+        self.render_current()
+        self.feedback.setText(f"已为 {result['count']} 个项目建立首次基线并写入审计记录；如有误，可立即撤销本次批量确认。")
+        self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+
+    def undo_last_batch(self):
+        if not self.last_batch_result:
+            return
+        restored = self.window.undo_project_review_batch(self.last_batch_result)
+        if not restored:
+            self.feedback.setText("未能撤销：这些项目的基线在批量确认后已经发生变化。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+        existing_refs = set().union(*(project_reference_ids(project) for project in self.pending)) if self.pending else set()
+        for project in reversed(restored):
+            if not (project_reference_ids(project) & existing_refs):
+                self.pending.insert(0, project)
+                existing_refs.update(project_reference_ids(project))
+        self.reviewed_count = max(0, self.reviewed_count - len(restored))
+        self.last_batch_result = None
+        self.render_current()
+        self.feedback.setText(f"已撤销 {len(restored)} 个项目的本次批量基线；项目资料保持不变。")
+        self.feedback.setStyleSheet("color: #526071; background: #f1f4f8; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
 
     def open_current(self):
         project = self.current_project()
@@ -7974,6 +8096,158 @@ class MainWindow(QMainWindow):
         cadence = project_review_status(project)[2]
         self.statusBar().showMessage(f"已确认当前项目状态；{cadence} 天后自动进入待复核", 4200)
         return entry or True
+
+    def record_project_review_batch(self, projects, occurred_at=None):
+        """Atomically establish several safe first baselines after one explicit choice."""
+        candidates = list(projects or [])
+        if len(candidates) < 2:
+            self.statusBar().showMessage("批量基线至少需要 2 个可合并项目", 3200)
+            return None
+        today = QDate.currentDate().toString(Qt.ISODate)
+        for project in candidates:
+            eligible, reason = project_baseline_batch_eligibility(project, self.today_tasks, today)
+            if not eligible:
+                self.statusBar().showMessage(f"“{project.get('name') or '未命名项目'}”需要逐项处理：{reason}", 4200)
+                return None
+
+        reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
+        batch_id = str(uuid.uuid4())
+        prepared = []
+        seen = set()
+        for project in candidates:
+            target = self.saved_record_for_project(project)
+            stable_id = str(target.get("id") or "")
+            if not stable_id or stable_id in seen:
+                continue
+            seen.add(stable_id)
+            previous_baseline = target.get("reviewBaseline")
+            prepared.append((
+                project,
+                target,
+                stable_id,
+                {
+                    "reviewedAt": str(target.get("reviewedAt") or ""),
+                    "reviewBaseline": dict(previous_baseline) if isinstance(previous_baseline, dict) else None,
+                },
+            ))
+        if len(prepared) < 2:
+            self.statusBar().showMessage("没有形成有效的批量基线，未保存本次操作", 3600)
+            return None
+
+        entries = []
+        project_ids = []
+        for project, target, stable_id, previous_review in prepared:
+            baseline = establish_project_review_baseline(target, reviewed_at)
+            project["reviewedAt"] = reviewed_at
+            project["reviewBaseline"] = dict(baseline or {})
+            audit_project = {**project, "savedId": stable_id}
+            entry = build_project_review_entry(
+                audit_project,
+                reviewed_at,
+                batch_id=batch_id,
+                previous_review=previous_review,
+            )
+            if entry is None:
+                continue
+            entry["establishedReview"] = dict(baseline or {})
+            entries.append(entry)
+            project_ids.append(stable_id)
+        self.project_decisions.extend(entries)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(PROJECTS_FILE, self.saved_projects)
+        save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage(f"已为 {len(entries)} 个项目建立首次管理基线", 4200)
+        return {
+            "batchId": batch_id,
+            "reviewedAt": reviewed_at,
+            "projectIds": project_ids,
+            "count": len(entries),
+        }
+
+    def undo_project_review_batch(self, result, occurred_at=None):
+        """Undo the latest untouched batch baseline while preserving an audit trail."""
+        batch_id = str((result or {}).get("batchId") or "")
+        if not batch_id:
+            return []
+        entries = [
+            entry for entry in self.project_decisions
+            if entry.get("kind") == "review"
+            and entry.get("source") == "review"
+            and str(entry.get("batchId") or "") == batch_id
+        ]
+        if not entries:
+            return []
+
+        prepared = []
+        for entry in entries:
+            project = self.project_by_id(entry.get("projectId"))
+            if project is None:
+                self.statusBar().showMessage("批量基线中的项目已不可用，未执行撤销", 4200)
+                return []
+            target = self.saved_record_for_project(project)
+            expected_at = str(entry.get("at") or "")
+            expected_baseline = entry.get("establishedReview") or {}
+            if (
+                str(target.get("reviewedAt") or "") != expected_at
+                or target.get("reviewBaseline") != expected_baseline
+            ):
+                self.statusBar().showMessage(f"“{project.get('name') or '未命名项目'}”的基线已经更新，未执行撤销", 4200)
+                return []
+            prepared.append((project, target, entry))
+
+        undone_at = occurred_at or datetime.now().isoformat(timespec="seconds")
+        undo_batch_id = str(uuid.uuid4())
+        restored_ids = []
+        undo_entries = []
+        for project, target, entry in prepared:
+            previous = entry.get("previousReview") or {}
+            previous_at = str(previous.get("reviewedAt") or "")
+            previous_baseline = previous.get("reviewBaseline")
+            if previous_at:
+                target["reviewedAt"] = previous_at
+                project["reviewedAt"] = previous_at
+            else:
+                target.pop("reviewedAt", None)
+                project.pop("reviewedAt", None)
+            if isinstance(previous_baseline, dict):
+                target["reviewBaseline"] = dict(previous_baseline)
+                project["reviewBaseline"] = dict(previous_baseline)
+            else:
+                target.pop("reviewBaseline", None)
+                project.pop("reviewBaseline", None)
+            stable_id = str(target.get("id") or entry.get("projectId") or "")
+            audit_project = {**project, "savedId": stable_id}
+            undo_entry = build_project_review_entry(
+                audit_project,
+                undone_at,
+                batch_id=undo_batch_id,
+                previous_review={
+                    "reviewedAt": str(entry.get("at") or ""),
+                    "reviewBaseline": dict(entry.get("establishedReview") or {}),
+                },
+                action="undo",
+            )
+            if undo_entry is not None:
+                undo_entry["source"] = "review_undo"
+                undo_entry["revertsEntryId"] = entry.get("id")
+                undo_entry["revertsBatchId"] = batch_id
+                undo_entries.append(undo_entry)
+            restored_ids.append(stable_id)
+
+        self.project_decisions.extend(undo_entries)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(PROJECTS_FILE, self.saved_projects)
+        save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        restored = [self.project_by_id(project_id) for project_id in restored_ids]
+        restored = [project for project in restored if project is not None]
+        self.statusBar().showMessage(f"已撤销 {len(restored)} 个项目的本次批量基线", 4200)
+        return restored
 
     def acknowledge_execution_alignment(self, alignment):
         """Keep the declared next step and audit that the live divergence was reviewed."""

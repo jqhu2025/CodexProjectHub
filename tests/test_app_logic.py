@@ -2355,6 +2355,85 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         saved_lookup.assert_not_called()
         self.assertIn("执行方向", status_bar.showMessage.call_args.args[0])
 
+    def test_batch_baseline_eligibility_never_hides_real_decisions(self):
+        today = datetime.now().date().isoformat()
+        project = {
+            "id": "runtime", "savedId": "stable", "status": "active",
+            "priority": "normal", "stage": "execution", "health": "on_track",
+            "objective": "Ship release", "nextStep": "Run verification",
+        }
+        self.assertTrue(APP.project_baseline_batch_eligibility(project, [], today)[0])
+        self.assertFalse(APP.project_baseline_batch_eligibility({**project, "objective": ""}, [], today)[0])
+        self.assertFalse(APP.project_baseline_batch_eligibility({**project, "health": "attention"}, [], today)[0])
+        self.assertFalse(APP.project_baseline_batch_eligibility({**project, "reviewedAt": "2026-08-10T09:00:00"}, [], today)[0])
+        divergent_task = {
+            "id": "task", "projectId": "stable", "date": today,
+            "status": "doing", "title": "Repair benchmark",
+        }
+        eligible, reason = APP.project_baseline_batch_eligibility(project, [divergent_task], today)
+        self.assertFalse(eligible)
+        self.assertIn("执行方向", reason)
+
+    def test_batch_baseline_is_audited_once_and_can_be_immediately_undone(self):
+        projects = [
+            {
+                "id": f"runtime-{index}", "savedId": f"stable-{index}", "name": f"Project {index}",
+                "status": "active", "priority": "normal", "stage": "execution", "health": "on_track",
+                "objective": "Ship release", "successCriteria": "Pass checks", "nextStep": "Run verification",
+            }
+            for index in (1, 2)
+        ]
+        targets = {
+            f"stable-{index}": {"id": f"stable-{index}", "name": f"Project {index}"}
+            for index in (1, 2)
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(
+            projects=projects, saved_projects=list(targets.values()), project_decisions=[], today_tasks=[],
+            view_signature="old", refresh=Mock(), statusBar=lambda: status_bar,
+            saved_record_for_project=lambda project: targets[project["savedId"]],
+            project_by_id=lambda reference: next(
+                (project for project in projects if str(reference) in APP.project_reference_ids(project)),
+                None,
+            ),
+        )
+        with patch.object(APP, "save_json") as save:
+            result = APP.MainWindow.record_project_review_batch(
+                window, projects, occurred_at="2026-08-10T12:00:00"
+            )
+            restored = APP.MainWindow.undo_project_review_batch(
+                window, result, occurred_at="2026-08-10T12:05:00"
+            )
+        self.assertEqual(result["count"], 2)
+        review_entries = [entry for entry in window.project_decisions if entry.get("source") == "review"]
+        self.assertEqual(len(review_entries), 2)
+        self.assertEqual({entry.get("batchId") for entry in review_entries}, {result["batchId"]})
+        self.assertEqual(len(restored), 2)
+        self.assertTrue(all("reviewedAt" not in project for project in projects))
+        self.assertTrue(all("reviewBaseline" not in target for target in targets.values()))
+        self.assertEqual(len([entry for entry in window.project_decisions if entry.get("source") == "review_undo"]), 2)
+        self.assertEqual(save.call_count, 4)
+        self.assertEqual(window.refresh.call_count, 2)
+
+    def test_batch_baseline_rejects_the_whole_request_before_any_write(self):
+        healthy = {
+            "id": "one", "status": "active", "stage": "execution", "health": "on_track",
+            "objective": "Ship", "nextStep": "Test",
+        }
+        attention = {**healthy, "id": "two", "health": "attention"}
+        saved_lookup = Mock()
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[], project_decisions=[], saved_projects=[],
+            saved_record_for_project=saved_lookup, statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json") as save:
+            result = APP.MainWindow.record_project_review_batch(window, [healthy, attention])
+        self.assertIsNone(result)
+        saved_lookup.assert_not_called()
+        save.assert_not_called()
+        self.assertNotIn("reviewedAt", healthy)
+
     def test_keep_execution_direction_records_signature_and_audit_event(self):
         today = datetime.now().date().isoformat()
         project = {"id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "nextStep": "Ship candidate"}

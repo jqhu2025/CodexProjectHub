@@ -67,6 +67,7 @@ PROJECT_DECISION_SOURCES = {
     "created": "建立项目",
     "category": "分类调整",
     "review": "状态复核",
+    "review_undo": "撤销复核",
     "review_resolution": "复核校准",
     "alignment": "执行对齐",
     "archive": "项目归档",
@@ -1027,12 +1028,19 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
     return entry
 
 
-def build_project_review_entry(project, occurred_at, entry_id=None):
+def build_project_review_entry(
+    project,
+    occurred_at,
+    entry_id=None,
+    batch_id=None,
+    previous_review=None,
+    action="confirm",
+):
     """Record an explicit review even when no project field changed."""
     stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
     if not stable_project_id:
         return None
-    return {
+    entry = {
         "id": entry_id or str(uuid.uuid4()),
         "projectId": stable_project_id,
         "projectName": str((project or {}).get("name") or "未命名项目"),
@@ -1049,6 +1057,13 @@ def build_project_review_entry(project, occurred_at, entry_id=None):
             "blocker": normalized_decision_value((project or {}).get("blocker")),
         },
     }
+    if batch_id:
+        entry["batchId"] = str(batch_id)
+    if previous_review is not None:
+        entry["previousReview"] = dict(previous_review)
+    if action != "confirm":
+        entry["action"] = str(action)
+    return entry
 
 
 def build_project_alignment_entry(project, tasks, occurred_at, entry_id=None):
@@ -1150,6 +1165,8 @@ def compact_project_decision_value(field, value, limit=36):
 
 def format_project_decision_summary(entry, max_changes=2):
     if (entry or {}).get("kind") == "review":
+        if (entry or {}).get("action") == "undo":
+            return "撤销本次复核 · 恢复此前管理基线"
         snapshot = (entry or {}).get("snapshot") or {}
         stage = display_project_decision_value("stage", snapshot.get("stage"))
         health = display_project_decision_value("health", snapshot.get("health"))
