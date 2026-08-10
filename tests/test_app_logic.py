@@ -50,6 +50,22 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_project_reference_ids_keep_tasks_linked_after_codex_id_changes(self):
+        project = {"id": "current-id", "savedId": "stable-id", "codexProjectId": "codex-id"}
+        self.assertTrue(APP.task_matches_project({"projectId": "stable-id"}, project))
+        self.assertTrue(APP.task_matches_project({"projectId": "current-id"}, project))
+        self.assertFalse(APP.task_matches_project({"projectId": "another-id"}, project))
+
+    def test_live_work_automatically_becomes_portfolio_focus(self):
+        task_focus = {"priority": "normal", "activeTaskCount": 1, "conversations": []}
+        codex_focus = {"priority": "normal", "activeTaskCount": 0, "conversations": [{"state": "working"}]}
+        idle = {"priority": "normal", "activeTaskCount": 0, "conversations": []}
+        self.assertEqual(APP.project_focus_state(task_focus)[:2], (True, "推进中"))
+        self.assertEqual(APP.project_focus_state(codex_focus)[:2], (True, "推进中"))
+        self.assertFalse(APP.project_focus_state(idle)[0])
+        self.assertTrue(APP.project_management_scope_matches(task_focus, "focus"))
+        self.assertTrue(APP.project_management_scope_matches(codex_focus, "focus"))
+
     def test_project_insight_requires_an_existing_project_folder(self):
         with patch.object(APP, "find_summary_codex_binary", return_value="codex"):
             result = APP.generate_project_insight({"path": "Z:/definitely-missing-project"})
@@ -123,6 +139,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         projects.sort(key=APP.project_management_sort_key)
         self.assertEqual([item["name"] for item in projects], ["Focus", "Regular"])
 
+    def test_active_task_sorts_as_focus_without_overwriting_manual_priority(self):
+        projects = [
+            {"name": "Regular", "priority": "normal", "nextStep": "Continue"},
+            {"name": "Active", "priority": "normal", "activeTaskCount": 1, "nextStep": "Validate"},
+        ]
+        projects.sort(key=APP.project_management_sort_key)
+        self.assertEqual([item["name"] for item in projects], ["Active", "Regular"])
+
     def test_blocked_project_sorts_before_healthy_focus_project(self):
         projects = [
             {"name": "Focus", "priority": "focus", "objective": "Ship", "nextStep": "Test"},
@@ -143,6 +167,12 @@ class DailySummaryTests(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 1)
         self.assertEqual(payload["tasks"][0]["project"], "Denoising")
         self.assertEqual(payload["tasks"][0]["status"], "进行中")
+
+    def test_payload_resolves_tasks_saved_with_a_stable_project_id(self):
+        tasks = [{"date": "2026-08-08", "title": "Validate", "status": "doing", "projectId": "stable-id"}]
+        projects = [{"id": "current-id", "savedId": "stable-id", "name": "Denoising", "conversations": []}]
+        payload = APP.build_daily_summary_payload(tasks, projects, "2026-08-08")
+        self.assertEqual(payload["tasks"][0]["project"], "Denoising")
 
     def test_prompt_requires_specific_structured_output(self):
         prompt = APP.daily_summary_prompt({"date": "2026-08-08", "tasks": [], "codexActivities": []})

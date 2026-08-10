@@ -910,6 +910,43 @@ def project_priority_key(project):
     return value if value in PROJECT_PRIORITY else "normal"
 
 
+def project_reference_ids(project):
+    """Return every stable/current ID that may be stored on a linked task."""
+    return {
+        str(value)
+        for value in (
+            (project or {}).get("id"),
+            (project or {}).get("savedId"),
+            (project or {}).get("codexProjectId"),
+        )
+        if value
+    }
+
+
+def task_matches_project(task, project):
+    project_id = str((task or {}).get("projectId") or "")
+    return bool(project_id and project_id in project_reference_ids(project))
+
+
+def project_focus_state(project):
+    """Resolve the live portfolio focus from deliberate priority and actual work."""
+    if project_priority_key(project) == "focus":
+        return True, "重点", "已手动设为当前重点", "#7c3aed", "#f1eaff"
+    active_tasks = int((project or {}).get("activeTaskCount") or 0)
+    running_conversations = sum(
+        codex_state(conversation)[0] == "running"
+        for conversation in (project or {}).get("conversations") or []
+    )
+    if active_tasks:
+        reason = f"今日 {active_tasks} 项任务进行中"
+        if running_conversations:
+            reason += f"，{running_conversations} 个 Codex 对话运行中"
+        return True, "推进中", reason, "#1d4ed8", "#e8f0ff"
+    if running_conversations:
+        return True, "推进中", f"{running_conversations} 个 Codex 对话运行中", "#087443", "#e7f7ef"
+    return False, "", "当前没有进行中的任务或 Codex 对话", "#66758a", "#eef2f6"
+
+
 def project_stage_key(project):
     value = str((project or {}).get("stage") or "execution")
     return value if value in PROJECT_STAGE else "execution"
@@ -940,7 +977,7 @@ def project_control_state(project):
 def project_management_scope_matches(project, scope):
     """Filter projects by decisions the user can act on, not by decorative metrics."""
     if scope == "focus":
-        return project_priority_key(project) == "focus"
+        return project_focus_state(project)[0]
     if scope == "needs_next":
         return project.get("status", "active") == "active" and not str(project.get("nextStep") or "").strip()
     if scope == "attention":
@@ -957,7 +994,7 @@ def project_management_sort_key(project):
     control_order = {"blocked": 0, "attention": 1, "on_track": 2, "paused": 3, "completed": 4}
     return (
         control_order.get(project_control_state(project)[0], 2),
-        priority_order.get(project_priority_key(project), 1),
+        0 if project_focus_state(project)[0] else priority_order.get(project_priority_key(project), 1) + 1,
         0 if project.get("nextStep") else 1,
         str(project.get("name") or "").casefold(),
     )
@@ -965,7 +1002,11 @@ def project_management_sort_key(project):
 
 def build_daily_summary_payload(tasks, projects, target_date):
     """Create a compact, factual source packet for the fixed Codex summary task."""
-    project_index = {str(project.get("id")): project for project in projects}
+    project_index = {
+        reference: project
+        for project in projects
+        for reference in project_reference_ids(project)
+    }
     selected_tasks = []
     for task in tasks:
         if str(task.get("date") or "") != target_date:
@@ -1344,8 +1385,10 @@ class ProjectEditor(QDialog):
         draft = {**(self.project or {}), **self.value()}
         if self.project:
             draft["conversations"] = self.project.get("conversations") or []
-        project_id = (self.project or {}).get("id")
-        tasks = [task for task in getattr(self.parent(), "today_tasks", []) if project_id and task.get("projectId") == project_id]
+        tasks = [
+            task for task in getattr(self.parent(), "today_tasks", [])
+            if self.project and task_matches_project(task, self.project)
+        ]
         worker = ProjectInsightWorker(draft, tasks, self)
         worker.generated.connect(self.on_codex_insight)
         worker.finished.connect(lambda: self.finish_codex_insight(worker))
@@ -1615,7 +1658,9 @@ class ProjectMapRow(QFrame):
         self.setToolTip("打开项目管理面板；总览不展开具体对话")
         control_key, control_label, control_color, _control_background, control_reason = project_control_state(project)
         stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
-        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}，Codex {state_text}")
+        is_focus, focus_label, focus_reason, focus_color, focus_background = project_focus_state(project)
+        focus_description = f"，{focus_label}：{focus_reason}" if is_focus else ""
+        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}{focus_description}，Codex {state_text}")
         self.setStyleSheet(
             "QFrame#projectMapRow { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 9px; }"
             "QFrame#projectMapRow:hover { background: #f5f8fc; border-color: #b8c8dc; }"
@@ -1635,9 +1680,9 @@ class ProjectMapRow(QFrame):
         name.setToolTip(project.get("name") or "未命名项目")
         name.setStyleSheet("color: #26364c; border: none; font-size: 13px; font-weight: 650;")
         title_row.addWidget(name, 1)
-        if project_priority_key(project) == "focus":
-            focus = QLabel("重点"); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(36, 20)
-            focus.setStyleSheet("color: #7c3aed; background: #f1eaff; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
+        if is_focus:
+            focus = QLabel(focus_label); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(44, 20); focus.setToolTip(focus_reason)
+            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
             title_row.addWidget(focus)
         text_box.addLayout(title_row)
         next_step = str(project.get("nextStep") or "").strip()
@@ -1743,12 +1788,12 @@ class ProjectMindMap(QGraphicsView):
         overview_layout.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
         title = QLabel("项目驾驶舱"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
-        subtitle = QLabel("按分类掌握阶段、健康度和下一步")
+        subtitle = QLabel("重点由今日任务、Codex 活动和人工优先级实时汇总")
         subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
         overview_layout.addLayout(title_box)
         overview_layout.addStretch(1)
-        focus_count = sum(project_priority_key(project) == "focus" for project in projects)
+        focus_count = sum(project_focus_state(project)[0] for project in projects)
         blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
         attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
         summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个需关注")
@@ -1829,9 +1874,10 @@ class ProjectGroup(QFrame):
         name_box = QVBoxLayout(); name_box.setSpacing(2)
         name_row = QHBoxLayout(); name_row.setSpacing(6)
         name = ElidedLabel(project["name"]); name.setToolTip(project["name"]); name.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); name_row.addWidget(name, 1)
-        if project_priority_key(project) == "focus":
-            focus = QLabel("当前重点"); focus.setFixedSize(58, 20); focus.setAlignment(Qt.AlignCenter)
-            focus.setStyleSheet("color: #7c3aed; background: #f1eaff; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(focus)
+        is_focus, focus_label, focus_reason, focus_color, focus_background = project_focus_state(project)
+        if is_focus:
+            focus = QLabel("当前重点" if focus_label == "重点" else "今日推进"); focus.setFixedSize(58, 20); focus.setAlignment(Qt.AlignCenter); focus.setToolTip(focus_reason)
+            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(focus)
         control_key, control_label, control_color, control_background, control_reason = project_control_state(project)
         health = QLabel(control_label); health.setFixedSize(48, 20); health.setAlignment(Qt.AlignCenter); health.setToolTip(control_reason)
         health.setStyleSheet(f"color: {control_color}; background: {control_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(health)
@@ -1960,7 +2006,12 @@ class TaskEditor(QDialog):
             category = project.get("category") or "未分类"
             if category not in categories: categories.append(category)
         current_project_id = self.task.get("projectId") or default_project_id
-        current_project = next((item for item in projects if item.get("id") == current_project_id), None)
+        current_project = next(
+            (item for item in projects if str(current_project_id or "") in project_reference_ids(item)),
+            None,
+        )
+        if current_project:
+            current_project_id = current_project.get("id")
         current_category = (current_project or {}).get("category") or self.task.get("category")
         self.category_field = QComboBox(); self.project_field = QComboBox(); self.conversation_field = QComboBox()
         for category in categories: self.category_field.addItem(category, category)
@@ -2276,6 +2327,10 @@ class ProjectWorkbenchDialog(QDialog):
         title = QLabel(project.get("name") or "未命名项目"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
         subtitle = QLabel(f"{project.get('category', '未分类')}  ·  在一个地方维护目标、下一步、任务和 Codex 对话")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        is_focus, focus_text, focus_reason, focus_color, focus_background = project_focus_state(project)
+        if is_focus:
+            focus = QLabel(focus_text); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(64, 30); focus.setToolTip(focus_reason)
+            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(focus)
         _control_key, control_text, control_color, control_background, control_reason = project_control_state(project)
         control = QLabel(control_text); control.setAlignment(Qt.AlignCenter); control.setFixedSize(64, 30); control.setToolTip(control_reason)
         control.setStyleSheet(f"color: {control_color}; background: {control_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(control)
@@ -2347,7 +2402,10 @@ class ProjectWorkbenchDialog(QDialog):
             item = self.project_tasks.takeAt(0)
             if item.widget(): item.widget().deleteLater()
         today = QDate.currentDate().toString(Qt.ISODate)
-        tasks = [task for task in self.window.today_tasks if task.get("projectId") == self.project.get("id") and (task.get("date") or today) == today]
+        tasks = [
+            task for task in self.window.today_tasks
+            if task_matches_project(task, self.project) and (task.get("date") or today) == today
+        ]
         if not tasks:
             empty = QLabel("今天还没有关联任务")
             empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; background: #f7f9fc; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 28px 12px; font-size: 11px;")
@@ -2570,6 +2628,7 @@ class MainWindow(QMainWindow):
             self.status_filter.addItem(label, value)
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
+        self.scope_filter.setToolTip("“当前重点”包含人工重点、今日进行中任务和运行中的 Codex 对话")
         for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("需关注", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
@@ -2697,12 +2756,14 @@ class MainWindow(QMainWindow):
                 self.pulse_state_label.setText("待机 · 正在监听 Codex")
                 self.pulse_state_label.setStyleSheet("color: #526071; font-size: 13px; font-weight: 650;")
         self.auto_start_tasks_from_codex()
+        self.sync_project_workload()
         self.start_daily_summary()
         signature = tuple(
             (
                 project.get("id"), project.get("name"), project.get("path"), project.get("category"),
                 project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
                 project.get("objective"), project.get("nextStep"), project.get("blocker"),
+                project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
                     (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
                     for session in project.get("conversations", [])
@@ -2979,7 +3040,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "无法打开", f"没有成功切换到 Codex 总结任务：\n{error}")
 
     def project_by_id(self, project_id):
-        return next((project for project in self.projects if project.get("id") == project_id), None)
+        reference = str(project_id or "")
+        if not reference:
+            return None
+        return next((project for project in self.projects if reference in project_reference_ids(project)), None)
+
+    def sync_project_workload(self):
+        """Attach today's task counts so portfolio focus reflects work that is actually moving."""
+        today = QDate.currentDate().toString(Qt.ISODate)
+        for project in self.projects:
+            project["plannedTaskCount"] = 0
+            project["activeTaskCount"] = 0
+            project["completedTaskCount"] = 0
+        field_by_status = {
+            "planned": "plannedTaskCount",
+            "doing": "activeTaskCount",
+            "done": "completedTaskCount",
+        }
+        for task in self.today_tasks:
+            if (task.get("date") or today) != today:
+                continue
+            project = self.project_by_id(task.get("projectId"))
+            field = field_by_status.get(task.get("status", "planned"))
+            if project is not None and field:
+                project[field] = int(project.get(field) or 0) + 1
 
     def conversation_by_id(self, session_id):
         if not session_id:
