@@ -58,6 +58,24 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("风险已解除", dialog.feedback.text())
         dialog.close(); parent.close()
 
+    def test_blocker_resolution_requires_concrete_closure_evidence(self):
+        parent = APP.QWidget()
+        project = {
+            "name": "Release", "blocker": "Waiting for verified input",
+            "blockedAt": "2026-08-10T09:00:00",
+        }
+        dialog = APP.BlockerResolutionDialog(parent, project)
+
+        dialog.confirm()
+        self.assertEqual(dialog.result(), APP.QDialog.Rejected)
+        self.assertIn("不能只清除风险状态", dialog.feedback.text())
+
+        dialog.resolution.setPlainText("  Input delivered\n and verification passed.  ")
+        dialog.confirm()
+        self.assertEqual(dialog.result(), APP.QDialog.Accepted)
+        self.assertEqual(dialog.value(), "Input delivered and verification passed.")
+        dialog.close(); parent.close()
+
     def test_focus_comparison_shows_objective_and_specific_execution_evidence(self):
         parent = APP.QWidget(); parent.today_tasks = []
         parent.projects = [{
@@ -944,13 +962,71 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(project["blockedAt"], saved["blockedAt"])
         self.assertEqual(window.project_decisions[-1]["blockerLifecycle"]["action"], "started")
 
-        resolved_data = {**blocked_data, "health": "on_track", "blocker": ""}
+        resolved_data = {
+            **blocked_data, "health": "on_track", "blocker": "",
+            "blockerResolution": "Reference data delivered and checksum verified",
+        }
         with patch.object(APP, "save_json"):
             saved = APP.MainWindow.update_project_management(window, project, resolved_data, notify=True)
         self.assertNotIn("blockedAt", saved)
         self.assertEqual(saved["lastResolvedBlocker"], "Waiting for reference data")
         self.assertTrue(saved["lastBlockerResolvedAt"])
+        self.assertEqual(saved["lastBlockerResolution"], "Reference data delivered and checksum verified")
         self.assertEqual(window.project_decisions[-1]["blockerLifecycle"]["action"], "resolved")
+        self.assertEqual(
+            window.project_decisions[-1]["blockerLifecycle"]["resolution"],
+            "Reference data delivered and checksum verified",
+        )
+
+    def test_workbench_resolution_dialog_passes_evidence_into_the_save_path(self):
+        resolution = Mock()
+        resolution.exec_.return_value = APP.QDialog.Accepted
+        resolution.value.return_value = "Dependency restored and validated"
+        blocker_field = Mock()
+        health_field = Mock(); health_field.findData.return_value = 2
+        workbench = SimpleNamespace(
+            project={"status": "active", "health": "blocked", "blocker": "Dependency unavailable"},
+            render_blocker_strip=Mock(), blocker_field=blocker_field, health_field=health_field,
+            save_changes=Mock(return_value=True),
+        )
+
+        with patch.object(APP, "BlockerResolutionDialog", return_value=resolution):
+            APP.ProjectWorkbenchDialog.resolve_blocker(workbench)
+
+        blocker_field.clear.assert_called_once_with()
+        health_field.setCurrentIndex.assert_called_once_with(2)
+        workbench.save_changes.assert_called_once_with(blocker_resolution="Dependency restored and validated")
+
+    def test_manually_clearing_a_blocker_uses_the_same_resolution_gate(self):
+        def combo(value):
+            field = Mock(); field.currentData.return_value = value; return field
+
+        resolution = Mock()
+        resolution.exec_.return_value = APP.QDialog.Accepted
+        resolution.value.return_value = "Replacement source validated"
+        window = SimpleNamespace(
+            today_tasks=[],
+            update_project_management=Mock(return_value={"status": "active", "blocker": ""}),
+        )
+        workbench = SimpleNamespace(
+            project={"status": "active", "health": "blocked", "blocker": "Source unavailable"},
+            priority_field=combo("normal"), status_field=combo("active"), category_field=combo("Research"),
+            stage_field=combo("validation"), health_field=combo("on_track"),
+            objective_field=Mock(), next_step_field=Mock(), blocker_field=Mock(), window=window,
+            apply_management_values=Mock(), refresh_header_states=Mock(), render_blocker_strip=Mock(),
+            render_project_outcome=Mock(), render_decision_history=Mock(),
+        )
+        workbench.objective_field.toPlainText.return_value = "Ship release"
+        workbench.next_step_field.text.return_value = "Validate candidate"
+        workbench.blocker_field.text.return_value = ""
+
+        with patch.object(APP, "BlockerResolutionDialog", return_value=resolution):
+            saved = APP.ProjectWorkbenchDialog.save_changes(workbench)
+
+        self.assertTrue(saved)
+        resolution.exec_.assert_called_once_with()
+        submitted = window.update_project_management.call_args.args[1]
+        self.assertEqual(submitted["blockerResolution"], "Replacement source validated")
 
     def test_codex_update_establishes_review_only_after_all_governance_gaps_are_filled(self):
         project = {

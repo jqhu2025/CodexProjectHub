@@ -82,6 +82,7 @@ PROJECT_BLOCKER_LIFECYCLE_FIELDS = (
     "blockedAtEstimated",
     "lastResolvedBlocker",
     "lastBlockerResolvedAt",
+    "lastBlockerResolution",
 )
 
 
@@ -650,7 +651,7 @@ def normalized_decision_value(value):
     return " ".join(str(value or "").split())
 
 
-def reconcile_project_blocker_lifecycle(current, project, occurred_at):
+def reconcile_project_blocker_lifecycle(current, project, occurred_at, resolution=""):
     """Mutate derived blocker timing metadata without resetting continuous age.
 
     The blocker text remains the human decision. Timing fields are derived from
@@ -663,7 +664,7 @@ def reconcile_project_blocker_lifecycle(current, project, occurred_at):
     previous = normalized_decision_value(current.get("blocker"))
     blocker = normalized_decision_value(project.get("blocker"))
     at = str(occurred_at or "")
-    for field in ("lastResolvedBlocker", "lastBlockerResolvedAt"):
+    for field in ("lastResolvedBlocker", "lastBlockerResolvedAt", "lastBlockerResolution"):
         if field in current and field not in project:
             project[field] = current.get(field)
     if blocker:
@@ -695,9 +696,17 @@ def reconcile_project_blocker_lifecycle(current, project, occurred_at):
     for field in ("blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
         project.pop(field, None)
     if previous:
+        resolution = normalized_decision_value(resolution)
         project["lastResolvedBlocker"] = previous
         project["lastBlockerResolvedAt"] = at
-        return {"action": "resolved", "previous": previous, "blocker": "", "at": at}
+        if resolution:
+            project["lastBlockerResolution"] = resolution
+        else:
+            project.pop("lastBlockerResolution", None)
+        return {
+            "action": "resolved", "previous": previous, "blocker": "", "at": at,
+            "resolution": resolution,
+        }
     return None
 
 
@@ -948,6 +957,9 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
             "blockedAt": str((after or {}).get("blockedAt") or (before or {}).get("blockedAt") or ""),
             "duration": duration,
         }
+        resolution = normalized_decision_value((after or {}).get("lastBlockerResolution"))
+        if action == "resolved" and resolution:
+            entry["blockerLifecycle"]["resolution"] = resolution
     return entry
 
 
@@ -1025,6 +1037,7 @@ def build_project_lifecycle_entry(project, action, occurred_at, entry_id=None):
             "blockedAtEstimated": bool((project or {}).get("blockedAtEstimated")),
             "lastResolvedBlocker": normalized_decision_value((project or {}).get("lastResolvedBlocker")),
             "lastBlockerResolvedAt": str((project or {}).get("lastBlockerResolvedAt") or ""),
+            "lastBlockerResolution": normalized_decision_value((project or {}).get("lastBlockerResolution")),
             "completionSummary": normalized_decision_value((project or {}).get("completionSummary")),
             "completedAt": str((project or {}).get("completedAt") or ""),
             "completionObjectiveSnapshot": normalized_decision_value((project or {}).get("completionObjectiveSnapshot")),
@@ -1131,6 +1144,9 @@ def format_project_decision_summary(entry, max_changes=2):
         summary += f" · 阻塞已持续 {duration}，计时未重置"
     elif action == "resolved":
         summary += f" · 阻塞已解除，持续 {duration}"
+        resolution = normalized_decision_value(blocker_lifecycle.get("resolution"))
+        if resolution:
+            summary += f" · 解除记录：{resolution}"
     return summary
 
 

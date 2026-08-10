@@ -173,12 +173,14 @@ class ManagementModuleTests(unittest.TestCase):
 
         resolved = {**revised, "blocker": ""}
         event = management.reconcile_project_blocker_lifecycle(
-            revised, resolved, "2026-08-10T14:00:00"
+            revised, resolved, "2026-08-10T14:00:00", "Calibrated reference delivered and verified"
         )
         self.assertEqual(event["action"], "resolved")
         self.assertNotIn("blockedAt", resolved)
         self.assertEqual(resolved["lastResolvedBlocker"], "Waiting for calibrated reference")
         self.assertEqual(resolved["lastBlockerResolvedAt"], "2026-08-10T14:00:00")
+        self.assertEqual(resolved["lastBlockerResolution"], "Calibrated reference delivered and verified")
+        self.assertEqual(event["resolution"], "Calibrated reference delivered and verified")
 
     def test_legacy_blocker_timing_is_marked_as_estimated_from_confirmation(self):
         legacy = {"status": "active", "blocker": "External dependency"}
@@ -593,12 +595,15 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(updated["blockerLifecycle"]["duration"], "2 小时")
         self.assertIn("计时未重置", management.format_project_decision_summary(updated))
 
+        resolved_after = {"blocker": "", "lastBlockerResolution": "Verified input was delivered and accepted"}
         resolved = management.build_project_decision_entry(
-            project, updated_after, {"blocker": ""}, "editor", "2026-08-11T11:00:00", "resolve"
+            project, updated_after, resolved_after, "editor", "2026-08-11T11:00:00", "resolve"
         )
         self.assertEqual(resolved["blockerLifecycle"]["action"], "resolved")
         self.assertEqual(resolved["blockerLifecycle"]["duration"], "1 天")
+        self.assertEqual(resolved["blockerLifecycle"]["resolution"], "Verified input was delivered and accepted")
         self.assertIn("阻塞已解除", management.format_project_decision_summary(resolved))
+        self.assertIn("Verified input was delivered", management.format_project_decision_summary(resolved))
 
     def test_decision_rollback_is_selective_and_detects_newer_changes(self):
         project = {"objective": "Validated model", "health": "blocked", "nextStep": "Publish report"}

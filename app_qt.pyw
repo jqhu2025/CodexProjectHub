@@ -5350,6 +5350,60 @@ class ExecutionAlignmentDialog(QDialog):
         self.pending.pop(0); self.processed_count += 1; self.render_current()
 
 
+class BlockerResolutionDialog(QDialog):
+    """Capture the evidence that closes a blocker without turning it into a form."""
+    def __init__(self, parent, project):
+        super().__init__(parent)
+        self.project = project or {}
+        self.setWindowTitle("解除项目阻塞")
+        self.setObjectName("blockerResolutionDialog")
+        self.setMinimumSize(600, 360)
+        self.resize(640, 390)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(26, 23, 26, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(40, 40); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #e8f7ef; border: 1px solid #c2e6d1; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("确认阻塞已经解除"); title.setStyleSheet("color: #172033; font-size: 21px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("保留原始原因、持续时长和解决说明，形成完整风险闭环")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1); root.addLayout(heading)
+
+        evidence = QFrame(); evidence.setObjectName("blockerResolutionEvidence")
+        evidence.setStyleSheet("QFrame#blockerResolutionEvidence { background: #fff8f5; border: 1px solid #efd1ca; border-radius: 11px; } QFrame#blockerResolutionEvidence QLabel { background: transparent; border: none; }")
+        evidence_layout = QVBoxLayout(evidence); evidence_layout.setContentsMargins(14, 11, 14, 12); evidence_layout.setSpacing(4)
+        evidence_label = QLabel("当前阻塞"); evidence_label.setStyleSheet("color: #9a3d32; font-size: 10px; font-weight: 700;"); evidence_layout.addWidget(evidence_label)
+        blocker = QLabel(str(self.project.get("blocker") or "仅标记为阻塞")); blocker.setWordWrap(True); blocker.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        blocker.setStyleSheet("color: #552a26; font-size: 13px; font-weight: 650;"); evidence_layout.addWidget(blocker)
+        duration = project_blocker_duration_label(self.project)
+        timing = " · 起始时间为估计值" if self.project.get("blockedAtEstimated") else ""
+        age = QLabel(f"已持续 {duration}{timing}"); age.setStyleSheet("color: #7f5a55; font-size: 10px;"); evidence_layout.addWidget(age); root.addWidget(evidence)
+
+        label = QLabel("解决说明"); label.setStyleSheet("color: #4a586b; font-size: 12px; font-weight: 650;"); root.addWidget(label)
+        self.resolution = QTextEdit(); self.resolution.setFixedHeight(82)
+        self.resolution.setPlaceholderText("例如：依赖数据已到位并通过校验；替代方案已确认可用")
+        self.resolution.setAccessibleName("阻塞解决说明"); root.addWidget(self.resolution)
+        self.feedback = QLabel("请写一句可验证的解决事实；这段文字会进入项目决策历史。")
+        self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
+
+        actions = QHBoxLayout(); actions.setSpacing(8); actions.addStretch()
+        cancel = QPushButton("取消"); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
+        confirm = QPushButton("确认已解决"); confirm.setObjectName("primary"); confirm.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); confirm.setIconSize(QSize(14, 14)); confirm.clicked.connect(self.confirm); actions.addWidget(confirm); root.addLayout(actions)
+
+    def value(self):
+        return " ".join(self.resolution.toPlainText().split())
+
+    def confirm(self):
+        if not self.value():
+            self.feedback.setText("请先填写阻塞如何解除，不能只清除风险状态。")
+            self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            self.resolution.setFocus()
+            return
+        self.accept()
+
+
 class ProjectWorkbenchDialog(QDialog):
     def __init__(self, parent, project):
         super().__init__(parent)
@@ -5568,11 +5622,14 @@ class ProjectWorkbenchDialog(QDialog):
     def resolve_blocker(self):
         if project_control_state(self.project)[0] != "blocked":
             self.render_blocker_strip(); return
+        resolution = BlockerResolutionDialog(self, self.project)
+        if resolution.exec_() != QDialog.Accepted:
+            return
         self.blocker_field.clear()
         health_index = self.health_field.findData("on_track")
         if health_index >= 0:
             self.health_field.setCurrentIndex(health_index)
-        if not self.save_changes():
+        if not self.save_changes(blocker_resolution=resolution.value()):
             self.blocker_field.setText(str(self.project.get("blocker") or ""))
             health_index = self.health_field.findData(project_health_key(self.project))
             if health_index >= 0:
@@ -5663,7 +5720,7 @@ class ProjectWorkbenchDialog(QDialog):
         self.refresh_header_states()
         self.render_decision_history()
 
-    def save_changes(self, notify=True):
+    def save_changes(self, notify=True, blocker_resolution=""):
         data = {
             "priority": self.priority_field.currentData(),
             "status": self.status_field.currentData(),
@@ -5674,11 +5731,19 @@ class ProjectWorkbenchDialog(QDialog):
             "nextStep": self.next_step_field.text().strip(),
             "blocker": self.blocker_field.text().strip(),
         }
+        if blocker_resolution:
+            data["blockerResolution"] = blocker_resolution
         data, _notes = normalize_project_management_decision(self.project, data)
         validation_error = project_management_validation_error(data)
         if validation_error:
             self.blocker_field.setFocus(); QMessageBox.information(self, "项目决策不完整", validation_error)
             return False
+        clears_blocker = bool(str(self.project.get("blocker") or "").strip()) and not bool(data.get("blocker"))
+        if clears_blocker and not data.get("blockerResolution") and data.get("status") != "completed":
+            resolution = BlockerResolutionDialog(self, self.project)
+            if resolution.exec_() != QDialog.Accepted:
+                return False
+            data["blockerResolution"] = resolution.value()
         if self.project.get("status", "active") != "completed" and data.get("status") == "completed":
             pending = open_project_tasks(self.window.today_tasks, self.project)
             initial = str(self.project.get("lastCompletedOutcome") or "").strip() or latest_project_completion_outcome(self.project)
@@ -5687,6 +5752,8 @@ class ProjectWorkbenchDialog(QDialog):
                 return False
             data["completionSummary"] = closeout.value()
             data["completionObjectiveSnapshot"] = closeout.acceptance_objective()
+            if clears_blocker and not data.get("blockerResolution"):
+                data["blockerResolution"] = f"项目完成验收：{closeout.value()}"
         saved = self.window.update_project_management(self.project, data, notify=notify)
         if saved is None:
             return False
@@ -6660,7 +6727,7 @@ class MainWindow(QMainWindow):
                 project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
                 project.get("objective"), project.get("nextStep"), project.get("blocker"), project.get("blockedAt"), project.get("blockerUpdatedAt"),
                 project.get("blockedAtEstimated"), project_blocker_duration_label(project) if project.get("blocker") else "",
-                project.get("lastResolvedBlocker"), project.get("lastBlockerResolvedAt"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
+                project.get("lastResolvedBlocker"), project.get("lastBlockerResolvedAt"), project.get("lastBlockerResolution"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
                 project.get("executionAlignmentSignature"), project.get("executionAlignmentReviewedAt"),
                 project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
@@ -7987,7 +8054,9 @@ class MainWindow(QMainWindow):
         })
         if name_requested:
             apply_project_display_name(target, project, data.get("name"))
-        blocker_event = reconcile_project_blocker_lifecycle(before, target, occurred_at)
+        blocker_event = reconcile_project_blocker_lifecycle(
+            before, target, occurred_at, data.get("blockerResolution")
+        )
         if not self.apply_project_completion_lifecycle(project, before, target, data, occurred_at, source):
             if notify:
                 self.statusBar().showMessage("完成项目需要先记录最终交付成果", 4000)
@@ -8010,7 +8079,7 @@ class MainWindow(QMainWindow):
                 project["nameOverride"] = target.get("nameOverride")
             else:
                 project.pop("nameOverride", None)
-        for key in ("completionSummary", "completedAt", "completionObjectiveSnapshot", "completionAcceptedAt", "blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
+        for key in ("completionSummary", "completedAt", "completionObjectiveSnapshot", "completionAcceptedAt", "blockedAt", "blockerUpdatedAt", "blockedAtEstimated", "lastBlockerResolution"):
             if key not in target:
                 project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
@@ -8034,7 +8103,7 @@ class MainWindow(QMainWindow):
                 "started": "已开始记录项目阻塞时长",
                 "updated": "阻塞说明已更新，持续时间保持不变",
                 "confirmed": "已从本次确认开始记录阻塞时长",
-                "resolved": "阻塞已解除，解决时间已写入项目记录",
+                "resolved": "阻塞已解除，解决说明和时间已写入项目记录",
             }
             message = blocker_messages.get((blocker_event or {}).get("action")) or (normalization_notes[0] if normalization_notes else "项目目标与下一步已保存")
             self.statusBar().showMessage(message, 3500 if blocker_event or normalization_notes else 2500)
@@ -8456,11 +8525,19 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
                 return
             data["completionSummary"] = closeout
+        clears_blocker = bool(str(before.get("blocker") or "").strip()) and not bool(str(data.get("blocker") or "").strip())
+        if clears_blocker and data.get("status") == "completed":
+            data["blockerResolution"] = f"项目完成验收：{data.get('completionSummary') or latest_project_completion_outcome(before)}"
+        elif clears_blocker:
+            resolution = BlockerResolutionDialog(self, before)
+            if resolution.exec_() != QDialog.Accepted:
+                return
+            data["blockerResolution"] = resolution.value()
         task_category_updates = 0
         if project:
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
-            target.update({key: value for key, value in data.items() if key not in {"name", "completionSummary", "completedAt", "completionHistory"}})
+            target.update({key: value for key, value in data.items() if key not in {"name", "completionSummary", "completedAt", "completionHistory", "blockerResolution"}})
             apply_project_display_name(target, project, data.get("name"))
             if target.get("nextStep"):
                 target["nextStepReviewNeeded"] = False
@@ -8475,7 +8552,7 @@ class MainWindow(QMainWindow):
             target = next((item for item in self.saved_projects if normalized_path(item.get("path")) == normalized_path(data.get("path"))), None)
             if target is None:
                 target = {"id": str(uuid.uuid4())}; self.saved_projects.append(target)
-            target.update({key: value for key, value in data.items() if key not in {"completionSummary", "completedAt", "completionHistory"}})
+            target.update({key: value for key, value in data.items() if key not in {"completionSummary", "completedAt", "completionHistory", "blockerResolution"}})
             if target.get("nextStep"):
                 target["nextStepReviewNeeded"] = False
             codex_projects = codex_sidebar_projects(self.saved_projects)
@@ -8488,7 +8565,9 @@ class MainWindow(QMainWindow):
         decision_project = project or {**target, "savedId": target.get("id")}
         source = ("codex" if dialog.insight_applied else "editor") if project else "created"
         occurred_at = datetime.now().isoformat(timespec="seconds")
-        blocker_event = reconcile_project_blocker_lifecycle(before, target, occurred_at)
+        blocker_event = reconcile_project_blocker_lifecycle(
+            before, target, occurred_at, data.get("blockerResolution")
+        )
         if not self.apply_project_completion_lifecycle(decision_project, before, target, data, occurred_at, source):
             QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
             return
@@ -8506,7 +8585,7 @@ class MainWindow(QMainWindow):
             "started": "项目已保存，并开始记录阻塞时长",
             "updated": "项目已保存；阻塞说明已更新，持续时间保持不变",
             "confirmed": "项目已保存；从本次确认开始记录阻塞时长",
-            "resolved": "项目已保存；阻塞已解除并保留解决记录",
+            "resolved": "项目已保存；阻塞已解除并保留解决说明",
         }
         self.statusBar().showMessage(blocker_messages.get((blocker_event or {}).get("action"), "项目已保存"), 3200 if blocker_event else 2000)
 
