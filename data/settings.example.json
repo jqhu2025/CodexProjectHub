@@ -1,4 +1,5 @@
 {
   "dailySummaryThreadId": "",
-  "portfolioFocusCapacity": 3
+  "portfolioFocusCapacity": 3,
+  "portfolioInactivityDays": 14
 }

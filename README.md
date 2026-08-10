@@ -41,6 +41,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Separate **strategic focus** from **actual execution**: the former is a deliberate portfolio decision, while the latter is detected from today's in-progress tasks and running Codex conversations.
 - Keep a configurable one-to-nine-project focus capacity. The home decision queue shows focus usage and real parallel work together, while a dedicated calibration panel can promote or demote projects without silently changing priorities; every change enters the normal project-decision audit trail.
 - Surface a compact home decision queue for focus capacity, confirmed risk or blockage, neutral review reminders, and missing-next-action projects; every card opens the exact decision flow, and review debt is never presented as operational risk.
+- Detect quiet active projects from their latest task transition, Codex activity, or deliberate review. A separate, neutral lifecycle queue can confirm the project remains active, pause it without deleting anything, defer the decision, or open the full workbench; inactivity never changes status automatically and is never labelled as project risk.
 - Keep task links stable when Codex refreshes a project's current identifier.
 - Promote a project's concrete next action into today's plan with one click, with duplicate protection and automatic handoff back to the next project decision when the task is completed.
 - Detect when today's in-progress work diverges from the project's declared next action without mislabelling the difference as risk. A guided reconciliation queue can adopt the live task as the new project direction—binding its completion to the next project handoff—or explicitly retain the existing direction; both choices remain human-controlled and auditable, and the reminder returns only when the underlying work changes again.
@@ -153,7 +154,8 @@ Copy-Item data\settings.example.json data\settings.json
 ```json
 {
   "dailySummaryThreadId": "your-codex-thread-id",
-  "portfolioFocusCapacity": 3
+  "portfolioFocusCapacity": 3,
+  "portfolioInactivityDays": 14
 }
 ```
 
@@ -192,7 +194,7 @@ Runtime data is stored in the `data` directory:
 | `data/categories.json` | Custom category names and order. |
 | `data/today_tasks.json` | Daily tasks and optional conversation references. |
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
-| `data/settings.json` | Local configuration, including the optional summary conversation ID and strategic-focus capacity. |
+| `data/settings.json` | Local configuration, including the optional summary conversation ID, strategic-focus capacity, and active-portfolio inactivity threshold. |
 | `data/project_layout.json` | Project order and recoverable archive settings. |
 | `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
 

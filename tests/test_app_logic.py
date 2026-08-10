@@ -260,6 +260,57 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(update["priority"], "focus")
         self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
 
+    def test_activity_evidence_uses_the_latest_real_task_codex_or_review_timestamp(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "reviewedAt": "2026-08-06T09:00:00",
+            "conversations": [{"at": "2026-08-08T10:00:00+00:00", "state": "linked"}],
+        }
+        tasks = [{
+            "projectId": "stable", "date": "2026-08-07", "status": "done",
+            "statusHistory": [{"at": "2026-08-07T12:00:00", "from": "doing", "to": "done", "source": "manual"}],
+        }]
+        evidence = APP.project_activity_evidence(project, tasks, datetime(2026, 8, 11, 12, 0, 0))
+        self.assertEqual(evidence["source"], "Codex 对话")
+        self.assertEqual(evidence["ageDays"], 2)
+        self.assertEqual(evidence["taskCount"], 1)
+        self.assertEqual(evidence["conversationCount"], 1)
+
+    def test_lifecycle_calibration_surfaces_only_neutral_quiet_active_projects(self):
+        now = datetime(2026, 8, 10, 12, 0, 0)
+        stale = {"id": "stale", "name": "Stale", "status": "active", "priority": "normal", "health": "on_track", "conversations": [{"at": "2026-07-19T09:00:00", "state": "linked"}]}
+        no_evidence = {"id": "none", "name": "No evidence", "status": "active", "priority": "normal", "health": "on_track", "conversations": []}
+        reviewed = {"id": "reviewed", "status": "active", "priority": "normal", "health": "on_track", "reviewedAt": "2026-08-08T09:00:00", "conversations": []}
+        focused = {"id": "focus", "status": "active", "priority": "focus", "health": "on_track", "conversations": []}
+        live = {"id": "live", "status": "active", "priority": "normal", "health": "on_track", "activeTaskCount": 1, "conversations": []}
+        attention = {"id": "attention", "status": "active", "priority": "normal", "health": "attention", "conversations": []}
+        paused = {"id": "paused", "status": "paused", "priority": "normal", "health": "on_track", "conversations": []}
+        queue = APP.portfolio_lifecycle_calibration_queue(
+            [stale, no_evidence, reviewed, focused, live, attention, paused], [], now, 14
+        )
+        self.assertEqual([item["project"]["id"] for item in queue], ["none", "stale"])
+        self.assertGreaterEqual(queue[1]["state"]["ageDays"], 21)
+        self.assertIn("没有新的执行或复核记录", queue[1]["state"]["reason"])
+
+    def test_inactivity_threshold_is_bounded(self):
+        self.assertEqual(APP.normalized_portfolio_inactivity_days(1), 7)
+        self.assertEqual(APP.normalized_portfolio_inactivity_days(180), 90)
+        self.assertEqual(APP.normalized_portfolio_inactivity_days("bad"), APP.DEFAULT_PORTFOLIO_INACTIVITY_DAYS)
+
+    def test_calibration_pause_uses_audited_status_and_priority_change(self):
+        project = {
+            "id": "project-1", "name": "Quiet project", "status": "active", "priority": "normal",
+            "stage": "execution", "health": "on_track", "category": "Research", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(today_tasks=[], update_project_management=Mock(return_value={"status": "paused"}), statusBar=lambda: status_bar)
+        changed = APP.MainWindow.pause_project_from_calibration(window, project)
+        self.assertTrue(changed)
+        update = window.update_project_management.call_args.args[1]
+        self.assertEqual(update["status"], "paused")
+        self.assertEqual(update["priority"], "later")
+        self.assertEqual(window.update_project_management.call_args.kwargs["source"], "manual")
+
     def test_non_active_project_never_leaks_into_current_focus(self):
         completed = {"status": "completed", "priority": "focus", "activeTaskCount": 1, "conversations": [{"state": "working"}]}
         self.assertFalse(APP.project_focus_state(completed)[0])

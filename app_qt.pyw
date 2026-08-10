@@ -97,6 +97,7 @@ CODEX_GLOBAL_STATE = CODEX_HOME / ".codex-global-state.json"
 CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 DEFAULT_CATEGORIES = ["Product Development", "Research Lab", "Operations", "External Projects", "未分类"]
 DEFAULT_PORTFOLIO_FOCUS_CAPACITY = 3
+DEFAULT_PORTFOLIO_INACTIVITY_DAYS = 14
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -170,6 +171,29 @@ def save_portfolio_focus_capacity(value):
     settings["portfolioFocusCapacity"] = normalized_portfolio_focus_capacity(value)
     save_json(SETTINGS_FILE, settings)
     return settings["portfolioFocusCapacity"]
+
+
+def normalized_portfolio_inactivity_days(value):
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = DEFAULT_PORTFOLIO_INACTIVITY_DAYS
+    return max(7, min(90, days))
+
+
+def portfolio_inactivity_days():
+    settings = load_json(SETTINGS_FILE, {})
+    value = settings.get("portfolioInactivityDays") if isinstance(settings, dict) else None
+    return normalized_portfolio_inactivity_days(value)
+
+
+def save_portfolio_inactivity_days(value):
+    settings = load_json(SETTINGS_FILE, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    settings["portfolioInactivityDays"] = normalized_portfolio_inactivity_days(value)
+    save_json(SETTINGS_FILE, settings)
+    return settings["portfolioInactivityDays"]
 
 
 def save_json(path, data):
@@ -1107,6 +1131,105 @@ def portfolio_focus_capacity_state(projects, capacity=DEFAULT_PORTFOLIO_FOCUS_CA
         "remaining": max(0, capacity - len(strategic)),
         "overBy": max(0, len(strategic) - capacity),
     }
+
+
+def parsed_portfolio_evidence_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def project_activity_evidence(project, tasks, now=None):
+    """Return the latest task, Codex, or deliberate-review evidence for one project."""
+    evidence = []
+    linked_tasks = [
+        task for task in (tasks or [])
+        if task_matches_project(task, project) and not task_is_archived(task)
+    ]
+    for task in linked_tasks:
+        candidates = []
+        history = task.get("statusHistory") if isinstance(task.get("statusHistory"), list) else []
+        candidates.extend(event.get("at") for event in history if isinstance(event, dict))
+        candidates.extend((task.get("updatedAt"), task.get("createdAt")))
+        parsed = [parsed_portfolio_evidence_time(value) for value in candidates]
+        parsed = [value for value in parsed if value is not None]
+        if not parsed:
+            fallback = parsed_portfolio_evidence_time(task.get("date"))
+            if fallback is not None:
+                parsed.append(fallback)
+        if parsed:
+            evidence.append((max(parsed), "任务记录"))
+    conversations = list((project or {}).get("conversations") or [])
+    for conversation in conversations:
+        occurred_at = parsed_portfolio_evidence_time(conversation.get("at"))
+        if occurred_at is not None:
+            evidence.append((occurred_at, "Codex 对话"))
+    reviewed_at = parsed_portfolio_evidence_time((project or {}).get("reviewedAt"))
+    if reviewed_at is not None:
+        evidence.append((reviewed_at, "人工复核"))
+    latest_at, source = max(evidence, default=(None, ""), key=lambda item: item[0] or datetime.min)
+    current = now or datetime.now()
+    if current.tzinfo is not None:
+        current = current.astimezone().replace(tzinfo=None)
+    age_days = None if latest_at is None else max(0, int((current - latest_at).total_seconds() // 86400))
+    return {
+        "at": latest_at,
+        "source": source,
+        "ageDays": age_days,
+        "taskCount": len(linked_tasks),
+        "conversationCount": len(conversations),
+    }
+
+
+def project_lifecycle_calibration_state(project, tasks, now=None, inactivity_days=DEFAULT_PORTFOLIO_INACTIVITY_DAYS):
+    """Identify neutral lifecycle debt without turning inactivity into a risk signal."""
+    inactivity_days = normalized_portfolio_inactivity_days(inactivity_days)
+    if (project or {}).get("status", "active") != "active":
+        return {"due": False, "reason": "项目不在活跃组合", "threshold": inactivity_days}
+    if project_priority_key(project) == "focus":
+        return {"due": False, "reason": "项目已明确列为战略重点", "threshold": inactivity_days}
+    live, live_reason, _active_tasks, _running = project_live_work_state(project)
+    if live:
+        return {"due": False, "reason": live_reason, "threshold": inactivity_days}
+    blocker = str((project or {}).get("blocker") or "").strip()
+    if blocker or project_health_key(project) in {"attention", "blocked"}:
+        return {"due": False, "reason": "项目已进入风险或阻塞处置", "threshold": inactivity_days}
+    evidence = project_activity_evidence(project, tasks, now)
+    age_days = evidence["ageDays"]
+    due = age_days is None or age_days >= inactivity_days
+    if age_days is None:
+        reason = "尚无任务、Codex 活动或人工复核记录"
+    elif due:
+        reason = f"已 {age_days} 天没有新的执行或复核记录"
+    else:
+        reason = f"最近证据来自{evidence['source']}，距今 {age_days} 天"
+    return {**evidence, "due": due, "reason": reason, "threshold": inactivity_days}
+
+
+def portfolio_lifecycle_calibration_queue(projects, tasks, now=None, inactivity_days=DEFAULT_PORTFOLIO_INACTIVITY_DAYS):
+    queue = []
+    for project in projects or []:
+        state = project_lifecycle_calibration_state(project, tasks, now, inactivity_days)
+        if state.get("due"):
+            queue.append({"project": project, "state": state})
+    return sorted(
+        queue,
+        key=lambda item: (
+            0 if item["state"].get("ageDays") is None else 1,
+            -(item["state"].get("ageDays") or 0),
+            str((item.get("project") or {}).get("name") or "").casefold(),
+        ),
+    )
 
 
 def project_stage_key(project):
@@ -3472,6 +3595,158 @@ class ProjectDecisionHistoryDialog(QDialog):
             self.accept()
 
 
+class LifecycleCalibrationDialog(QDialog):
+    """Review quiet active projects one at a time without auto-pausing anything."""
+    def __init__(self, parent, queue_items):
+        super().__init__(parent)
+        self.window = parent
+        self.pending = list(queue_items or [])
+        self.processed_count = 0
+        self.deferred_count = 0
+        self.setWindowTitle("活跃组合校准")
+        self.setObjectName("lifecycleCalibrationDialog")
+        self.setMinimumSize(740, 520)
+        self.resize(800, 580)
+        self.setStyleSheet(STYLE + "QDialog#lifecycleCalibrationDialog QLabel[sectionLabel='true'] { color: #66758a; font-size: 11px; font-weight: 650; }")
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE823", color="#315f9b", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #eaf2ff; border: 1px solid #cad9ef; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("校准真正的活跃项目组合"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("逐项确认静默项目仍应推进还是暂缓；静默只触发复核，不代表风险")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.threshold_button = QPushButton(); self.threshold_button.setFixedHeight(36)
+        self.threshold_button.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.threshold_button.setIconSize(QSize(13, 13))
+        self.threshold_button.setToolTip("调整多久没有执行证据后进入组合校准"); self.threshold_button.clicked.connect(self.change_threshold); heading.addWidget(self.threshold_button)
+        self.counter = QLabel(); self.counter.setFixedHeight(28); self.counter.setAlignment(Qt.AlignCenter)
+        self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
+        root.addLayout(heading)
+
+        self.card = QFrame(); self.card.setObjectName("lifecycleCalibrationCard")
+        self.card.setStyleSheet("QFrame#lifecycleCalibrationCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 13px; } QFrame#lifecycleCalibrationCard QLabel { background: transparent; border: none; }")
+        self.card_layout = QVBoxLayout(self.card); self.card_layout.setContentsMargins(20, 18, 20, 20); self.card_layout.setSpacing(12); root.addWidget(self.card, 1)
+        self.feedback = QLabel(); self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close); actions.addStretch()
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.defer_button = QPushButton("稍后处理"); self.defer_button.clicked.connect(self.defer_current); actions.addWidget(self.defer_button)
+        self.pause_button = QPushButton("暂缓项目"); self.pause_button.clicked.connect(self.pause_current); actions.addWidget(self.pause_button)
+        self.keep_button = QPushButton("确认继续活跃"); self.keep_button.setObjectName("primary"); self.keep_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.keep_button.setIconSize(QSize(14, 14)); self.keep_button.clicked.connect(self.keep_current); actions.addWidget(self.keep_button)
+        root.addLayout(actions); self.render_current()
+
+    def clear_card(self):
+        def clear(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget(); child = item.layout()
+                if widget is not None:
+                    widget.hide(); widget.setParent(None); widget.deleteLater()
+                elif child is not None:
+                    clear(child); child.deleteLater()
+        clear(self.card_layout)
+
+    def current_item(self):
+        return self.pending[0] if self.pending else None
+
+    def render_current(self):
+        self.clear_card()
+        remaining = len(self.pending); total = self.processed_count + self.deferred_count + remaining
+        self.threshold_button.setText(f"静默阈值 {portfolio_inactivity_days()} 天")
+        self.counter.setText(f"{self.processed_count + self.deferred_count + 1} / {total}" if remaining else f"已处理 {self.processed_count}")
+        for button in (self.open_button, self.defer_button, self.pause_button): button.setVisible(bool(remaining))
+        self.keep_button.setText("确认继续活跃" if remaining else "关闭")
+        if not remaining:
+            done_icon = QLabel(); done_icon.setFixedSize(56, 56); done_icon.setAlignment(Qt.AlignCenter)
+            done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=29).pixmap(QSize(29, 29))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 16px;")
+            self.card_layout.addStretch(); self.card_layout.addWidget(done_icon, 0, Qt.AlignCenter)
+            title = QLabel("本轮活跃组合校准已完成"); title.setAlignment(Qt.AlignCenter); title.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(title)
+            detail = QLabel(f"已确认 {self.processed_count} 个项目" + (f"，另有 {self.deferred_count} 个留待稍后处理" if self.deferred_count else ""))
+            detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail); self.card_layout.addStretch()
+            self.feedback.setText("已确认项目建立新的复核时间；暂缓项目保留全部资料和 Codex 对话。")
+            self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+            return
+
+        item = self.current_item(); project = item.get("project") or {}
+        state = project_lifecycle_calibration_state(project, self.window.today_tasks, inactivity_days=portfolio_inactivity_days())
+        item["state"] = state
+        name_row = QHBoxLayout(); name_row.setSpacing(9)
+        name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
+        category = QLabel(project.get("category") or "未分类"); category.setAlignment(Qt.AlignCenter)
+        category.setStyleSheet("color: #315f9b; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(category); self.card_layout.addLayout(name_row)
+        reason = QLabel(f"进入校准 · {state.get('reason') or '近期没有执行证据'}"); reason.setWordWrap(True)
+        reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
+
+        latest = state.get("at")
+        latest_text = latest.strftime("%Y-%m-%d %H:%M") if isinstance(latest, datetime) else "尚无记录"
+        metrics = QHBoxLayout(); metrics.setSpacing(9)
+        for caption, value in (
+            ("最近证据", f"{latest_text} · {state.get('source') or '无来源'}"),
+            ("任务记录", f"{state.get('taskCount') or 0} 项"),
+            ("Codex 对话", f"{state.get('conversationCount') or 0} 个"),
+        ):
+            frame = QFrame(); frame.setObjectName("calibrationMetric"); frame.setStyleSheet("QFrame#calibrationMetric { background: #f7f9fc; border: 1px solid #e0e7ef; border-radius: 9px; }")
+            metric_layout = QVBoxLayout(frame); metric_layout.setContentsMargins(11, 8, 11, 9); metric_layout.setSpacing(2)
+            label = QLabel(caption); label.setProperty("sectionLabel", True); metric_layout.addWidget(label)
+            value_label = ElidedLabel(value); value_label.setToolTip(value); value_label.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); metric_layout.addWidget(value_label); metrics.addWidget(frame, 2 if caption == "最近证据" else 1)
+        self.card_layout.addLayout(metrics)
+
+        for caption, value, fallback in (
+            ("项目目标", project.get("objective"), "尚未明确项目目标"),
+            ("当前下一步", project.get("nextStep"), "尚未设置下一步"),
+        ):
+            label = QLabel(caption); label.setProperty("sectionLabel", True); self.card_layout.addWidget(label)
+            text = QLabel(str(value or fallback)); text.setWordWrap(True); text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
+
+        open_tasks = open_project_tasks(self.window.today_tasks, project)
+        self.pause_button.setEnabled(not open_tasks)
+        self.pause_button.setToolTip("请先处理未完成任务，再暂缓项目" if open_tasks else "将项目状态改为暂缓并调整为稍后处理；资料不会删除")
+        if open_tasks:
+            self.feedback.setText(f"此项目仍有 {len(open_tasks)} 项未完成任务，因此暂缓按钮已禁用；可先打开项目面板处理任务，或确认继续活跃。")
+        else:
+            self.feedback.setText("“确认继续活跃”会留下人工复核记录；“暂缓项目”只改变管理状态，不归档、不删除文件或 Codex 对话。")
+        self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
+
+    def change_threshold(self):
+        current = portfolio_inactivity_days()
+        value, accepted = QInputDialog.getInt(self, "调整静默阈值", "多少天没有执行或复核证据后进入校准？", current, 7, 90, 1)
+        if not accepted:
+            return
+        self.window.update_portfolio_inactivity_days(value)
+        self.pending = self.window.lifecycle_calibration_queue()
+        self.processed_count = 0; self.deferred_count = 0; self.render_current()
+
+    def open_current(self):
+        item = self.current_item()
+        if not item: return
+        self.accept(); self.window.open_project_workspace(item.get("project") or {})
+
+    def defer_current(self):
+        if not self.pending: return
+        self.pending.pop(0); self.deferred_count += 1; self.render_current()
+
+    def keep_current(self):
+        item = self.current_item()
+        if not item:
+            self.accept(); return
+        if not self.window.record_project_review(item.get("project") or {}):
+            self.feedback.setText("没有成功写入复核记录，请保留当前项目并稍后重试。"); return
+        self.pending.pop(0); self.processed_count += 1; self.render_current()
+
+    def pause_current(self):
+        item = self.current_item()
+        if not item: return
+        project = item.get("project") or {}
+        if open_project_tasks(self.window.today_tasks, project):
+            self.render_current(); return
+        if not self.window.pause_project_from_calibration(project):
+            self.feedback.setText("没有成功暂缓项目，请确认项目仍然存在。"); return
+        self.pending.pop(0); self.processed_count += 1; self.render_current()
+
+
 class FocusCapacityDialog(QDialog):
     """Manage a small strategic focus set without hiding live execution evidence."""
     def __init__(self, parent):
@@ -4555,6 +4830,24 @@ class MainWindow(QMainWindow):
         alignment_action = QLabel("逐项校准  →"); alignment_action.setAttribute(Qt.WA_TransparentForMouseEvents); alignment_action.setStyleSheet("color: #1d4ed8; font-size: 11px; font-weight: 700;"); alignment_layout.addWidget(alignment_action)
         self.execution_alignment_panel.hide(); layout.addWidget(self.execution_alignment_panel)
 
+        self.lifecycle_calibration_panel = ClickableFrame(); self.lifecycle_calibration_panel.setObjectName("lifecycleCalibrationPanel"); self.lifecycle_calibration_panel.setMinimumHeight(54)
+        self.lifecycle_calibration_panel.setToolTip("逐项确认长期静默的活跃项目应继续推进还是暂缓")
+        self.lifecycle_calibration_panel.setStyleSheet(
+            "QFrame#lifecycleCalibrationPanel { background: #f7f9fc; border: 1px solid #d2dce8; border-left: 4px solid #315f9b; border-radius: 10px; }"
+            "QFrame#lifecycleCalibrationPanel:hover, QFrame#lifecycleCalibrationPanel:focus { background: #ffffff; border-color: #8ba6c7; border-left-color: #24588f; }"
+        )
+        self.lifecycle_calibration_panel.clicked.connect(self.show_lifecycle_calibration)
+        calibration_layout = QHBoxLayout(self.lifecycle_calibration_panel); calibration_layout.setContentsMargins(13, 8, 12, 8); calibration_layout.setSpacing(10)
+        calibration_icon = QLabel(); calibration_icon.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_icon.setFixedSize(30, 30); calibration_icon.setAlignment(Qt.AlignCenter)
+        calibration_icon.setPixmap(fluent_icon("\uE823", color="#315f9b", size=16).pixmap(QSize(16, 16))); calibration_icon.setStyleSheet("background: #e7eef7; border-radius: 8px;"); calibration_layout.addWidget(calibration_icon)
+        calibration_text = QVBoxLayout(); calibration_text.setSpacing(1)
+        calibration_title = QLabel("活跃组合待校准"); calibration_title.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_title.setStyleSheet("color: #253247; font-size: 13px; font-weight: 700;"); calibration_text.addWidget(calibration_title)
+        self.lifecycle_calibration_summary = ElidedLabel(); self.lifecycle_calibration_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.lifecycle_calibration_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); calibration_text.addWidget(self.lifecycle_calibration_summary); calibration_layout.addLayout(calibration_text, 1)
+        self.lifecycle_calibration_count = QLabel("0"); self.lifecycle_calibration_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.lifecycle_calibration_count.setAlignment(Qt.AlignCenter); self.lifecycle_calibration_count.setFixedSize(30, 26)
+        self.lifecycle_calibration_count.setStyleSheet("color: #315f9b; background: #e7eef7; border-radius: 8px; font-size: 12px; font-weight: 750;"); calibration_layout.addWidget(self.lifecycle_calibration_count)
+        calibration_action = QLabel("逐项确认  →"); calibration_action.setAttribute(Qt.WA_TransparentForMouseEvents); calibration_action.setStyleSheet("color: #315f9b; font-size: 11px; font-weight: 700;"); calibration_layout.addWidget(calibration_action)
+        self.lifecycle_calibration_panel.hide(); layout.addWidget(self.lifecycle_calibration_panel)
+
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
@@ -4650,6 +4943,44 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{project.get('name') or '项目'}已{action}，并写入决策记录", 3600)
         return True
 
+    def lifecycle_calibration_queue(self):
+        return portfolio_lifecycle_calibration_queue(
+            self.projects, self.today_tasks, inactivity_days=portfolio_inactivity_days()
+        )
+
+    def show_lifecycle_calibration(self):
+        queue_items = self.lifecycle_calibration_queue()
+        if not queue_items:
+            QMessageBox.information(self, "组合已校准", "当前没有达到静默阈值且仍需确认的活跃项目。")
+            return
+        LifecycleCalibrationDialog(self, queue_items).exec_()
+
+    def update_portfolio_inactivity_days(self, value):
+        days = save_portfolio_inactivity_days(value)
+        self.render_portfolio_decisions()
+        self.statusBar().showMessage(f"活跃组合静默阈值已调整为 {days} 天", 3200)
+        return days
+
+    def pause_project_from_calibration(self, project):
+        if open_project_tasks(self.today_tasks, project):
+            self.statusBar().showMessage("此项目仍有未完成任务，请先处理任务再暂缓", 3600)
+            return False
+        data = {
+            "priority": "later",
+            "stage": project_stage_key(project),
+            "health": project_health_key(project),
+            "status": "paused",
+            "category": project.get("category", "未分类"),
+            "objective": project.get("objective", ""),
+            "nextStep": project.get("nextStep", ""),
+            "blocker": project.get("blocker", ""),
+        }
+        result = self.update_project_management(project, data, notify=False, source="manual")
+        if result is None:
+            return False
+        self.statusBar().showMessage(f"{project.get('name') or '项目'}已暂缓；资料、文件和 Codex 对话均保留", 4000)
+        return True
+
     def execution_alignment_queue(self):
         today = QDate.currentDate().toString(Qt.ISODate)
         return portfolio_execution_alignment_queue(self.projects, self.today_tasks, today)
@@ -4724,6 +5055,25 @@ class MainWindow(QMainWindow):
                 self.execution_alignment_summary.setText(summary); self.execution_alignment_summary.setToolTip(tooltip)
                 self.execution_alignment_panel.setToolTip(tooltip)
                 self.execution_alignment_panel.setAccessibleName(f"执行方向待确认，{len(names)} 个项目。{summary}")
+        if hasattr(self, "lifecycle_calibration_panel"):
+            queue_items = self.lifecycle_calibration_queue()
+            self.lifecycle_calibration_panel.setVisible(bool(queue_items))
+            if queue_items:
+                names = [str((item.get("project") or {}).get("name") or "未命名项目") for item in queue_items]
+                preview = "、".join(names[:3])
+                if len(names) > 3:
+                    preview += f" 等 {len(names)} 项"
+                days = portfolio_inactivity_days()
+                summary = f"{len(names)} 个活跃项目已静默至少 {days} 天：{preview}"
+                details = [
+                    f"• {(item.get('project') or {}).get('name') or '未命名项目'}：{(item.get('state') or {}).get('reason') or '等待确认'}"
+                    for item in queue_items
+                ]
+                tooltip = "活跃组合待校准\n" + "\n".join(details)
+                self.lifecycle_calibration_count.setText(str(len(names)))
+                self.lifecycle_calibration_summary.setText(summary); self.lifecycle_calibration_summary.setToolTip(tooltip)
+                self.lifecycle_calibration_panel.setToolTip(tooltip)
+                self.lifecycle_calibration_panel.setAccessibleName(f"活跃组合待校准，{len(names)} 个项目。{summary}")
 
     def refresh(self, silent=False, scan=True):
         categories = load_categories()
