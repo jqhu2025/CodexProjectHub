@@ -1207,6 +1207,21 @@ def project_confirmation_counts(projects):
     return counts
 
 
+def project_confirmation_batch_summary(projects):
+    """Summarize the remaining review batch without adding another dashboard."""
+    counts = project_confirmation_counts(projects)
+    if not counts["total"]:
+        return "本轮已完成"
+    parts = []
+    if counts["governance"]:
+        parts.append(f"补全 {counts['governance']}")
+    if counts["baseline"]:
+        parts.append(f"建基线 {counts['baseline']}")
+    if counts["overdue"]:
+        parts.append(f"到期复核 {counts['overdue']}")
+    return f"本轮剩余 {counts['total']} · " + " · ".join(parts)
+
+
 def project_management_scope_matches(project, scope):
     """Filter projects by decisions the user can act on, not by decorative metrics."""
     if scope == "focus":
@@ -4767,8 +4782,8 @@ class PortfolioReviewDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel("每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
-        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.subtitle = QLabel("每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
+        self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
         root.addLayout(heading)
@@ -4817,6 +4832,16 @@ class PortfolioReviewDialog(QDialog):
         self.clear_card()
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
+        batch_summary = project_confirmation_batch_summary(self.pending)
+        self.subtitle.setText(f"{batch_summary}；缺项优先处理" if remaining else batch_summary)
+        batch_explanation = (
+            f"{batch_summary}\n"
+            "补全：目标、阶段、健康度或下一步尚不完整\n"
+            "建基线：资料完整，但尚未完成首次管理确认\n"
+            "到期复核：已经到达项目复核周期"
+        )
+        self.subtitle.setToolTip(batch_explanation)
+        self.subtitle.setAccessibleName(f"项目确认批次。{batch_summary}。缺项优先处理")
         self.counter.setText(
             f"{self.reviewed_count + 1} / {total} · 总待确认 {self.portfolio_total}"
             if remaining else f"本轮完成 {self.reviewed_count}"

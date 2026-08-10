@@ -87,6 +87,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         parent.open_project_workspace = Mock()
         parent.portfolio_review_queue = Mock(return_value=[project])
         dialog = APP.PortfolioReviewDialog(parent, [project])
+        self.assertIn("到期复核 1", dialog.subtitle.text())
+        self.assertIn("缺项优先处理", dialog.subtitle.accessibleName())
         dialog.render_current = Mock()
 
         dialog.open_current()
@@ -1444,6 +1446,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         current = {**baseline, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
         counts = APP.project_confirmation_counts([baseline, incomplete, overdue, current])
         self.assertEqual(counts, {"governance": 1, "baseline": 1, "overdue": 1, "total": 3})
+        self.assertEqual(
+            APP.project_confirmation_batch_summary([baseline, incomplete, overdue, current]),
+            "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1",
+        )
+        self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
 
     def test_focus_projects_sort_before_regular_projects(self):
         projects = [
