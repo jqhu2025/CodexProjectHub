@@ -42,6 +42,46 @@ class StorageRecoveryNoticeTests(unittest.TestCase):
         self.assertIsNone(APP.storage_recovery_notice([]))
 
 
+class GlobalCommandPaletteTests(unittest.TestCase):
+    def command_window(self):
+        return SimpleNamespace(
+            today_tasks=[{"id": "task-1", "title": "Validate", "status": "doing"}],
+            open_project_workspace=Mock(), show_task_audit=Mock(), open_codex_conversation=Mock(),
+            new_today_task=Mock(), edit_project=Mock(), show_task_history=Mock(), refresh=Mock(),
+            select_section=Mock(), show_running_conversations=Mock(),
+        )
+
+    def test_project_task_and_conversation_results_return_to_existing_workflows(self):
+        window = self.command_window()
+        project = {"id": "project-1", "name": "Release"}
+        task = {"id": "task-1", "title": "Validate"}
+        conversation = {"sessionId": "thread-1", "conversationLabel": "Release checks"}
+
+        self.assertTrue(APP.MainWindow.execute_command_entry(window, {"kind": "project", "payload": project}))
+        self.assertTrue(APP.MainWindow.execute_command_entry(window, {"kind": "task", "payload": task}))
+        self.assertTrue(APP.MainWindow.execute_command_entry(window, {"kind": "conversation", "payload": conversation}))
+
+        window.open_project_workspace.assert_called_once_with(project)
+        window.show_task_audit.assert_called_once_with(window.today_tasks[0])
+        window.open_codex_conversation.assert_called_once_with(conversation)
+
+    def test_action_results_reuse_existing_commands(self):
+        window = self.command_window()
+
+        handled = APP.MainWindow.execute_command_entry(
+            window, {"kind": "action", "payload": {"action": "refresh"}}
+        )
+
+        self.assertTrue(handled)
+        window.refresh.assert_called_once_with()
+
+    def test_unknown_command_is_safely_ignored(self):
+        window = self.command_window()
+
+        self.assertFalse(APP.MainWindow.execute_command_entry(window, {"kind": "unknown", "payload": {}}))
+        self.assertFalse(APP.MainWindow.execute_command_entry(window, {"kind": "action", "payload": {"action": "missing"}}))
+
+
 class ConversationMappingTests(unittest.TestCase):
     def test_path_fallback_runs_for_each_unmapped_thread(self):
         projects = [

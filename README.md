@@ -10,6 +10,10 @@ Codex remains the main interface for conversation and execution. This applicatio
 
 ![Daily task workspace](docs/images/daily-workspace.png)
 
+### Quick open
+
+![Keyboard-first project, task, conversation, and command search](docs/images/quick-open.png)
+
 ### Daily review
 
 ![Codex-generated daily review dialog](docs/images/daily-summary-dialog.png)
@@ -33,6 +37,7 @@ All screenshots use fictional sample data. They do not contain real project path
 ### Project management
 
 - Organize work as **category → project → Codex conversation**.
+- Press **Ctrl+K** from anywhere to search projects, current task records, Codex conversations, and common workspace commands in one keyboard-first palette. Search covers project objectives and next actions, task notes and outcomes, and conversation summaries; opening a result returns to the existing project workbench, task audit, or Codex conversation instead of creating a parallel workflow.
 - Create, edit, archive, restore, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
@@ -233,6 +238,7 @@ CodexProjectHub/
 ├─ assets/
 ├─ codex_hub/
 │  ├─ management.py
+│  ├─ navigation.py
 │  ├─ portfolio.py
 │  ├─ runtime.py
 │  ├─ desktop_bridge.py
@@ -253,7 +259,7 @@ python -m py_compile app_qt.pyw
 python -m unittest discover -s tests -v
 ```
 
-Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Portfolio focus, next-action commitment, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`. Atomic JSON persistence and rolling recovery copies live in the Qt-independent `codex_hub/storage.py` module.
+Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Global project, task, and conversation search ranking lives in the Qt-independent `codex_hub/navigation.py` module. Portfolio focus, next-action commitment, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`. Atomic JSON persistence and rolling recovery copies live in the Qt-independent `codex_hub/storage.py` module.
 
 The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 

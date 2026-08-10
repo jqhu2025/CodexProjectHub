@@ -15,11 +15,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt5.QtCore import QDate, QMimeData, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout,
     QFileDialog, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QStackedWidget, QStatusBar, QStyle, QTextEdit, QToolButton,
+    QScrollArea, QShortcut, QSizePolicy, QStackedWidget, QStatusBar, QStyle, QTextEdit, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -84,6 +84,7 @@ from codex_hub.management import (
     task_completion_outcome,
     task_completion_revisions,
 )
+from codex_hub.navigation import build_navigation_entries, search_navigation_entries
 from codex_hub.portfolio import (
     DEFAULT_PORTFOLIO_FOCUS_CAPACITY,
     DEFAULT_PORTFOLIO_INACTIVITY_DAYS,
@@ -5211,6 +5212,132 @@ class RunningConversationsDialog(QDialog):
         self.accept()
 
 
+class CommandPaletteDialog(QDialog):
+    """Compact keyboard-first navigation across the local Codex workspace."""
+
+    TYPE_META = {
+        "action": ("指令", "\uE945", "#526071", "#eef2f6"),
+        "project": ("项目", "\uE8B7", "#1d4ed8", "#eaf1ff"),
+        "task": ("任务", "\uE9D5", "#6d3fc0", "#f1ebff"),
+        "conversation": ("对话", "\uE8BD", "#087443", "#e7f7ef"),
+    }
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.window = parent
+        self.catalog = parent.command_catalog()
+        self.results = []
+        self.result_rows = []
+        self.selected_index = 0
+        self.setWindowTitle("快速打开")
+        self.setObjectName("commandPalette")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self.resize(760, 590)
+
+        outer = QVBoxLayout(self); outer.setContentsMargins(18, 18, 18, 18)
+        card = QFrame(); card.setObjectName("commandPaletteCard")
+        card.setStyleSheet("""
+            QFrame#commandPaletteCard { background: #ffffff; border: 1px solid #cbd7e6; border-radius: 17px; }
+            QFrame#commandSearchFrame { background: #f7f9fc; border: 1px solid #b9c9dc; border-radius: 12px; }
+            QFrame#commandResult { background: #ffffff; border: 1px solid transparent; border-radius: 10px; }
+            QFrame#commandResult:hover { background: #f5f8fd; border-color: #d7e2ef; }
+            QFrame#commandResult[selected='true'] { background: #edf4ff; border-color: #afc8ee; }
+        """)
+        outer.addWidget(card)
+        layout = QVBoxLayout(card); layout.setContentsMargins(18, 17, 18, 14); layout.setSpacing(11)
+
+        search_frame = QFrame(); search_frame.setObjectName("commandSearchFrame"); search_frame.setFixedHeight(58)
+        search_layout = QHBoxLayout(search_frame); search_layout.setContentsMargins(15, 0, 13, 0); search_layout.setSpacing(10)
+        search_icon = QLabel(); search_icon.setFixedSize(24, 24); search_icon.setAlignment(Qt.AlignCenter)
+        search_icon.setPixmap(fluent_icon("\uE721", color="#2563eb", size=18).pixmap(QSize(18, 18))); search_layout.addWidget(search_icon)
+        self.search = QLineEdit(); self.search.setFrame(False); self.search.setClearButtonEnabled(True)
+        self.search.setPlaceholderText("搜索项目、任务、Codex 对话或指令…")
+        self.search.setAccessibleName("全局搜索")
+        self.search.setStyleSheet("QLineEdit { background: transparent; border: none; padding: 0; color: #172033; font-size: 16px; font-weight: 520; }")
+        self.search.textChanged.connect(self.refresh_results); self.search.returnPressed.connect(self.activate_selected); search_layout.addWidget(self.search, 1)
+        shortcut_hint = QLabel("CTRL  K"); shortcut_hint.setAlignment(Qt.AlignCenter); shortcut_hint.setFixedSize(58, 28)
+        shortcut_hint.setStyleSheet("color: #607087; background: #ffffff; border: 1px solid #d6e0eb; border-radius: 7px; font-size: 10px; font-weight: 700; letter-spacing: 0.6px;"); search_layout.addWidget(shortcut_hint)
+        layout.addWidget(search_frame)
+
+        result_header = QHBoxLayout(); result_header.setContentsMargins(3, 1, 3, 0)
+        caption = QLabel("快速打开"); caption.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 700; letter-spacing: 0.5px;"); result_header.addWidget(caption)
+        result_header.addStretch(); self.result_meta = QLabel(); self.result_meta.setStyleSheet("color: #7a8798; font-size: 11px;"); result_header.addWidget(self.result_meta); layout.addLayout(result_header)
+
+        self.results_widget = QWidget(); self.results_widget.setObjectName("commandResults"); self.results_widget.setStyleSheet("QWidget#commandResults { background: transparent; }")
+        self.results_layout = QVBoxLayout(self.results_widget); self.results_layout.setContentsMargins(0, 0, 0, 0); self.results_layout.setSpacing(5); layout.addWidget(self.results_widget, 1)
+
+        footer = QHBoxLayout(); footer.setContentsMargins(3, 2, 3, 0); footer.setSpacing(14)
+        source = QLabel("项目、任务与对话均来自当前本地同步状态"); source.setStyleSheet("color: #7a8798; font-size: 10px;"); footer.addWidget(source); footer.addStretch()
+        controls = QLabel("↑↓ 选择    ENTER 打开    ESC 关闭"); controls.setStyleSheet("color: #607087; font-size: 10px; font-weight: 600;"); footer.addWidget(controls); layout.addLayout(footer)
+
+        self.down_shortcut = QShortcut(QKeySequence("Down"), self); self.down_shortcut.activated.connect(lambda: self.move_selection(1))
+        self.up_shortcut = QShortcut(QKeySequence("Up"), self); self.up_shortcut.activated.connect(lambda: self.move_selection(-1))
+        self.close_shortcut = QShortcut(QKeySequence("Escape"), self); self.close_shortcut.activated.connect(self.reject)
+        self.refresh_results()
+        QTimer.singleShot(0, self.search.setFocus)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.parentWidget():
+            geometry = self.frameGeometry(); geometry.moveCenter(self.parentWidget().frameGeometry().center()); self.move(geometry.topLeft())
+
+    def refresh_results(self):
+        MainWindow._clear_layout(self.results_layout)
+        matches = search_navigation_entries(self.catalog, self.search.text(), limit=1000)
+        self.results = matches[:8]
+        self.result_rows = []
+        self.selected_index = 0
+        if not self.results:
+            empty = QFrame(); empty.setFixedHeight(290); empty_layout = QVBoxLayout(empty); empty_layout.setAlignment(Qt.AlignCenter)
+            empty_icon = QLabel(); empty_icon.setAlignment(Qt.AlignCenter); empty_icon.setPixmap(fluent_icon("\uE721", color="#8a99ad", size=24).pixmap(QSize(24, 24))); empty_layout.addWidget(empty_icon)
+            empty_text = QLabel("没有匹配的项目、任务、对话或指令"); empty_text.setAlignment(Qt.AlignCenter); empty_text.setStyleSheet("color: #66758a; font-size: 13px; margin-top: 8px;"); empty_layout.addWidget(empty_text); self.results_layout.addWidget(empty)
+        else:
+            for index, entry in enumerate(self.results):
+                row = self.build_result_row(entry, index)
+                self.result_rows.append(row); self.results_layout.addWidget(row)
+            self.results_layout.addStretch()
+        shown = len(self.results)
+        self.result_meta.setText(f"{shown} / {len(matches)} 项" if len(matches) > shown else f"{shown} 项")
+        self.update_selection()
+
+    def build_result_row(self, entry, index):
+        row = ClickableFrame(); row.setObjectName("commandResult"); row.setFixedHeight(56)
+        row.setAccessibleName(f"{self.TYPE_META.get(entry.get('kind'), self.TYPE_META['action'])[0]}：{entry.get('title', '')}")
+        layout = QHBoxLayout(row); layout.setContentsMargins(11, 7, 11, 7); layout.setSpacing(11)
+        label, glyph, color, background = self.TYPE_META.get(entry.get("kind"), self.TYPE_META["action"])
+        icon = QLabel(); icon.setAttribute(Qt.WA_TransparentForMouseEvents); icon.setFixedSize(34, 34); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon(glyph, color=color, size=17).pixmap(QSize(17, 17))); icon.setStyleSheet(f"background: {background}; border: none; border-radius: 9px;"); layout.addWidget(icon)
+        text = QVBoxLayout(); text.setSpacing(1)
+        title = ElidedLabel(str(entry.get("title") or "")); title.setAttribute(Qt.WA_TransparentForMouseEvents); title.setToolTip(str(entry.get("title") or "")); title.setStyleSheet("color: #253247; font-size: 13px; font-weight: 680; border: none;"); text.addWidget(title)
+        subtitle = ElidedLabel(str(entry.get("subtitle") or "")); subtitle.setAttribute(Qt.WA_TransparentForMouseEvents); subtitle.setToolTip(str(entry.get("subtitle") or "")); subtitle.setStyleSheet("color: #6b788b; font-size: 10px; border: none;"); text.addWidget(subtitle); layout.addLayout(text, 1)
+        kind = QLabel(label); kind.setAttribute(Qt.WA_TransparentForMouseEvents); kind.setAlignment(Qt.AlignCenter); kind.setFixedSize(52, 26)
+        kind.setStyleSheet(f"color: {color}; background: {background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 700;"); layout.addWidget(kind)
+        arrow = QLabel(); arrow.setAttribute(Qt.WA_TransparentForMouseEvents); arrow.setFixedSize(18, 18); arrow.setAlignment(Qt.AlignCenter); arrow.setPixmap(fluent_icon("\uE76C", color="#718096", size=13).pixmap(QSize(13, 13))); layout.addWidget(arrow)
+        row.clicked.connect(lambda value=entry: self.activate_entry(value))
+        return row
+
+    def move_selection(self, delta):
+        if not self.results:
+            return
+        self.selected_index = (self.selected_index + delta) % len(self.results)
+        self.update_selection()
+
+    def update_selection(self):
+        for index, row in enumerate(self.result_rows):
+            row.setProperty("selected", index == self.selected_index)
+            row.style().unpolish(row); row.style().polish(row)
+
+    def activate_selected(self):
+        if self.results:
+            self.activate_entry(self.results[self.selected_index])
+
+    def activate_entry(self, entry):
+        self.accept()
+        QTimer.singleShot(0, lambda value=entry: self.window.execute_command_entry(value))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -5290,6 +5417,11 @@ class MainWindow(QMainWindow):
         self.usage_progress.setStyleSheet("QProgressBar { background: #e2e8f0; border: none; border-radius: 2px; } QProgressBar::chunk { background: #2563eb; border-radius: 2px; }")
         telemetry_layout.addWidget(self.usage_progress); top_layout.addWidget(telemetry, 2)
 
+        self.command_button = QToolButton(); self.command_button.setFixedSize(38, 38)
+        self.command_button.setIcon(fluent_icon("\uE721", color="#315b94", size=17)); self.command_button.setIconSize(QSize(17, 17))
+        self.command_button.setToolTip("快速打开项目、任务、对话或指令（Ctrl+K）"); self.command_button.setAccessibleName("全局快速打开，快捷键 Ctrl+K")
+        self.command_button.setStyleSheet("QToolButton { background: #f7f9fc; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #edf3ff; border-color: #9eb8d8; }")
+        self.command_button.clicked.connect(self.show_command_palette); top_layout.addWidget(self.command_button)
         self.sync = QLabel("●  自动同步"); self.sync.setAlignment(Qt.AlignCenter); self.sync.setMinimumWidth(112); self.sync.setFixedHeight(34)
         self.sync.setStyleSheet("color: #087443; background: #e9f8f0; border: 1px solid #b9e5cd; border-radius: 9px; padding: 3px 9px; font-size: 11px; font-weight: 650;"); top_layout.addWidget(self.sync)
         root.addWidget(top)
@@ -5327,6 +5459,7 @@ class MainWindow(QMainWindow):
         self.undo_task_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #bfd1ef; border-radius: 7px; padding: 3px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #8eace0; }")
         self.undo_task_button.clicked.connect(self.undo_last_task_transition); self.undo_task_button.hide(); status_bar.addPermanentWidget(self.undo_task_button)
         self.undo_task_timer = QTimer(self); self.undo_task_timer.setSingleShot(True); self.undo_task_timer.timeout.connect(self.clear_task_undo)
+        self.command_shortcut = QShortcut(QKeySequence("Ctrl+K"), self); self.command_shortcut.activated.connect(self.show_command_palette)
         self.select_section("home")
 
     def build_projects_page(self):
@@ -5968,6 +6101,70 @@ class MainWindow(QMainWindow):
 
     def show_running_conversations(self):
         RunningConversationsDialog(self, self.running_conversations()).exec_()
+
+    @staticmethod
+    def _command_action(action, title, subtitle, keywords, priority, order):
+        return {
+            "kind": "action",
+            "key": f"action:{action}",
+            "title": title,
+            "subtitle": subtitle,
+            "searchText": " ".join((title, subtitle, keywords)).casefold(),
+            "payload": {"action": action},
+            "priority": priority,
+            "order": order,
+        }
+
+    def command_catalog(self):
+        actions = [
+            self._command_action("new_task", "新建今日任务", "建立计划并关联项目与 Codex 对话", "添加 计划", -30, 0),
+            self._command_action("new_project", "新建项目", "建立项目目标、阶段和明确下一步", "添加 项目", -29, 1),
+            self._command_action("task_history", "查看任务记录", "回顾每日计划、进行中和完成记录", "历史 每日", -28, 2),
+            self._command_action("refresh", "刷新项目与 Codex 状态", "立即读取本地项目、任务和对话活动", "同步 更新", 90, 3),
+            self._command_action("home", "切换到今日工作台", "查看项目决策与今日任务规划", "主页 首页", 91, 4),
+            self._command_action("projects", "切换到项目中心", "查看全部项目及管理状态", "项目列表", 92, 5),
+        ]
+        if self.running_count:
+            actions.append(self._command_action(
+                "running", "查看运行中的 Codex 对话", f"当前有 {self.running_count} 个对话正在执行",
+                "运行 工作区", 8, 6,
+            ))
+        today = QDate.currentDate().toString(Qt.ISODate)
+        return actions + build_navigation_entries(self.projects, active_task_records(self.today_tasks), today=today)
+
+    def show_command_palette(self):
+        CommandPaletteDialog(self).exec_()
+
+    def execute_command_entry(self, entry):
+        kind = str((entry or {}).get("kind") or "")
+        payload = (entry or {}).get("payload") or {}
+        if kind == "project":
+            self.open_project_workspace(payload)
+            return True
+        if kind == "task":
+            current = next((task for task in self.today_tasks if task.get("id") == payload.get("id")), payload)
+            self.show_task_audit(current)
+            return True
+        if kind == "conversation":
+            self.open_codex_conversation(payload)
+            return True
+        if kind != "action":
+            return False
+        action = payload.get("action")
+        handlers = {
+            "new_task": lambda: self.new_today_task(),
+            "new_project": lambda: self.edit_project(None),
+            "task_history": lambda: self.show_task_history(0),
+            "refresh": lambda: self.refresh(),
+            "home": lambda: self.select_section("home"),
+            "projects": lambda: self.select_section("projects"),
+            "running": self.show_running_conversations,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            return False
+        handler()
+        return True
 
     @staticmethod
     def _clear_layout(layout):
