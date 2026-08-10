@@ -81,8 +81,8 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Create tasks for any date.
 - Associate a task with a category, project, and optional Codex conversation.
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
-- Create a task directly in any board column with that state preselected.
-- Drag a task by its handle to prioritize it within a column or move it between Planned, In Progress, and Completed; the saved order survives refreshes and restarts, while the status selector remains an accessible fallback.
+- Create a task from the single workspace action, then choose its project and optional Codex conversation in the three-level selector.
+- Drag a task by its handle to prioritize it within a column or move it between Planned, In Progress, and Completed; the saved order survives refreshes and restarts, while the task card keeps direct Start and Complete actions available.
 - Keep past planned work visible instead of silently rolling it forward or letting it disappear into history. Open the review from Ctrl+K, then deliberately reschedule, edit, or leave each item unchanged. A move to today offers a time-limited undo in both the review dialog and status bar, and the reversal is retained as a second auditable schedule event.
 - Preserve every planned-date adjustment in a separate schedule audit. Rescheduling never fabricates a task-state transition, and Codex daily reviews receive the change only as planning evidence—not as completed work.
 - Retain the configurable soft WIP analysis as an on-demand diagnostic, not a daily board requirement. It never blocks a legitimate manual or Codex transition; if opened, it protects running Codex work and explains reversible reduction suggestions from runtime state, project priority, and board order.

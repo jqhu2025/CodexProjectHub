@@ -3288,6 +3288,7 @@ class TaskEditor(QDialog):
         self.preferred_session_id = self.task.get("sessionId")
         self.category_field.currentIndexChanged.connect(self.load_projects)
         self.project_field.currentIndexChanged.connect(self.load_conversations)
+        self.conversation_field.currentIndexChanged.connect(self.update_codex_button)
         self.load_projects()
         self.status_field = QComboBox(); self.status_field.setAccessibleName("当前阶段")
         for status, label in TASK_STATUS.items(): self.status_field.addItem(label, status)
@@ -3306,8 +3307,9 @@ class TaskEditor(QDialog):
         self.update_outcome_visibility()
         actions = QHBoxLayout(); actions.setSpacing(8); actions.setContentsMargins(0, 4, 0, 0); actions.addStretch()
         cancel = QPushButton("取消"); cancel.setFixedHeight(38); cancel.clicked.connect(self.reject); actions.addWidget(cancel)
-        codex = QPushButton("在 Codex 中规划"); codex.setFixedHeight(38); codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); codex.setIconSize(QSize(14, 14)); codex.setToolTip("保存任务，复制规划提示并打开关联对话"); codex.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf4ff; border: none; font-weight: 600; } QPushButton:hover { background: #dfeaff; }"); codex.clicked.connect(self.accept_with_codex); actions.addWidget(codex)
+        self.codex_button = QPushButton("在 Codex 中规划"); self.codex_button.setFixedHeight(38); self.codex_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.codex_button.setIconSize(QSize(14, 14)); self.codex_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf4ff; border: none; font-weight: 600; } QPushButton:hover { background: #dfeaff; } QPushButton:disabled { color: #94a3b8; background: #f1f5f9; }"); self.codex_button.clicked.connect(self.accept_with_codex); actions.addWidget(self.codex_button)
         save = QPushButton("保存任务"); save.setFixedHeight(38); save.setObjectName("primary"); save.clicked.connect(self.accept_task); actions.addWidget(save); layout.addLayout(actions)
+        self.update_codex_button()
         self.title_field.setFocus()
 
     def load_projects(self):
@@ -3340,6 +3342,17 @@ class TaskEditor(QDialog):
         if selected:
             index = self.conversation_field.findData(selected)
             if index >= 0: self.conversation_field.setCurrentIndex(index)
+        self.update_codex_button()
+
+    def update_codex_button(self, *_args):
+        if not hasattr(self, "codex_button"):
+            return
+        linked = bool(self.conversation_field.currentData())
+        self.codex_button.setEnabled(linked)
+        self.codex_button.setToolTip(
+            "保存任务，复制规划提示并打开关联对话"
+            if linked else "选择一个 Codex 对话后即可在其中继续规划"
+        )
 
     def accept_with_codex(self):
         if not self.conversation_field.currentData():
@@ -5838,8 +5851,7 @@ class ProjectWorkbenchDialog(QDialog):
         self.project = project
         self.setWindowTitle(f"项目面板 · {project.get('name', '未命名项目')}")
         self.setObjectName("projectWorkbench")
-        self.setMinimumSize(900, 650)
-        self.resize(980, 740)
+        self.setMinimumSize(900, 540)
         self.setStyleSheet(STYLE + """
             QDialog#projectWorkbench QLabel[sectionTitle='true'] { color: #253247; font-size: 14px; font-weight: 700; }
             QDialog#projectWorkbench QLabel[fieldLabel='true'] { color: #66758a; font-size: 11px; font-weight: 600; }
@@ -5853,6 +5865,15 @@ class ProjectWorkbenchDialog(QDialog):
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel(project.get("name") or "未命名项目"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
         conversations = project.get("conversations") or []
+        today = QDate.currentDate().toString(Qt.ISODate)
+        project_task_count = sum(
+            not task_is_archived(task)
+            and (task.get("date") or today) == today
+            and task_matches_project(task, project)
+            for task in getattr(parent, "today_tasks", [])
+        )
+        visible_rows = max(len(conversations), project_task_count)
+        self.resize(980, min(740, 540 + max(0, visible_rows - 2) * 52))
         running_conversations = sum(codex_state(conversation)[0] == "running" for conversation in conversations)
         subtitle = QLabel(f"{project.get('category', '未分类')}  ·  {len(conversations)} 个 Codex 对话")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
@@ -6729,7 +6750,7 @@ class MainWindow(QMainWindow):
 
     def build_home_page(self):
         page = QWidget(); page.setObjectName("homePage"); page.setStyleSheet("QWidget#homePage { background: #f5f7fb; }"); outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea(); self.home_scroll = scroll; scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f5f7fb; }")
+        scroll = QScrollArea(); self.home_scroll = scroll; scroll.setWidgetResizable(True); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); scroll.setStyleSheet("QScrollArea { background: #f5f7fb; }")
         content = QWidget(); content.setObjectName("homeContent")
         content.setStyleSheet("QWidget#homeContent { background: #f5f7fb; } QWidget#homeContent QLabel { background: transparent; }")
         layout = QVBoxLayout(content); layout.setContentsMargins(32, 26, 28, 26); layout.setSpacing(16); scroll.setWidget(content); outer.addWidget(scroll)

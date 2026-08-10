@@ -54,6 +54,7 @@ class ReviewDialogStructureTests(unittest.TestCase):
 
         self.assertIsNotNone(page.findChild(APP.QWidget, "taskBoard"))
         self.assertIsNotNone(page.findChild(APP.QFrame, "dailySummaryPanel"))
+        self.assertEqual(window.home_scroll.horizontalScrollBarPolicy(), APP.Qt.ScrollBarAlwaysOff)
         self.assertIsNone(page.findChild(APP.QFrame, "portfolioDecisionQueue"))
         self.assertIsNone(page.findChild(APP.QFrame, "portfolioPriorityPanel"))
         self.assertIsNone(page.findChild(APP.QFrame, "activityPanel"))
@@ -159,10 +160,26 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(dialog.command_action.text(), "继续执行")
         self.assertEqual(dialog.next_step_field.cursorPosition(), 0)
         self.assertEqual(dialog.success_criteria_field.toPlainText(), "Pass all release checks")
+        self.assertEqual(dialog.size().height(), 540)
         dialog.set_management_expanded(True)
         self.assertFalse(dialog.management_body.isHidden())
         self.assertTrue(dialog.activity_panel.isHidden())
         self.assertEqual(dialog.management_toggle.text(), "收起")
+        dialog.close(); parent.close()
+
+    def test_task_editor_enables_codex_planning_only_for_a_selected_conversation(self):
+        parent = APP.QWidget(); parent.categories = ["全部", "Research"]
+        projects = [{
+            "id": "project-1", "name": "Release", "category": "Research",
+            "conversations": [{"sessionId": "session-1", "title": "Validate candidate"}],
+        }]
+        dialog = APP.TaskEditor(parent, projects)
+
+        self.assertTrue(dialog.status_field.isHidden())
+        self.assertFalse(dialog.codex_button.isEnabled())
+        dialog.project_field.setCurrentIndex(dialog.project_field.findData("project-1"))
+        dialog.conversation_field.setCurrentIndex(dialog.conversation_field.findData("session-1"))
+        self.assertTrue(dialog.codex_button.isEnabled())
         dialog.close(); parent.close()
 
     def test_project_workbench_only_surfaces_a_command_card_for_an_actionable_exception(self):
