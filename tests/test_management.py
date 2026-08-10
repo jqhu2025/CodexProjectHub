@@ -1,5 +1,6 @@
 import inspect
 import unittest
+from datetime import datetime
 
 from codex_hub import management
 
@@ -177,6 +178,32 @@ class ManagementModuleTests(unittest.TestCase):
         )
         self.assertEqual(applied, [])
         self.assertEqual(merged, project)
+
+    def test_legacy_attention_requires_review_without_flagging_healthy_legacy_projects(self):
+        attention = {"status": "active", "priority": "normal", "health": "attention"}
+        healthy = {"status": "active", "priority": "normal", "health": "on_track"}
+        self.assertEqual(management.project_review_status(attention), (True, None, 7))
+        self.assertEqual(management.project_review_status(healthy), (False, None, 7))
+
+    def test_review_cadence_tracks_management_priority(self):
+        now = datetime(2026, 8, 10, 12, 0, 0)
+        focus = {"status": "active", "priority": "focus", "health": "on_track", "reviewedAt": "2026-08-06T12:00:00"}
+        normal = {"status": "active", "priority": "normal", "health": "on_track", "reviewedAt": "2026-08-06T12:00:00"}
+        self.assertEqual(management.project_review_status(focus, now), (True, 4, 3))
+        self.assertEqual(management.project_review_status(normal, now), (False, 4, 7))
+
+    def test_explicit_project_review_is_auditable_without_fake_field_changes(self):
+        project = {
+            "id": "runtime-id", "savedId": "stable-id", "name": "Release",
+            "stage": "validation", "health": "attention", "nextStep": "Run verification", "blocker": "",
+        }
+        entry = management.build_project_review_entry(project, "2026-08-10T12:00:00", "review-1")
+        self.assertEqual(entry["id"], "review-1")
+        self.assertEqual(entry["projectId"], "stable-id")
+        self.assertEqual(entry["source"], "review")
+        self.assertEqual(entry["changes"], [])
+        self.assertIn("验证阶段", management.format_project_decision_summary(entry))
+        self.assertIn("需关注", management.format_project_decision_summary(entry))
 
     def test_decision_diff_ignores_cosmetic_whitespace(self):
         before = {"objective": "Validate   the model", "health": "on_track"}

@@ -216,6 +216,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         groups = APP.portfolio_decision_groups([active_attention, blocked, needs_next, paused])
         self.assertIn(active_attention, groups["focus"])
         self.assertIn(active_attention, groups["attention"])
+        self.assertIn(active_attention, groups["review"])
         self.assertIn(blocked, groups["attention"])
         self.assertEqual(groups["needs_next"], [needs_next])
 
@@ -244,6 +245,13 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
         self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
         self.assertEqual(APP.project_control_state(healthy)[0], "on_track")
+
+    def test_legacy_attention_becomes_review_instead_of_current_risk(self):
+        legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
+        fresh_attention = {**legacy_attention, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待复核"))
+        self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
+        self.assertEqual(APP.project_control_state(fresh_attention)[:2], ("attention", "需关注"))
 
     def test_search_matches_conversation_title_and_status(self):
         search = SimpleNamespace(text=lambda: "benchmark")
@@ -398,6 +406,29 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         )
         self.assertFalse(changed)
         window.update_project_management.assert_not_called()
+
+    def test_project_review_updates_recency_and_adds_an_audit_event(self):
+        project = {
+            "id": "current", "savedId": "stable", "name": "Release", "status": "active",
+            "priority": "normal", "stage": "validation", "health": "attention", "nextStep": "Verify",
+        }
+        target = {"id": "stable", "name": "Release"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            saved_projects=[target], project_decisions=[], view_signature="old",
+            saved_record_for_project=lambda _project: target,
+            refresh=Mock(), statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json") as save:
+            entry = APP.MainWindow.record_project_review(
+                window, project, audit=True, occurred_at="2026-08-10T12:00:00"
+            )
+        self.assertEqual(project["reviewedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(target["reviewedAt"], "2026-08-10T12:00:00")
+        self.assertEqual(entry["kind"], "review")
+        self.assertEqual(window.project_decisions[-1]["source"], "review")
+        self.assertEqual(save.call_count, 2)
+        window.refresh.assert_called_once_with(silent=True, scan=False)
 
 
 class TaskStatusHistoryTests(unittest.TestCase):

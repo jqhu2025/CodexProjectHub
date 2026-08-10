@@ -7,6 +7,9 @@
     "manualProject": true,
     "status": "active",
     "priority": "focus",
+    "stage": "validation",
+    "health": "on_track",
+    "reviewedAt": "2026-08-10T09:30:00",
     "objective": "Deliver a reliable desktop workflow for spectral analysis",
     "color": "#2474FF",
     "nextStep": "Polish the export workflow"

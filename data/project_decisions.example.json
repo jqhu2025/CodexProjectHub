@@ -34,5 +34,20 @@
         "after": ""
       }
     ]
+  },
+  {
+    "id": "review-demo-001",
+    "projectId": "project-spectral-benchmark",
+    "projectName": "Spectral Benchmark",
+    "at": "2026-08-10T11:00:00",
+    "source": "review",
+    "kind": "review",
+    "changes": [],
+    "snapshot": {
+      "stage": "validation",
+      "health": "on_track",
+      "nextStep": "Review the benchmark report",
+      "blocker": ""
+    }
   }
 ]

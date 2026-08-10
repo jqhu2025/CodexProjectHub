@@ -25,6 +25,7 @@ TASK_EVENT_SOURCES = {
     "legacy": "历史记录",
 }
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}
+PROJECT_REVIEW_CADENCE_DAYS = {"focus": 3, "normal": 7, "later": 14}
 PROJECT_STAGE = {
     "discovery": "探索",
     "planning": "规划",
@@ -54,6 +55,7 @@ PROJECT_DECISION_SOURCES = {
     "undo": "撤销操作",
     "created": "建立项目",
     "category": "分类调整",
+    "review": "状态复核",
 }
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 
@@ -347,6 +349,35 @@ def merge_missing_project_insight(project, insight, allowed_fields=None):
     return current, applied
 
 
+def project_review_status(project, now=None):
+    """Return (is_due, age_days, cadence_days) for a deliberate project review.
+
+    Legacy healthy projects are not flooded into a migration queue.  A legacy
+    attention flag *is* reviewable because its age is unknown and it should not
+    masquerade as a current risk.  Once a project has been reviewed, cadence is
+    derived from management priority and continues automatically.
+    """
+    project = project or {}
+    priority = project.get("priority") if project.get("priority") in PROJECT_REVIEW_CADENCE_DAYS else "normal"
+    cadence = PROJECT_REVIEW_CADENCE_DAYS[priority]
+    if project.get("status", "active") != "active":
+        return False, None, cadence
+    reviewed_at = normalized_decision_value(project.get("reviewedAt"))
+    if not reviewed_at:
+        return project.get("health") == "attention", None, cadence
+    try:
+        reviewed = datetime.fromisoformat(reviewed_at)
+    except ValueError:
+        return project.get("health") == "attention", None, cadence
+    current = now or datetime.now(tz=reviewed.tzinfo)
+    if reviewed.tzinfo is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=reviewed.tzinfo)
+    elif reviewed.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    age_days = max(0, int((current - reviewed).total_seconds() // 86400))
+    return age_days >= cadence, age_days, cadence
+
+
 def display_project_decision_value(field, value):
     normalized = normalized_decision_value(value)
     if field == "priority":
@@ -416,12 +447,40 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
     }
 
 
+def build_project_review_entry(project, occurred_at, entry_id=None):
+    """Record an explicit review even when no project field changed."""
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    if not stable_project_id:
+        return None
+    return {
+        "id": entry_id or str(uuid.uuid4()),
+        "projectId": stable_project_id,
+        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "at": str(occurred_at or ""),
+        "source": "review",
+        "kind": "review",
+        "changes": [],
+        "snapshot": {
+            "stage": (project or {}).get("stage"),
+            "health": (project or {}).get("health"),
+            "nextStep": normalized_decision_value((project or {}).get("nextStep")),
+            "blocker": normalized_decision_value((project or {}).get("blocker")),
+        },
+    }
+
+
 def compact_project_decision_value(field, value, limit=36):
     text = display_project_decision_value(field, value)
     return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "…"
 
 
 def format_project_decision_summary(entry, max_changes=2):
+    if (entry or {}).get("kind") == "review":
+        snapshot = (entry or {}).get("snapshot") or {}
+        stage = display_project_decision_value("stage", snapshot.get("stage"))
+        health = display_project_decision_value("health", snapshot.get("health"))
+        next_step = compact_project_decision_value("nextStep", snapshot.get("nextStep"), 30)
+        return f"确认{stage}阶段 · {health} · 下一步：{next_step}"
     changes = (entry or {}).get("changes") or []
     parts = [
         f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："

@@ -40,6 +40,7 @@ from codex_hub.management import (
     archived_task_records,
     build_project_decision_entry,
     build_project_decision_rollback,
+    build_project_review_entry,
     compact_project_decision_value,
     display_project_decision_value,
     format_project_decision_summary,
@@ -51,6 +52,7 @@ from codex_hub.management import (
     ordered_board_tasks,
     project_decision_changes,
     project_governance_gaps,
+    project_review_status,
     project_management_validation_error,
     project_next_step_completion_update,
     project_next_step_reopen_update,
@@ -1050,12 +1052,31 @@ def project_control_state(project):
     health = project_health_key(project)
     if health == "blocked" or blocker:
         return "blocked", "阻塞", "#b42318", "#fff0ee", blocker or "项目已标记阻塞"
+    review_due, review_age, review_cadence = project_review_status(project)
+    if review_due:
+        reason = (
+            f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
+            if review_age is not None else
+            "历史关注状态尚未经过当前复核"
+        )
+        return "review", "待复核", "#315f9b", "#edf4ff", reason
     if health == "attention":
         return "attention", "需关注", "#b54708", "#fff4e5", "需要复核当前进展"
     if not str(project.get("nextStep") or "").strip():
         reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
         return "on_track", "正常", "#087443", "#e7f7ef", reason
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
+
+
+def project_review_summary(project):
+    due, age_days, cadence = project_review_status(project)
+    reviewed_at = str((project or {}).get("reviewedAt") or "").strip()
+    if reviewed_at:
+        state = "已到复核周期" if due else f"{max(0, cadence - (age_days or 0))} 天后复核"
+        return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}"
+    if due:
+        return f"历史状态尚未确认 · 建议现在复核 · 后续每 {cadence} 天"
+    return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
 
 
 def project_management_scope_matches(project, scope):
@@ -1065,7 +1086,9 @@ def project_management_scope_matches(project, scope):
     if scope == "needs_next":
         return project.get("status", "active") == "active" and not str(project.get("nextStep") or "").strip()
     if scope == "attention":
-        return project_control_state(project)[0] in {"attention", "blocked"}
+        return project_control_state(project)[0] in {"review", "attention", "blocked"}
+    if scope == "review":
+        return project_control_state(project)[0] == "review"
     if scope == "blocked":
         return project_control_state(project)[0] == "blocked"
     if scope == "paused":
@@ -1075,7 +1098,7 @@ def project_management_scope_matches(project, scope):
 
 def project_management_sort_key(project):
     priority_order = {"focus": 0, "normal": 1, "later": 2}
-    control_order = {"blocked": 0, "attention": 1, "on_track": 2, "paused": 3, "completed": 4}
+    control_order = {"blocked": 0, "review": 1, "attention": 2, "on_track": 3, "paused": 4, "completed": 5}
     return (
         control_order.get(project_control_state(project)[0], 2),
         0 if project_focus_state(project)[0] else priority_order.get(project_priority_key(project), 1) + 1,
@@ -1090,8 +1113,9 @@ def portfolio_decision_groups(projects):
         "focus": [project for project in ordered if project_focus_state(project)[0]],
         "attention": [
             project for project in ordered
-            if project_control_state(project)[0] in {"attention", "blocked"}
+            if project_control_state(project)[0] in {"review", "attention", "blocked"}
         ],
+        "review": [project for project in ordered if project_control_state(project)[0] == "review"],
         "needs_next": [
             project for project in ordered
             if project_management_scope_matches(project, "needs_next")
@@ -2150,13 +2174,13 @@ class ProjectMapRow(QFrame):
             title_row.addWidget(focus)
         text_box.addLayout(title_row)
         next_step = str(project.get("nextStep") or "").strip()
-        if control_key in {"blocked", "attention"}:
+        if control_key in {"blocked", "review", "attention"}:
             control_text = f"{stage_label} · {control_label}：{control_reason}"
         else:
             control_text = f"{stage_label} · {next_step or control_reason}"
         next_label = ElidedLabel(control_text)
         next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n{control_reason}\n下一步：{next_step or '尚未设置'}")
-        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'attention'} else '#66758a'}; border: none; font-size: 10px;")
+        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'review', 'attention'} else '#66758a'}; border: none; font-size: 10px;")
         text_box.addWidget(next_label)
         layout.addLayout(text_box, 1)
         state = QLabel(state_text)
@@ -2260,7 +2284,8 @@ class ProjectMindMap(QGraphicsView):
         focus_count = sum(project_focus_state(project)[0] for project in projects)
         blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
         attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
-        summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个需关注")
+        review_count = sum(project_control_state(project)[0] == "review" for project in projects)
+        summary = QLabel(f"{len(projects)} 个项目  ·  {focus_count} 个重点  ·  {blocked_count} 个阻塞  ·  {attention_count} 个风险  ·  {review_count} 个待复核")
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         overview_layout.addWidget(summary)
         overview_proxy = self.map_scene.addWidget(overview)
@@ -2348,9 +2373,9 @@ class ProjectGroup(QFrame):
         name_box.addLayout(name_row)
         next_step = str(project.get("nextStep") or "").strip()
         stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
-        detail_text = control_reason if control_key in {"blocked", "attention"} else (next_step or control_reason)
+        detail_text = control_reason if control_key in {"blocked", "review", "attention"} else (next_step or control_reason)
         next_label = ElidedLabel(f"{stage_label} · {detail_text}"); next_label.setToolTip(f"阶段：{stage_label}\n健康度：{control_label}\n下一步：{next_step or '尚未设置'}")
-        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'attention'} else '#66758a'}; font-size: 10px; border: none;"); name_box.addWidget(next_label)
+        next_label.setStyleSheet(f"color: {control_color if control_key in {'blocked', 'review', 'attention'} else '#66758a'}; font-size: 10px; border: none;"); name_box.addWidget(next_label)
         layout.addLayout(name_box, 1)
         category_select = QComboBox(); category_select.setFixedSize(138, 34); category_select.addItems(window.categories[1:]); category_select.setCurrentText(project.get("category", "未分类")); category_select.setToolTip("调整项目分类"); category_select.setAccessibleName(f"{project['name']} 的项目分类")
         category_select.setStyleSheet("QComboBox { background: #f3f6fa; border: 1px solid transparent; border-radius: 8px; padding: 4px 10px; color: #526071; font-size: 12px; } QComboBox:hover, QComboBox:focus { background: #eef3f8; border-color: #cbd7e5; } QComboBox::drop-down { border: none; width: 22px; }")
@@ -2941,13 +2966,13 @@ class ProjectDecisionHistoryDialog(QDialog):
         icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=19).pixmap(QSize(19, 19))); icon.setStyleSheet("background: #eaf1ff; border-radius: 10px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("项目决策记录"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel(f"{project.get('name', '未命名项目')}  ·  {len(entries)} 条真实字段变更")
+        subtitle = QLabel(f"{project.get('name', '未命名项目')}  ·  {len(entries)} 条决策与复核记录")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box); heading.addStretch(); root.addLayout(heading)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
         content = QWidget(); content.setObjectName("decisionHistoryContent"); content.setStyleSheet("QWidget#decisionHistoryContent { background: #f7f9fc; }")
         rows = QVBoxLayout(content); rows.setContentsMargins(10, 10, 10, 10); rows.setSpacing(8)
         if not entries:
-            empty = QLabel("暂无项目决策记录\n只有目标、阶段、健康度、下一步等字段真正发生变化时才会记录")
+            empty = QLabel("暂无项目决策或复核记录\n保存真实字段变更或确认当前状态后，会在这里形成可审计历史")
             empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; font-size: 12px; padding: 80px 20px;"); rows.addWidget(empty)
         for entry in entries:
             card = QFrame(); card.setObjectName("decisionHistoryCard"); card.setStyleSheet("QFrame#decisionHistoryCard { background: #ffffff; border: 1px solid #dce4ed; border-radius: 10px; }")
@@ -2957,9 +2982,14 @@ class ProjectDecisionHistoryDialog(QDialog):
             header.addStretch()
             source_text = PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策")
             source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source)
-            rollback = QPushButton("恢复到变更前"); rollback.setFixedHeight(30); rollback.setIcon(fluent_icon("\uE7A7", color="#526071", size=12)); rollback.setIconSize(QSize(12, 12))
-            rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
-            rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback); card_layout.addLayout(header)
+            if entry.get("changes"):
+                rollback = QPushButton("恢复到变更前"); rollback.setFixedHeight(30); rollback.setIcon(fluent_icon("\uE7A7", color="#526071", size=12)); rollback.setIconSize(QSize(12, 12))
+                rollback.setToolTip("仅恢复这条记录中发生变化的字段，并保留一条新的回滚记录")
+                rollback.clicked.connect(lambda _checked=False, value=entry: self.rollback_entry(value)); header.addWidget(rollback)
+            card_layout.addLayout(header)
+            if entry.get("kind") == "review":
+                review_line = QLabel(format_project_decision_summary(entry)); review_line.setWordWrap(True)
+                review_line.setStyleSheet("color: #526071; background: #f7f9fc; border: none; border-radius: 7px; padding: 7px 9px; font-size: 12px;"); card_layout.addWidget(review_line)
             for change in entry.get("changes") or []:
                 field = change.get("field")
                 before = display_project_decision_value(field, change.get("before"))
@@ -3030,11 +3060,11 @@ class ProjectWorkbenchDialog(QDialog):
             focus = QLabel(focus_text); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(64, 30); focus.setToolTip(focus_reason)
             focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(focus)
         _control_key, control_text, control_color, control_background, control_reason = project_control_state(project)
-        control = QLabel(control_text); control.setAlignment(Qt.AlignCenter); control.setFixedSize(64, 30); control.setToolTip(control_reason)
-        control.setStyleSheet(f"color: {control_color}; background: {control_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(control)
+        self.control_badge = QLabel(control_text); self.control_badge.setAlignment(Qt.AlignCenter); self.control_badge.setFixedSize(64, 30); self.control_badge.setToolTip(control_reason)
+        self.control_badge.setStyleSheet(f"color: {control_color}; background: {control_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.control_badge)
         _state, state_text, state_color, state_background = project_display_state(project)
-        state = QLabel(f"● {state_text}"); state.setAlignment(Qt.AlignCenter); state.setFixedSize(78, 30)
-        state.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(state)
+        self.project_state_badge = QLabel(f"● {state_text}"); self.project_state_badge.setAlignment(Qt.AlignCenter); self.project_state_badge.setFixedSize(78, 30)
+        self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.project_state_badge)
         continue_button = QPushButton("在 Codex 中继续"); continue_button.setObjectName("primary"); continue_button.setFixedHeight(38)
         continue_button.setIcon(fluent_icon("\uE72A", color="#ffffff", size=15)); continue_button.setIconSize(QSize(15, 15)); continue_button.clicked.connect(self.continue_in_codex); heading.addWidget(continue_button)
         root.addLayout(heading)
@@ -3042,7 +3072,14 @@ class ProjectWorkbenchDialog(QDialog):
         management = QFrame(); management.setObjectName("managementCard")
         management.setStyleSheet("QFrame#managementCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
         management_layout = QVBoxLayout(management); management_layout.setContentsMargins(18, 15, 18, 17); management_layout.setSpacing(10)
-        management_title = QLabel("项目决策"); management_title.setProperty("sectionTitle", True); management_layout.addWidget(management_title)
+        management_head = QHBoxLayout(); management_head.setSpacing(9)
+        management_title = QLabel("项目决策"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
+        management_head.addStretch()
+        self.review_meta = QLabel(project_review_summary(project)); self.review_meta.setStyleSheet("color: #66758a; font-size: 10px;"); management_head.addWidget(self.review_meta)
+        review_button = QPushButton("确认现状"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
+        review_button.setToolTip("确认当前目标、阶段、健康度和下一步仍然有效，并建立自动复核周期")
+        review_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
+        review_button.clicked.connect(self.confirm_current_state); management_head.addWidget(review_button); management_layout.addLayout(management_head)
         meta = QHBoxLayout(); meta.setSpacing(10)
         self.priority_field = QComboBox(); self.status_field = QComboBox(); self.category_field = QComboBox(); self.stage_field = QComboBox(); self.health_field = QComboBox()
         for key, label in PROJECT_PRIORITY.items(): self.priority_field.addItem(label, key)
@@ -3068,7 +3105,7 @@ class ProjectWorkbenchDialog(QDialog):
         blocker_box = QVBoxLayout(); blocker_box.setSpacing(5); blocker_label = QLabel("当前阻塞"); blocker_label.setProperty("fieldLabel", True); blocker_box.addWidget(blocker_label)
         self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
         schedule = QPushButton("加入今日"); schedule.setFixedHeight(40); schedule.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); schedule.setIconSize(QSize(14, 14)); schedule.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); schedule.clicked.connect(self.schedule_next_step); next_row.addWidget(schedule, 0, Qt.AlignBottom)
-        save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(self.save_changes); next_row.addWidget(save, 0, Qt.AlignBottom)
+        save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(lambda: self.save_changes()); next_row.addWidget(save, 0, Qt.AlignBottom)
         management_layout.addLayout(next_row); root.addWidget(management)
 
         self.decision_history_frame = ClickableFrame(); self.decision_history_frame.setObjectName("decisionHistoryStrip"); self.decision_history_frame.setFixedHeight(52)
@@ -3170,6 +3207,24 @@ class ProjectWorkbenchDialog(QDialog):
         self.next_step_field.setText(str(data.get("nextStep") or ""))
         self.blocker_field.setText(str(data.get("blocker") or ""))
 
+    def refresh_header_states(self):
+        _key, text, color, background, reason = project_control_state(self.project)
+        self.control_badge.setText(text); self.control_badge.setToolTip(reason)
+        self.control_badge.setStyleSheet(f"color: {color}; background: {background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
+        _state, state_text, state_color, state_background = project_display_state(self.project)
+        self.project_state_badge.setText(f"● {state_text}")
+        self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
+        self.review_meta.setText(project_review_summary(self.project))
+
+    def confirm_current_state(self):
+        before = dict(self.project)
+        if not self.save_changes(notify=False):
+            return
+        changed = bool(project_decision_changes(before, self.project))
+        self.window.record_project_review(self.project, audit=not changed)
+        self.refresh_header_states()
+        self.render_decision_history()
+
     def save_changes(self, notify=True):
         data = {
             "priority": self.priority_field.currentData(),
@@ -3200,6 +3255,7 @@ class ProjectWorkbenchDialog(QDialog):
                     return False
         saved = self.window.update_project_management(self.project, data, notify=notify)
         self.apply_management_values(saved or data)
+        self.refresh_header_states()
         self.render_decision_history()
         return True
 
@@ -3427,7 +3483,7 @@ class MainWindow(QMainWindow):
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
         self.scope_filter.setToolTip("“当前重点”包含人工重点、今日进行中任务和运行中的 Codex 对话")
-        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("需关注", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        for label, value in (("全部项目", "all"), ("当前重点", "focus"), ("待复核", "review"), ("风险与复核", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -3490,7 +3546,7 @@ class MainWindow(QMainWindow):
         self.portfolio_decision_cards = {}
         decision_specs = (
             ("focus", "正在推进", "#1d4ed8", "#f2f6ff", "#cfdbf1"),
-            ("attention", "需要关注", "#9a5b12", "#fbf7f1", "#eadbc7"),
+            ("attention", "风险与复核", "#315f9b", "#f4f7fb", "#d5e0ec"),
             ("needs_next", "待定下一步", "#6d3fc0", "#f6f3fb", "#dfd5f1"),
         )
         for scope, caption, color, background, border in decision_specs:
@@ -3636,7 +3692,7 @@ class MainWindow(QMainWindow):
             (
                 project.get("id"), project.get("name"), project.get("path"), project.get("category"),
                 project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
-                project.get("objective"), project.get("nextStep"), project.get("blocker"), project.get("nextStepReviewNeeded"),
+                project.get("objective"), project.get("nextStep"), project.get("blocker"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
                 project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
                     (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
@@ -3942,6 +3998,25 @@ class MainWindow(QMainWindow):
             self.project_decisions = self.project_decisions[-2000:]
         save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
         return entry
+
+    def record_project_review(self, project, audit=True, occurred_at=None):
+        """Confirm current project state without inventing a field change."""
+        reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
+        target = self.saved_record_for_project(project)
+        target["reviewedAt"] = reviewed_at
+        project["reviewedAt"] = reviewed_at
+        entry = build_project_review_entry(project, reviewed_at) if audit else None
+        if entry is not None:
+            self.project_decisions.append(entry)
+            if len(self.project_decisions) > 2000:
+                self.project_decisions = self.project_decisions[-2000:]
+            save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        save_json(PROJECTS_FILE, self.saved_projects)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        cadence = project_review_status(project)[2]
+        self.statusBar().showMessage(f"已确认当前项目状态；{cadence} 天后自动进入待复核", 4200)
+        return entry or True
 
     def sync_project_workload(self):
         """Attach today's task counts so portfolio focus reflects work that is actually moving."""
@@ -4408,6 +4483,7 @@ class MainWindow(QMainWindow):
                 "objective": project.get("objective", ""),
                 "nextStep": project.get("nextStep", ""),
                 "blocker": project.get("blocker", ""),
+                "reviewedAt": project.get("reviewedAt", ""),
             }
             self.saved_projects.append(target)
         project["savedId"] = target["id"]
@@ -4416,6 +4492,7 @@ class MainWindow(QMainWindow):
     def update_project_management(self, project, data, notify=True, source="manual"):
         previous_category = project.get("category", "未分类")
         before = dict(project)
+        occurred_at = datetime.now().isoformat(timespec="seconds")
         data, normalization_notes = normalize_project_management_decision(project, data)
         validation_error = project_management_validation_error(data)
         if validation_error:
@@ -4443,7 +4520,11 @@ class MainWindow(QMainWindow):
                 orders[new_category].append(project.get("id"))
         for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded"):
             project[key] = target.get(key)
-        self.record_project_decision(project, before, target, source if source in PROJECT_DECISION_SOURCES else "manual")
+        decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
+        entry = self.record_project_decision(project, before, target, decision_source, occurred_at)
+        if entry is not None and decision_source in {"manual", "editor", "codex", "created"}:
+            target["reviewedAt"] = occurred_at
+            project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
@@ -4804,7 +4885,11 @@ class MainWindow(QMainWindow):
                 self.project_layout["hiddenProjectIds"] = [value for value in hidden if value != codex_match.get("id")]
         decision_project = project or {**target, "savedId": target.get("id")}
         source = ("codex" if dialog.insight_applied else "editor") if project else "created"
-        self.record_project_decision(decision_project, before, target, source)
+        occurred_at = datetime.now().isoformat(timespec="seconds")
+        entry = self.record_project_decision(decision_project, before, target, source, occurred_at)
+        if entry is not None:
+            target["reviewedAt"] = occurred_at
+            decision_project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
