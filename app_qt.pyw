@@ -1390,6 +1390,22 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
     return None
 
 
+def matching_guided_project_item(project, items):
+    """Return the latest plain or nested queue item for the same stable project."""
+    references = project_reference_ids(project)
+    if not references:
+        return None
+    for item in items or []:
+        candidate = (
+            item.get("project")
+            if isinstance(item, dict) and isinstance(item.get("project"), dict)
+            else item
+        )
+        if isinstance(candidate, dict) and project_reference_ids(candidate) & references:
+            return item
+    return None
+
+
 def build_daily_summary_payload(tasks, projects, target_date, project_decisions=None):
     """Create a compact, factual source packet for the fixed Codex summary task."""
     project_index = {
@@ -4416,7 +4432,10 @@ class LifecycleCalibrationDialog(QDialog):
 
         actions = QHBoxLayout(); actions.setSpacing(8)
         close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close); actions.addStretch()
-        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14))
+        self.open_button.setToolTip("查看完整项目资料；关闭项目面板后返回本轮生命周期校准")
+        self.open_button.setAccessibleName("查看当前项目详情并返回生命周期校准队列")
+        self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
         self.defer_button = QPushButton("稍后处理"); self.defer_button.clicked.connect(self.defer_current); actions.addWidget(self.defer_button)
         self.pause_button = QPushButton("暂缓项目"); self.pause_button.clicked.connect(self.pause_current); actions.addWidget(self.pause_button)
         self.keep_button = QPushButton("确认继续活跃"); self.keep_button.setObjectName("primary"); self.keep_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.keep_button.setIconSize(QSize(14, 14)); self.keep_button.clicked.connect(self.keep_current); actions.addWidget(self.keep_button)
@@ -4506,7 +4525,17 @@ class LifecycleCalibrationDialog(QDialog):
     def open_current(self):
         item = self.current_item()
         if not item: return
-        self.accept(); self.window.open_project_workspace(item.get("project") or {})
+        project = item.get("project") or {}
+        references = project_reference_ids(project)
+        self.window.open_project_workspace(project)
+        queue_provider = getattr(self.window, "lifecycle_calibration_queue", None)
+        if callable(queue_provider) and references:
+            refreshed = matching_guided_project_item(project, queue_provider())
+            if refreshed is None:
+                self.pending.pop(0); self.processed_count += 1
+            else:
+                self.pending[0] = refreshed
+        self.render_current()
 
     def defer_current(self):
         if not self.pending: return
@@ -4950,13 +4979,7 @@ class PortfolioReviewDialog(QDialog):
         self.window.open_project_workspace(project)
         queue_provider = getattr(self.window, "portfolio_review_queue", None)
         if callable(queue_provider) and references:
-            refreshed = next(
-                (
-                    candidate for candidate in queue_provider()
-                    if project_reference_ids(candidate) & references
-                ),
-                None,
-            )
+            refreshed = matching_guided_project_item(project, queue_provider())
             if refreshed is None:
                 self.pending.pop(0)
                 self.reviewed_count += 1
@@ -5062,7 +5085,10 @@ class ExecutionAlignmentDialog(QDialog):
 
         actions = QHBoxLayout(); actions.setSpacing(8)
         close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close); actions.addStretch()
-        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14))
+        self.open_button.setToolTip("查看完整项目资料；关闭项目面板后返回本轮执行方向校准")
+        self.open_button.setAccessibleName("查看当前项目详情并返回执行方向校准队列")
+        self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
         self.defer_button = QPushButton("稍后处理"); self.defer_button.clicked.connect(self.defer_current); actions.addWidget(self.defer_button)
         self.keep_button = QPushButton("保留原下一步"); self.keep_button.clicked.connect(self.keep_current); actions.addWidget(self.keep_button)
         self.adopt_button = QPushButton("采用正在执行的任务"); self.adopt_button.setObjectName("primary"); self.adopt_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.adopt_button.setIconSize(QSize(14, 14)); self.adopt_button.clicked.connect(self.adopt_current); actions.addWidget(self.adopt_button)
@@ -5138,7 +5164,17 @@ class ExecutionAlignmentDialog(QDialog):
     def open_current(self):
         alignment = self.current_alignment()
         if not alignment: return
-        self.accept(); self.window.open_project_workspace(alignment.get("project") or {})
+        project = alignment.get("project") or {}
+        references = project_reference_ids(project)
+        self.window.open_project_workspace(project)
+        queue_provider = getattr(self.window, "execution_alignment_queue", None)
+        if callable(queue_provider) and references:
+            refreshed = matching_guided_project_item(project, queue_provider())
+            if refreshed is None:
+                self.pending.pop(0); self.processed_count += 1
+            else:
+                self.pending[0] = refreshed
+        self.render_current()
 
     def defer_current(self):
         if not self.pending: return

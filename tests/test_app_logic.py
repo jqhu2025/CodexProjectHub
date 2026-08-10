@@ -122,6 +122,56 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(dialog.result(), APP.QDialog.Rejected)
         dialog.close(); parent.close()
 
+    def test_lifecycle_calibration_returns_to_the_latest_queue_item_after_workspace(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship release",
+            "nextStep": "Validate candidate", "conversations": [],
+        }
+        refreshed_project = {**project, "nextStep": "Run release review"}
+        refreshed_item = {"project": refreshed_project, "state": {}}
+        parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
+        parent.open_project_workspace = Mock()
+        parent.lifecycle_calibration_queue = Mock(return_value=[refreshed_item])
+        dialog = APP.LifecycleCalibrationDialog(parent, [{"project": project, "state": {}}])
+        dialog.render_current = Mock()
+
+        dialog.open_current()
+
+        parent.open_project_workspace.assert_called_once_with(project)
+        self.assertIs(dialog.pending[0], refreshed_item)
+        self.assertEqual(dialog.processed_count, 0)
+        self.assertIn("返回生命周期校准队列", dialog.open_button.accessibleName())
+        dialog.render_current.assert_called_once_with()
+        self.assertEqual(dialog.result(), APP.QDialog.Rejected)
+        dialog.close(); parent.close()
+
+    def test_execution_alignment_returns_to_the_same_queue_after_workspace(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship release",
+            "nextStep": "Validate candidate", "conversations": [],
+        }
+        alignment = {
+            "project": project, "declaredNextStep": "Validate candidate",
+            "tasks": [{"id": "task-1", "title": "Review release", "conversationTitle": "Release review"}],
+        }
+        parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
+        parent.open_project_workspace = Mock()
+        parent.execution_alignment_queue = Mock(return_value=[alignment])
+        dialog = APP.ExecutionAlignmentDialog(parent, [alignment])
+        dialog.render_current = Mock()
+
+        dialog.open_current()
+
+        parent.open_project_workspace.assert_called_once_with(project)
+        self.assertEqual(dialog.pending, [alignment])
+        self.assertEqual(dialog.processed_count, 0)
+        self.assertIn("返回执行方向校准队列", dialog.open_button.accessibleName())
+        dialog.render_current.assert_called_once_with()
+        self.assertEqual(dialog.result(), APP.QDialog.Rejected)
+        dialog.close(); parent.close()
+
 
 class StorageRecoveryNoticeTests(unittest.TestCase):
     def test_recovered_files_get_a_calm_status_notice(self):
