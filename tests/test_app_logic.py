@@ -1200,6 +1200,51 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertNotIn(legacy_review, groups["attention"])
         self.assertEqual(groups["needs_next"], [needs_next])
 
+    def test_actionable_project_queues_route_each_project_to_one_primary_decision(self):
+        risk = {"id": "risk", "name": "Risk"}
+        quiet = {"id": "quiet", "name": "Quiet"}
+        missing = {"id": "missing", "name": "Missing"}
+        review = {"id": "review", "name": "Review"}
+        focus = {"id": "focus", "name": "Focus"}
+        window = SimpleNamespace(
+            projects=[risk, quiet, missing, review, focus],
+            execution_alignment_queue=Mock(return_value=[]),
+            lifecycle_calibration_queue=Mock(return_value=[{"project": quiet}]),
+            focus_commitment_queue=Mock(return_value=[{"project": focus}]),
+        )
+        groups = {
+            "attention": [risk],
+            "needs_next": [risk, quiet, missing],
+            "review": [risk, quiet, missing, review, focus],
+        }
+        with patch.object(APP, "portfolio_decision_groups", return_value=groups):
+            routing = APP.MainWindow.project_decision_routing(window)
+        self.assertEqual(routing["queues"]["attention"], [risk])
+        self.assertEqual(routing["queues"]["lifecycle"], [{"project": quiet}])
+        self.assertEqual(routing["queues"]["needs_next"], [missing])
+        self.assertEqual(routing["queues"]["focus_commitment"], [{"project": focus}])
+        self.assertEqual(routing["queues"]["review"], [review])
+        self.assertEqual(
+            routing["routedTo"]["review"],
+            {"attention": 1, "lifecycle": 1, "needs_next": 1, "focus_commitment": 1},
+        )
+
+    def test_direct_alignment_and_lifecycle_entrypoints_use_primary_owned_queues(self):
+        alignment = {"project": {"id": "alignment"}}
+        lifecycle = {"project": {"id": "lifecycle"}}
+        window = SimpleNamespace(
+            actionable_execution_alignment_queue=Mock(return_value=[alignment]),
+            actionable_lifecycle_calibration_queue=Mock(return_value=[lifecycle]),
+        )
+        with patch.object(APP, "ExecutionAlignmentDialog") as alignment_dialog:
+            APP.MainWindow.show_execution_alignment_queue(window)
+        alignment_dialog.assert_called_once_with(window, [alignment])
+        alignment_dialog.return_value.exec_.assert_called_once_with()
+        with patch.object(APP, "LifecycleCalibrationDialog") as lifecycle_dialog:
+            APP.MainWindow.show_lifecycle_calibration(window)
+        lifecycle_dialog.assert_called_once_with(window, [lifecycle])
+        lifecycle_dialog.return_value.exec_.assert_called_once_with()
+
     def test_risk_queue_prioritizes_oldest_known_blockers_without_guessing_unknown_age(self):
         now = datetime(2026, 8, 10, 12, 0, 0)
         older = {

@@ -9,6 +9,42 @@ class PortfolioModuleTests(unittest.TestCase):
     def test_domain_module_has_no_qt_dependency(self):
         self.assertNotIn("PyQt", inspect.getsource(portfolio))
 
+    def test_decision_routing_assigns_each_project_to_one_primary_queue(self):
+        risk = {"id": "risk"}
+        quiet = {"id": "quiet"}
+        missing = {"id": "missing"}
+        review = {"id": "review"}
+        routing = portfolio.route_project_decision_queues((
+            ("attention", [risk]),
+            ("lifecycle", [{"project": quiet}]),
+            ("needs_next", [risk, quiet, missing]),
+            ("review", [risk, quiet, missing, review]),
+        ))
+        self.assertEqual(routing["queues"]["attention"], [risk])
+        self.assertEqual(routing["queues"]["lifecycle"], [{"project": quiet}])
+        self.assertEqual(routing["queues"]["needs_next"], [missing])
+        self.assertEqual(routing["queues"]["review"], [review])
+        self.assertEqual(routing["routedTo"]["needs_next"], {"attention": 1, "lifecycle": 1})
+        self.assertEqual(
+            routing["routedTo"]["review"],
+            {"attention": 1, "lifecycle": 1, "needs_next": 1},
+        )
+
+    def test_decision_routing_matches_project_aliases_after_runtime_id_changes(self):
+        saved_copy = {"savedId": "stable", "name": "Project"}
+        bridge_copy = {"id": "runtime", "savedId": "stable", "name": "Project"}
+        runtime_copy = {"id": "runtime", "name": "Project"}
+        routing = portfolio.route_project_decision_queues((
+            ("attention", [saved_copy]),
+            ("needs_next", [bridge_copy]),
+            ("review", [runtime_copy]),
+        ))
+        self.assertEqual(routing["queues"]["attention"], [saved_copy])
+        self.assertEqual(routing["queues"]["needs_next"], [])
+        self.assertEqual(routing["queues"]["review"], [])
+        self.assertEqual(routing["routedTo"]["needs_next"], {"attention": 1})
+        self.assertEqual(routing["routedTo"]["review"], {"attention": 1})
+
     def test_focus_capacity_separates_strategy_from_live_execution(self):
         projects = [
             {"id": "focus", "status": "active", "priority": "focus", "conversations": []},

@@ -57,6 +57,68 @@ def project_reference_ids(project):
     }
 
 
+def _project_decision_route_key(project):
+    """Build a stable-enough key for assigning one project to one decision queue."""
+    references = project_reference_ids(project)
+    if references:
+        return "references", tuple(sorted(references))
+    path = str((project or {}).get("path") or "").strip().casefold()
+    if path:
+        return "path", path
+    name = str((project or {}).get("name") or "").strip().casefold()
+    category = str((project or {}).get("category") or "").strip().casefold()
+    if name or category:
+        return "label", category, name
+    return "object", id(project)
+
+
+def route_project_decision_queues(ordered_queues):
+    """Assign each project to the first applicable action queue and explain diversions.
+
+    Queue items may be projects directly or mappings containing a ``project`` value.
+    The caller defines management precedence through ``ordered_queues``.
+    """
+    queues = {}
+    routed = {}
+    routed_to = {}
+    claimed_references = {}
+    claimed_fallbacks = {}
+    for queue_name, source_items in ordered_queues or []:
+        accepted = []
+        diverted = {}
+        for item in source_items or []:
+            project = (
+                item.get("project")
+                if isinstance(item, dict) and isinstance(item.get("project"), dict)
+                else item
+            )
+            if not isinstance(project, dict):
+                continue
+            references = project_reference_ids(project)
+            owner = next(
+                (claimed_references[reference] for reference in references if reference in claimed_references),
+                None,
+            )
+            fallback_key = None if references else _project_decision_route_key(project)
+            if owner is None and fallback_key is not None:
+                owner = claimed_fallbacks.get(fallback_key)
+            if owner is not None:
+                for reference in references:
+                    claimed_references.setdefault(reference, owner)
+                diverted[owner] = diverted.get(owner, 0) + 1
+                continue
+            if references:
+                for reference in references:
+                    claimed_references[reference] = queue_name
+            else:
+                claimed_fallbacks[fallback_key] = queue_name
+            accepted.append(item)
+        queues[queue_name] = accepted
+        routed[queue_name] = sum(diverted.values())
+        routed_to[queue_name] = diverted
+    return {"queues": queues, "routed": routed, "routedTo": routed_to}
+
+
 def task_matches_project(task, project):
     project_id = str((task or {}).get("projectId") or "")
     return bool(project_id and project_id in project_reference_ids(project))

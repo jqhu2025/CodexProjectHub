@@ -118,6 +118,7 @@ from codex_hub.portfolio import (
     reconcile_task_project_links_from_conversations,
     reconcile_task_project_snapshots,
     reconcile_task_project_categories,
+    route_project_decision_queues,
     task_matches_project,
     task_project_identity,
     task_project_link_events,
@@ -1243,6 +1244,16 @@ def project_confirmation_priority_hint(projects):
     if counts["baseline"]:
         return "逐项建立基线"
     return ""
+
+
+def project_confirmation_sort_key(project):
+    """Order setup gaps, real cadence debt, then first-time baselines."""
+    if project_governance_gaps(project):
+        return 0, 0, project_management_sort_key(project)
+    overdue_days = project_review_overdue_days(project)
+    if overdue_days is not None:
+        return 1, -overdue_days, project_management_sort_key(project)
+    return 2, 0, project_management_sort_key(project)
 
 
 def project_has_local_folder(project):
@@ -4709,7 +4720,8 @@ class LifecycleCalibrationDialog(QDialog):
         if not accepted:
             return
         self.window.update_portfolio_inactivity_days(value)
-        self.pending = self.window.lifecycle_calibration_queue()
+        provider = getattr(self.window, "actionable_lifecycle_calibration_queue", None)
+        self.pending = provider() if callable(provider) else self.window.lifecycle_calibration_queue()
         self.processed_count = 0; self.deferred_count = 0; self.render_current()
 
     def open_current(self):
@@ -4718,7 +4730,9 @@ class LifecycleCalibrationDialog(QDialog):
         project = item.get("project") or {}
         references = project_reference_ids(project)
         self.window.open_project_workspace(project)
-        queue_provider = getattr(self.window, "lifecycle_calibration_queue", None)
+        queue_provider = getattr(self.window, "actionable_lifecycle_calibration_queue", None)
+        if not callable(queue_provider):
+            queue_provider = getattr(self.window, "lifecycle_calibration_queue", None)
         if callable(queue_provider) and references:
             refreshed = matching_guided_project_item(project, queue_provider())
             if refreshed is None:
@@ -4816,7 +4830,8 @@ class FocusCapacityDialog(QDialog):
         capacity = portfolio_focus_capacity()
         state = portfolio_focus_capacity_state(self.window.projects, capacity)
         strategic_count = len(state["strategic"]); execution_count = len(state["executing"])
-        commitment_due = portfolio_focus_commitment_queue(state["strategic"], self.window.today_tasks)
+        provider = getattr(self.window, "actionable_focus_commitment_queue", None)
+        commitment_due = provider() if callable(provider) else portfolio_focus_commitment_queue(state["strategic"], self.window.today_tasks)
         self.capacity_button.setText(f"重点容量 {capacity}")
         self.focus_metric[1].setText(f"{strategic_count} / {capacity}")
         self.execution_metric[1].setText(str(execution_count))
@@ -5527,7 +5542,9 @@ class ExecutionAlignmentDialog(QDialog):
         project = alignment.get("project") or {}
         references = project_reference_ids(project)
         self.window.open_project_workspace(project)
-        queue_provider = getattr(self.window, "execution_alignment_queue", None)
+        queue_provider = getattr(self.window, "actionable_execution_alignment_queue", None)
+        if not callable(queue_provider):
+            queue_provider = getattr(self.window, "execution_alignment_queue", None)
         if callable(queue_provider) and references:
             refreshed = matching_guided_project_item(project, queue_provider())
             if refreshed is None:
@@ -6501,26 +6518,25 @@ class MainWindow(QMainWindow):
         self.render_nav(); self.render()
 
     def portfolio_review_queue(self):
-        """Keep one project in one queue, preferring live alignment and lifecycle decisions."""
-        projects = portfolio_decision_groups(self.projects).get("review", [])
-        specific_refs = set()
-        for item in self.execution_alignment_queue():
-            specific_refs.update(project_reference_ids(item.get("project") or {}))
-        for item in self.lifecycle_calibration_queue():
-            specific_refs.update(project_reference_ids(item.get("project") or {}))
-        filtered = [
-            project for project in projects
-            if not (project_reference_ids(project) & specific_refs)
-        ]
-        def confirmation_order(project):
-            if project_governance_gaps(project):
-                return 0, 0, project_management_sort_key(project)
-            overdue_days = project_review_overdue_days(project)
-            if overdue_days is not None:
-                return 1, -overdue_days, project_management_sort_key(project)
-            return 2, 0, project_management_sort_key(project)
+        """Return only reviews not already owned by a more specific management decision."""
+        projects = MainWindow.project_decision_routing(self)["queues"].get("review", [])
+        return sorted(projects, key=project_confirmation_sort_key)
 
-        return sorted(filtered, key=confirmation_order)
+    def project_decision_routing(self):
+        """Give every project one primary action owner while preserving raw portfolio facets."""
+        groups = portfolio_decision_groups(self.projects)
+        alignments = list(self.execution_alignment_queue() or [])
+        lifecycle_items = list(self.lifecycle_calibration_queue() or [])
+        focus_provider = getattr(self, "focus_commitment_queue", None)
+        focus_commitments = list(focus_provider() or []) if callable(focus_provider) else []
+        return route_project_decision_queues((
+            ("attention", groups.get("attention", [])),
+            ("alignment", alignments),
+            ("lifecycle", lifecycle_items),
+            ("needs_next", groups.get("needs_next", [])),
+            ("focus_commitment", focus_commitments),
+            ("review", groups.get("review", [])),
+        ))
 
     def risk_response_queue(self):
         return sorted(
@@ -6529,7 +6545,7 @@ class MainWindow(QMainWindow):
         )
 
     def next_step_decision_queue(self):
-        return portfolio_decision_groups(self.projects).get("needs_next", [])
+        return MainWindow.project_decision_routing(self)["queues"].get("needs_next", [])
 
     def show_next_step_decision_queue(self):
         projects = self.next_step_decision_queue()
@@ -6595,7 +6611,7 @@ class MainWindow(QMainWindow):
         )
 
     def show_lifecycle_calibration(self):
-        queue_items = self.lifecycle_calibration_queue()
+        queue_items = self.actionable_lifecycle_calibration_queue()
         if not queue_items:
             QMessageBox.information(self, "组合已校准", "当前没有达到静默阈值且仍需确认的活跃项目。")
             return
@@ -6749,6 +6765,15 @@ class MainWindow(QMainWindow):
     def focus_commitment_queue(self):
         return portfolio_focus_commitment_queue(self.projects, self.today_tasks)
 
+    def actionable_execution_alignment_queue(self):
+        return self.project_decision_routing()["queues"].get("alignment", [])
+
+    def actionable_lifecycle_calibration_queue(self):
+        return self.project_decision_routing()["queues"].get("lifecycle", [])
+
+    def actionable_focus_commitment_queue(self):
+        return self.project_decision_routing()["queues"].get("focus_commitment", [])
+
     def open_portfolio_priority_decision(self):
         scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
         if scope == "attention":
@@ -6769,7 +6794,7 @@ class MainWindow(QMainWindow):
             self.open_project_scope(scope)
 
     def show_execution_alignment_queue(self):
-        alignments = self.execution_alignment_queue()
+        alignments = self.actionable_execution_alignment_queue()
         if not alignments:
             QMessageBox.information(self, "执行方向已对齐", "当前进行中的任务与项目下一步没有待确认差异。")
             return
@@ -6779,11 +6804,13 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "portfolio_decision_cards"):
             return
         groups = portfolio_decision_groups(self.projects)
-        groups["review"] = self.portfolio_review_queue()
-        groups["needs_next"] = self.next_step_decision_queue()
+        routing = self.project_decision_routing()
+        groups["attention"] = routing["queues"].get("attention", [])
+        groups["review"] = sorted(routing["queues"].get("review", []), key=project_confirmation_sort_key)
+        groups["needs_next"] = routing["queues"].get("needs_next", [])
         prefixes = {"attention": "风险处置", "review": "管理确认", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
-        focus_commitments = self.focus_commitment_queue()
+        focus_commitments = routing["queues"].get("focus_commitment", [])
         for scope, controls in self.portfolio_decision_cards.items():
             if scope == "focus_capacity":
                 strategic = capacity_state["strategic"]
@@ -6813,6 +6840,15 @@ class MainWindow(QMainWindow):
                 controls["frame"].setAccessibleName(f"重点容量，{len(strategic)} / {capacity_state['capacity']}；{len(executing)} 项实际推进。{summary}")
                 continue
             projects = groups.get(scope, [])
+            routed_to = routing.get("routedTo", {}).get(scope, {})
+            route_labels = {
+                "attention": "风险与阻塞", "alignment": "执行校准", "lifecycle": "生命周期",
+                "needs_next": "待定下一步", "focus_commitment": "重点落地", "review": "管理确认",
+            }
+            routed_summary = "、".join(
+                f"{route_labels.get(owner, owner)} {count}"
+                for owner, count in routed_to.items()
+            )
             controls["count"].setText(str(len(projects)))
             if projects:
                 names = [str(project.get("name") or "未命名项目") for project in projects]
@@ -6844,6 +6880,12 @@ class MainWindow(QMainWindow):
                 else:
                     details = [f"• {name}" for name in names]
                 tooltip = f"{prefixes[scope]}\n" + "\n".join(details)
+                if routed_summary:
+                    summary += f" · 另 {sum(routed_to.values())} 项已路由"
+                    tooltip += f"\n由更优先决策承接：{routed_summary}"
+            elif routed_summary:
+                summary = f"已由更优先队列承接 · {routed_summary}"
+                tooltip = f"{controls['caption']}当前无需重复处理\n由更优先决策承接：{routed_summary}"
             else:
                 summary = "当前无需处理"
                 tooltip = f"{controls['caption']}：当前没有项目"
@@ -6852,8 +6894,8 @@ class MainWindow(QMainWindow):
             controls["frame"].setToolTip(tooltip)
             controls["frame"].setAccessibleName(f"{controls['caption']}，{len(projects)} 个项目。{summary}")
         if hasattr(self, "portfolio_priority_panel"):
-            alignments = self.execution_alignment_queue()
-            lifecycle_items = self.lifecycle_calibration_queue()
+            alignments = routing["queues"].get("alignment", [])
+            lifecycle_items = routing["queues"].get("lifecycle", [])
             wip_state = self.task_wip_state(QDate.currentDate().toString(Qt.ISODate))
             overdue_tasks = self.planning_backlog()
             completion_tasks = self.completion_evidence_queue()
