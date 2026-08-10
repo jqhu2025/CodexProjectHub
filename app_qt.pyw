@@ -34,7 +34,10 @@ from codex_hub.management import (
     TASK_COLORS,
     TASK_EVENT_SOURCES,
     TASK_STATUS,
+    active_task_records,
+    archive_task_record,
     archive_project_layout,
+    archived_task_records,
     build_project_decision_entry,
     build_project_decision_rollback,
     compact_project_decision_value,
@@ -53,8 +56,10 @@ from codex_hub.management import (
     reorder_task_board,
     rollover_in_progress_tasks,
     restore_project_layout,
+    restore_task_record,
     task_status_events,
     task_status_transition_allowed,
+    task_is_archived,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 
@@ -926,6 +931,7 @@ def find_open_project_next_step_task(tasks, project, title, target_date):
         (
             task for task in tasks
             if task_matches_project(task, project)
+            and not task_is_archived(task)
             and str(task.get("date") or "") == str(target_date or "")
             and task.get("status", "planned") != "done"
             and normalized_action_text(task.get("title")) == expected
@@ -960,7 +966,9 @@ def build_project_next_step_task(project, target_date, now, conversation=None, t
 def open_project_tasks(tasks, project):
     return [
         task for task in (tasks or [])
-        if task_matches_project(task, project) and task.get("status", "planned") != "done"
+        if task_matches_project(task, project)
+        and not task_is_archived(task)
+        and task.get("status", "planned") != "done"
     ]
 
 
@@ -1064,6 +1072,8 @@ def build_daily_summary_payload(tasks, projects, target_date):
     }
     selected_tasks = []
     for task in tasks:
+        if task_is_archived(task):
+            continue
         if str(task.get("date") or "") != target_date:
             continue
         project = project_index.get(str(task.get("projectId") or ""), {})
@@ -1453,7 +1463,7 @@ class ProjectEditor(QDialog):
             draft["conversations"] = self.project.get("conversations") or []
         tasks = [
             task for task in getattr(self.parent(), "today_tasks", [])
-            if self.project and task_matches_project(task, self.project)
+            if self.project and task_matches_project(task, self.project) and not task_is_archived(task)
         ]
         worker = ProjectInsightWorker(draft, tasks, self)
         worker.generated.connect(self.on_codex_insight)
@@ -2419,7 +2429,7 @@ class TodayTaskCard(QFrame):
         menu = QMenu(more)
         edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
         edit_action.triggered.connect(lambda: window.edit_today_task(task))
-        delete_action = menu.addAction(fluent_icon("\uE74D", color="#b42318", size=14), "删除任务")
+        delete_action = menu.addAction(fluent_icon("\uE74D", color="#526071", size=14), "移到任务回收站")
         delete_action.triggered.connect(lambda: window.delete_today_task(task))
         more.setMenu(menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
         root.addLayout(actions)
@@ -2524,6 +2534,74 @@ class TaskHistoryDialog(QDialog):
         if date.isValid() and hasattr(self.window, "board_date_field"):
             self.window.board_date_field.setDate(date)
         self.accept()
+
+
+class TaskArchiveDialog(QDialog):
+    def __init__(self, parent, tasks):
+        super().__init__(parent)
+        self.window = parent
+        self.tasks = list(archived_task_records(tasks))
+        self.setWindowTitle("任务回收站")
+        self.setObjectName("taskArchiveDialog")
+        self.setMinimumSize(720, 500)
+        self.resize(780, 560)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE74D", color="#1d4ed8", size=19).pixmap(QSize(19, 19)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("任务回收站"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        hint = QLabel("移除的任务不会进入看板、项目负载或每日总结，但原状态和变更历史会完整保留。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(hint); heading.addLayout(title_box, 1)
+        self.count_label = QLabel(); self.count_label.setAlignment(Qt.AlignCenter); self.count_label.setFixedHeight(30)
+        self.count_label.setStyleSheet("color: #315f9b; background: #edf3ff; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.count_label); root.addLayout(heading)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        self.rows = QVBoxLayout(content); self.rows.setContentsMargins(0, 0, 6, 0); self.rows.setSpacing(8)
+        scroll.setWidget(content); root.addWidget(scroll, 1)
+        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("关闭"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_rows()
+
+    def render_rows(self):
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.count_label.setText(f"{len(self.tasks)} 项任务")
+        if not self.tasks:
+            empty = QFrame(); empty.setObjectName("taskArchiveEmpty"); empty.setMinimumHeight(240)
+            empty.setStyleSheet("QFrame#taskArchiveEmpty { background: #ffffff; border: 1px dashed #cbd5e1; border-radius: 12px; }")
+            empty_layout = QVBoxLayout(empty); empty_layout.setAlignment(Qt.AlignCenter); empty_layout.setSpacing(8)
+            empty_title = QLabel("回收站为空"); empty_title.setStyleSheet("color: #34445c; font-size: 15px; font-weight: 700;"); empty_layout.addWidget(empty_title, 0, Qt.AlignCenter)
+            empty_hint = QLabel("从今日看板移除的任务会安全保存在这里"); empty_hint.setStyleSheet("color: #748094; font-size: 11px;"); empty_layout.addWidget(empty_hint, 0, Qt.AlignCenter)
+            self.rows.addWidget(empty); self.rows.addStretch(); return
+        for task in self.tasks:
+            status = task.get("status", "planned"); accent = TASK_COLORS.get(status, "#64748b")
+            row = QFrame(); row.setObjectName("archivedTaskRow"); row.setFixedHeight(76)
+            row.setStyleSheet("QFrame#archivedTaskRow { background: #ffffff; border: 1px solid #dbe3ee; border-radius: 10px; }")
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(14, 8, 10, 8); row_layout.setSpacing(12)
+            dot = QLabel(); dot.setFixedSize(8, 8); dot.setStyleSheet(f"background: {accent}; border-radius: 4px;"); row_layout.addWidget(dot)
+            text = QVBoxLayout(); text.setSpacing(3)
+            name = ElidedLabel(task.get("title") or "未命名任务"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 680;"); text.addWidget(name)
+            project = self.window.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+            task_date = QDate.fromString(str(task.get("date") or ""), Qt.ISODate)
+            date_text = task_date.toString("yyyy年MM月dd日") if task_date.isValid() else str(task.get("date") or "日期未知")
+            archived_at = format_project_decision_time(task.get("archivedAt"), compact=True)
+            meta = QLabel(f"{date_text}  ·  {project_name}  ·  {TASK_STATUS.get(status, '计划')}  ·  {archived_at} 移除")
+            meta.setStyleSheet("color: #748094; font-size: 11px;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            restore = QPushButton("恢复任务"); restore.setFixedSize(92, 36); restore.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); restore.setIconSize(QSize(13, 13))
+            restore.setToolTip("恢复到原日期与原状态，并放在对应看板列末端"); restore.clicked.connect(lambda _checked=False, value=task: self.restore_task(value)); row_layout.addWidget(restore)
+            self.rows.addWidget(row)
+        self.rows.addStretch()
+
+    def restore_task(self, task):
+        if self.window.restore_archived_task(task):
+            self.tasks = [item for item in self.tasks if item.get("id") != task.get("id")]
+            self.render_rows()
 
 
 class DailySummaryDialog(QDialog):
@@ -2784,7 +2862,9 @@ class ProjectWorkbenchDialog(QDialog):
         today = QDate.currentDate().toString(Qt.ISODate)
         tasks = [
             task for task in self.window.today_tasks
-            if task_matches_project(task, self.project) and (task.get("date") or today) == today
+            if task_matches_project(task, self.project)
+            and not task_is_archived(task)
+            and (task.get("date") or today) == today
         ]
         if not tasks:
             empty = QLabel("今天还没有关联任务")
@@ -3175,6 +3255,8 @@ class MainWindow(QMainWindow):
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
         self.task_summary = QLabel(); self.task_summary.setStyleSheet("color: #66758a; font-size: 12px;"); board_head.addWidget(self.task_summary); board_head.addStretch()
+        self.task_archive_button = QToolButton(); self.task_archive_button.setFixedSize(36, 36); self.task_archive_button.setIcon(fluent_icon("\uE74D", color="#526071", size=16)); self.task_archive_button.setIconSize(QSize(16, 16)); self.task_archive_button.setToolTip("任务回收站"); self.task_archive_button.setAccessibleName("任务回收站")
+        self.task_archive_button.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #f1f5fa; border-color: #9fb6d0; }"); self.task_archive_button.clicked.connect(self.show_task_archive); board_head.addWidget(self.task_archive_button)
         history = QToolButton(); history.setFixedSize(36, 36); history.setIcon(fluent_icon("\uE81C", color="#24588f", size=17)); history.setIconSize(QSize(17, 17)); history.setToolTip("查看每日任务记录"); history.setAccessibleName("每日任务记录")
         history.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #f1f5fa; border-color: #9fb6d0; }"); history.clicked.connect(lambda: self.show_task_history(0)); board_head.addWidget(history)
         self.board_date_field = QDateEdit(QDate.currentDate()); self.board_date_field.setCalendarPopup(True); self.board_date_field.setDisplayFormat("yyyy年MM月dd日"); self.board_date_field.setFixedSize(150, 36); self.board_date_field.dateChanged.connect(lambda _date: self.render_today_tasks()); board_head.addWidget(self.board_date_field)
@@ -3614,6 +3696,8 @@ class MainWindow(QMainWindow):
             "done": "completedTaskCount",
         }
         for task in self.today_tasks:
+            if task_is_archived(task):
+                continue
             if (task.get("date") or today) != today:
                 continue
             project = self.project_by_id(task.get("projectId"))
@@ -3644,6 +3728,8 @@ class MainWindow(QMainWindow):
         changed = []
         now = datetime.now().isoformat(timespec="seconds")
         for task in self.today_tasks:
+            if task_is_archived(task):
+                continue
             if task.get("status", "planned") != "planned":
                 continue
             if (task.get("date") or today) != today:
@@ -3670,11 +3756,21 @@ class MainWindow(QMainWindow):
             if item.widget(): item.widget().hide(); item.widget().deleteLater()
         selected_date = self.board_date_field.date() if hasattr(self, "board_date_field") else QDate.currentDate()
         date_key = selected_date.toString(Qt.ISODate)
-        tasks = [task for task in self.today_tasks if (task.get("date") or QDate.currentDate().toString(Qt.ISODate)) == date_key]
+        tasks = [
+            task for task in self.today_tasks
+            if not task_is_archived(task)
+            and (task.get("date") or QDate.currentDate().toString(Qt.ISODate)) == date_key
+        ]
         title = "今日任务规划" if selected_date == QDate.currentDate() else selected_date.toString("MM月dd日任务规划")
         self.task_board_title.setText(title)
         counts = {status: sum(task.get("status") == status for task in tasks) for status in TASK_STATUS}
         self.task_summary.setText(f"{len(tasks)} 项 · {counts['doing']} 项进行中 · {counts['done']} 项完成")
+        if hasattr(self, "task_archive_button"):
+            archived_count = len(archived_task_records(self.today_tasks))
+            self.task_archive_button.setToolTip(f"任务回收站（{archived_count} 项）" if archived_count else "任务回收站为空")
+            self.task_archive_button.setAccessibleName(f"任务回收站，{archived_count} 项任务")
+            archive_color = "#9a5b12" if archived_count else "#526071"
+            self.task_archive_button.setIcon(fluent_icon("\uE74D", color=archive_color, size=16))
         for status, label in TASK_STATUS.items():
             accent = TASK_COLORS[status]
             surface = {"planned": "#faf8ff", "doing": "#f7faff", "done": "#f7fcf9"}.get(status, "#f8fafc")
@@ -3735,10 +3831,28 @@ class MainWindow(QMainWindow):
 
     def show_task_history(self, initial_tab=0):
         selected = self.board_date_field.date().toString(Qt.ISODate) if hasattr(self, "board_date_field") else None
-        dialog = TaskHistoryDialog(self, self.today_tasks, selected)
+        dialog = TaskHistoryDialog(self, active_task_records(self.today_tasks), selected)
         if hasattr(dialog, "tabs"):
             dialog.tabs.setCurrentIndex(max(0, min(initial_tab, dialog.tabs.count() - 1)))
         dialog.exec_()
+
+    def show_task_archive(self):
+        TaskArchiveDialog(self, self.today_tasks).exec_()
+
+    def restore_archived_task(self, task):
+        stored = next((item for item in self.today_tasks if item.get("id") == (task or {}).get("id")), None)
+        now = datetime.now().isoformat(timespec="seconds")
+        if not restore_task_record(stored, now):
+            return False
+        reorder_task_board(self.today_tasks, stored.get("id"), stored.get("status", "planned"), None)
+        save_json(TASKS_FILE, self.today_tasks)
+        task_date = QDate.fromString(str(stored.get("date") or ""), Qt.ISODate)
+        if task_date.isValid() and hasattr(self, "board_date_field"):
+            self.board_date_field.setDate(task_date)
+        self.sync_project_workload(); self.view_signature = None
+        self.render_today_tasks(); self.render()
+        self.statusBar().showMessage(f"“{stored.get('title', '任务')}”已恢复到原日期和状态", 3200)
+        return True
 
     def new_today_task(self, status=None):
         self.edit_today_task(None, status if status in TASK_STATUS else "planned")
@@ -3865,9 +3979,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已撤销，任务恢复为“{TASK_STATUS[transition['from']]}”", 3200)
 
     def delete_today_task(self, task):
-        if QMessageBox.question(self, "删除任务", f"确定删除“{task.get('title', '未命名任务')}”吗？") != QMessageBox.Yes:
+        message = (
+            f"确定将“{task.get('title', '未命名任务')}”移到任务回收站吗？\n\n"
+            "任务会离开看板、项目负载和每日总结，但原日期、状态和变更历史都会保留，可随时恢复。"
+        )
+        if QMessageBox.question(self, "移到任务回收站", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        self.today_tasks = [item for item in self.today_tasks if item.get("id") != task.get("id")]; save_json(TASKS_FILE, self.today_tasks); self.render_today_tasks()
+        now = datetime.now().isoformat(timespec="seconds")
+        if not archive_task_record(task, now):
+            return
+        if (self.pending_task_undo or {}).get("taskId") == task.get("id"):
+            self.clear_task_undo()
+        save_json(TASKS_FILE, self.today_tasks)
+        self.sync_project_workload(); self.view_signature = None
+        self.render_today_tasks(); self.render()
+        self.statusBar().showMessage("任务已移到回收站，原状态历史仍保留", 3000)
 
     def open_task_conversation(self, task):
         self.open_codex_conversation({"sessionId": task.get("sessionId"), "conversationLabel": task.get("conversationTitle") or task.get("title")})

@@ -82,6 +82,41 @@ def restore_project_layout(layout, project_id):
     return updated, True
 
 
+def task_is_archived(task):
+    return bool(str((task or {}).get("archivedAt") or "").strip())
+
+
+def active_task_records(tasks):
+    return [task for task in (tasks or []) if isinstance(task, dict) and not task_is_archived(task)]
+
+
+def archived_task_records(tasks):
+    archived = [task for task in (tasks or []) if isinstance(task, dict) and task_is_archived(task)]
+    return sorted(archived, key=lambda task: str(task.get("archivedAt") or ""), reverse=True)
+
+
+def archive_task_record(task, occurred_at):
+    """Move a task out of active views without deleting its audit history."""
+    if not isinstance(task, dict) or task_is_archived(task):
+        return False
+    task["archivedAt"] = str(occurred_at or "")
+    task["archivedFromStatus"] = task.get("status", "planned")
+    task["updatedAt"] = str(occurred_at or task.get("updatedAt") or "")
+    return True
+
+
+def restore_task_record(task, occurred_at):
+    """Restore an archived task while retaining evidence of the archive cycle."""
+    if not isinstance(task, dict) or not task_is_archived(task):
+        return False
+    archived_at = str(task.pop("archivedAt", "") or "")
+    task["lastArchivedAt"] = archived_at
+    task["restoredAt"] = str(occurred_at or "")
+    task["updatedAt"] = str(occurred_at or task.get("updatedAt") or "")
+    task.pop("boardOrder", None)
+    return True
+
+
 def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
     """Append one real task status transition, avoiding no-op events."""
     if not isinstance(task, dict) or status not in TASK_STATUS:
@@ -138,7 +173,8 @@ def task_board_sort_key(task):
 def ordered_board_tasks(tasks, target_date=None, status=None):
     selected = [
         task for task in (tasks or [])
-        if (target_date is None or str(task.get("date") or "") == str(target_date))
+        if not task_is_archived(task)
+        and (target_date is None or str(task.get("date") or "") == str(target_date))
         and (status is None or task.get("status", "planned") == status)
     ]
     return sorted(selected, key=task_board_sort_key)
@@ -149,7 +185,7 @@ def reorder_task_board(tasks, task_id, target_status, target_index=None):
     if target_status not in TASK_STATUS:
         return {"changed": False}
     task = next((item for item in (tasks or []) if str(item.get("id") or "") == str(task_id or "")), None)
-    if task is None:
+    if task is None or task_is_archived(task):
         return {"changed": False}
     task_date = str(task.get("date") or "")
     previous_status = task.get("status", "planned")
@@ -207,6 +243,7 @@ def rollover_in_progress_tasks(tasks, today=None):
             (
                 task for task in result
                 if task.get("status") == "doing"
+                and not task_is_archived(task)
                 and str(task.get("date") or "") < today
                 and not task.get("carriedToTaskId")
             ),

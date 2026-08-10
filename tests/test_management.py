@@ -19,6 +19,35 @@ class ManagementModuleTests(unittest.TestCase):
         event = management.task_status_events([task])[0]
         self.assertEqual((event["from"], event["to"], event["source"]), ("planned", "doing", "drag"))
 
+    def test_task_archive_round_trip_preserves_status_and_transition_history(self):
+        task = {
+            "id": "task-1",
+            "status": "doing",
+            "date": "2026-08-10",
+            "boardOrder": 2,
+            "statusHistory": [{"at": "09:00", "from": "planned", "to": "doing", "source": "manual"}],
+        }
+        self.assertTrue(management.archive_task_record(task, "2026-08-10T11:00:00"))
+        self.assertTrue(management.task_is_archived(task))
+        self.assertEqual(management.active_task_records([task]), [])
+        self.assertEqual(management.archived_task_records([task]), [task])
+        self.assertEqual(task["status"], "doing")
+        self.assertEqual(len(task["statusHistory"]), 1)
+        self.assertTrue(management.restore_task_record(task, "2026-08-10T11:30:00"))
+        self.assertFalse(management.task_is_archived(task))
+        self.assertEqual(task["lastArchivedAt"], "2026-08-10T11:00:00")
+        self.assertEqual(task["status"], "doing")
+        self.assertEqual(len(task["statusHistory"]), 1)
+        self.assertNotIn("boardOrder", task)
+
+    def test_archived_tasks_never_participate_in_board_order(self):
+        tasks = [
+            {"id": "active", "date": "2026-08-10", "status": "doing", "boardOrder": 1},
+            {"id": "archived", "date": "2026-08-10", "status": "doing", "boardOrder": 0, "archivedAt": "2026-08-10T10:00:00"},
+        ]
+        self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-10", "doing")], ["active"])
+        self.assertFalse(management.reorder_task_board(tasks, "archived", "planned", 0)["changed"])
+
     def test_project_archive_round_trip_preserves_category_order(self):
         layout = {"hiddenProjectIds": [], "categoryOrders": {"Research": ["project-1", "project-2"]}}
         archived, changed = management.archive_project_layout(layout, "project-1")

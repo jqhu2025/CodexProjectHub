@@ -192,6 +192,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             {"id": "planned", "projectId": "stable", "status": "planned"},
             {"id": "doing", "projectId": "current", "status": "doing"},
             {"id": "done", "projectId": "stable", "status": "done"},
+            {"id": "archived", "projectId": "stable", "status": "doing", "archivedAt": "2026-08-10T11:00:00"},
             {"id": "other", "projectId": "other", "status": "planned"},
         ]
         self.assertEqual([task["id"] for task in APP.open_project_tasks(tasks, project)], ["planned", "doing"])
@@ -415,11 +416,17 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertEqual(events[1]["source"], "codex")
 
     def test_rollover_starts_a_new_daily_history_without_copying_old_events(self):
-        tasks = [{
-            "id": "old", "title": "Continue work", "status": "doing", "date": "2026-08-09",
-            "boardOrder": 3,
-            "statusHistory": [{"at": "2026-08-09T09:00:00", "from": "planned", "to": "doing", "source": "manual"}],
-        }]
+        tasks = [
+            {
+                "id": "old", "title": "Continue work", "status": "doing", "date": "2026-08-09",
+                "boardOrder": 3,
+                "statusHistory": [{"at": "2026-08-09T09:00:00", "from": "planned", "to": "doing", "source": "manual"}],
+            },
+            {
+                "id": "archived-old", "title": "Removed work", "status": "doing", "date": "2026-08-09",
+                "archivedAt": "2026-08-09T12:00:00",
+            },
+        ]
         rolled, changed = APP.rollover_in_progress_tasks(tasks, "2026-08-10")
         self.assertTrue(changed)
         carried = next(task for task in rolled if task.get("carriedFromTaskId") == "old")
@@ -427,6 +434,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertEqual(carried["statusHistory"][0]["source"], "rollover")
         self.assertEqual(carried["statusHistory"][0]["to"], "doing")
         self.assertNotIn("boardOrder", carried)
+        self.assertFalse(any(task.get("carriedFromTaskId") == "archived-old" for task in rolled))
 
     def test_manual_status_move_offers_an_undo_without_bypassing_the_normal_engine(self):
         task = {"id": "task-1", "status": "planned", "statusHistory": []}
@@ -477,6 +485,44 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual([task["id"] for task in APP.ordered_board_tasks(tasks, "2026-08-10", "doing")], ["first", "second"])
 
+    def test_removing_a_task_preserves_it_in_the_recycle_bin(self):
+        task = {
+            "id": "task-1", "title": "Validate", "date": "2026-08-10", "status": "doing",
+            "statusHistory": [{"at": "09:00", "from": "planned", "to": "doing", "source": "manual"}],
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], pending_task_undo=None, clear_task_undo=Mock(),
+            sync_project_workload=Mock(), render_today_tasks=Mock(), render=Mock(),
+            statusBar=lambda: status_bar, view_signature=None,
+        )
+        with patch.object(APP.QMessageBox, "question", return_value=APP.QMessageBox.Yes), patch.object(APP, "save_json"):
+            APP.MainWindow.delete_today_task(window, task)
+        self.assertEqual(window.today_tasks, [task])
+        self.assertTrue(APP.task_is_archived(task))
+        self.assertEqual(len(task["statusHistory"]), 1)
+        window.sync_project_workload.assert_called_once()
+        window.render_today_tasks.assert_called_once()
+
+    def test_restoring_a_task_returns_it_to_the_original_date_and_status(self):
+        task = {
+            "id": "task-1", "title": "Validate", "date": "2026-08-10", "status": "doing",
+            "archivedAt": "2026-08-10T11:00:00", "statusHistory": [],
+        }
+        status_bar = Mock(); date_field = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task], board_date_field=date_field,
+            sync_project_workload=Mock(), render_today_tasks=Mock(), render=Mock(),
+            statusBar=lambda: status_bar, view_signature=None,
+        )
+        with patch.object(APP, "save_json"):
+            restored = APP.MainWindow.restore_archived_task(window, task)
+        self.assertTrue(restored)
+        self.assertFalse(APP.task_is_archived(task))
+        self.assertEqual(task["status"], "doing")
+        date_field.setDate.assert_called_once()
+        window.render_today_tasks.assert_called_once()
+
     def test_undo_reenters_the_status_engine_and_rejects_stale_transitions(self):
         event = {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"}
         task = {"id": "task-1", "status": "done", "statusHistory": [event]}
@@ -501,6 +547,7 @@ class DailySummaryTests(unittest.TestCase):
     def test_payload_uses_only_requested_date_and_resolves_project(self):
         tasks = [
             {"date": "2026-08-08", "title": "Validate model", "status": "doing", "projectId": "p1", "notes": "Compare alpha"},
+            {"date": "2026-08-08", "title": "Removed duplicate", "status": "planned", "projectId": "p1", "archivedAt": "2026-08-08T12:00:00"},
             {"date": "2026-08-09", "title": "Today", "status": "planned", "projectId": "p1"},
         ]
         projects = [{"id": "p1", "name": "Denoising", "conversations": []}]
