@@ -121,6 +121,20 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("目标：Ship verified release", row.accessibleName())
         dialog.close(); parent.close()
 
+    def test_project_row_can_show_strategy_and_execution_without_merging_them(self):
+        project = {
+            "id": "both", "name": "Validation", "status": "active", "priority": "focus",
+            "activeTaskCount": 1, "objective": "Ship", "nextStep": "Validate",
+            "stage": "validation", "health": "on_track", "conversations": [],
+        }
+        row = APP.ProjectMapRow(project, "已关联", "#526071", "#eef2f6", lambda: None)
+        labels = [label.text() for label in row.findChildren(APP.QLabel)]
+        self.assertIn("重点", labels)
+        self.assertIn("推进", labels)
+        self.assertIn("战略重点", row.accessibleName())
+        self.assertIn("实际推进", row.accessibleName())
+        row.close()
+
     def test_project_review_returns_to_the_same_batch_after_inspecting_the_workspace(self):
         project = {
             "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
@@ -763,6 +777,17 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(task_focus, "focus"))
         self.assertTrue(APP.project_management_scope_matches(codex_focus, "focus"))
 
+    def test_strategy_and_execution_filters_never_treat_busy_as_important(self):
+        strategic_idle = {"status": "active", "priority": "focus", "activeTaskCount": 0, "conversations": []}
+        executing_regular = {"status": "active", "priority": "normal", "activeTaskCount": 1, "conversations": []}
+        both = {"status": "active", "priority": "focus", "activeTaskCount": 1, "conversations": []}
+        self.assertTrue(APP.project_management_scope_matches(strategic_idle, "strategic_focus"))
+        self.assertFalse(APP.project_management_scope_matches(strategic_idle, "executing"))
+        self.assertFalse(APP.project_management_scope_matches(executing_regular, "strategic_focus"))
+        self.assertTrue(APP.project_management_scope_matches(executing_regular, "executing"))
+        self.assertTrue(APP.project_management_scope_matches(both, "strategic_focus"))
+        self.assertTrue(APP.project_management_scope_matches(both, "executing"))
+
     def test_focus_capacity_separates_declared_priority_from_live_execution(self):
         focused_idle = {"id": "focus", "status": "active", "priority": "focus", "activeTaskCount": 0, "conversations": []}
         focused_live = {"id": "both", "status": "active", "priority": "focus", "activeTaskCount": 1, "conversations": []}
@@ -775,6 +800,50 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual([project["id"] for project in state["focusWithoutExecution"]], ["focus"])
         self.assertEqual(state["remaining"], 1)
         self.assertEqual(state["overBy"], 0)
+
+    def test_project_cockpit_reports_strategy_and_execution_as_separate_counts(self):
+        now = datetime.now().isoformat(timespec="seconds")
+        strategic_idle = {
+            "id": "strategic", "status": "active", "priority": "focus", "activeTaskCount": 0,
+            "objective": "Ship", "nextStep": "Validate", "stage": "validation", "health": "on_track",
+            "reviewedAt": now, "conversations": [],
+        }
+        both = {
+            "id": "both", "status": "active", "priority": "focus", "activeTaskCount": 1,
+            "objective": "Ship", "nextStep": "Test", "stage": "execution", "health": "on_track",
+            "reviewedAt": now, "conversations": [],
+        }
+        executing_regular = {
+            "id": "executing", "status": "active", "priority": "normal", "activeTaskCount": 1,
+            "objective": "Compare", "nextStep": "Run", "stage": "execution", "health": "on_track",
+            "reviewedAt": now, "conversations": [],
+        }
+        risk = {
+            "id": "risk", "status": "active", "priority": "normal", "activeTaskCount": 0,
+            "objective": "Integrate", "nextStep": "Unblock", "stage": "execution", "health": "blocked",
+            "blocker": "Dependency unavailable", "reviewedAt": now, "conversations": [],
+        }
+        review = {
+            "id": "review", "savedId": "stable-review", "status": "active", "priority": "normal",
+            "activeTaskCount": 0, "objective": "Publish", "nextStep": "Package", "stage": "validation",
+            "health": "on_track", "conversations": [],
+        }
+        routed_review = {
+            "id": "routed", "status": "active", "priority": "normal", "activeTaskCount": 0,
+            "objective": "", "nextStep": "Define benchmark", "stage": "planning", "health": "on_track", "conversations": [],
+        }
+        metrics = APP.project_portfolio_overview(
+            [strategic_idle, both, executing_regular, risk, review, routed_review],
+            [{"id": "runtime-review", "savedId": "stable-review"}],
+        )
+        self.assertEqual(
+            metrics,
+            {"total": 6, "strategic": 2, "executing": 2, "risk": 1, "directReview": 1, "routedReview": 1},
+        )
+        self.assertEqual(
+            APP.project_portfolio_overview_text(metrics),
+            "6 个项目  ·  战略重点 2  ·  实际推进 2  ·  风险/阻塞 1  ·  待确认 1  ·  另有决策 1",
+        )
 
     def test_focus_capacity_is_bounded_and_reports_overcommitment(self):
         projects = [{"id": str(index), "status": "active", "priority": "focus"} for index in range(4)]
@@ -1748,6 +1817,14 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         ]
         projects.sort(key=APP.project_management_sort_key)
         self.assertEqual([item["name"] for item in projects], ["Active", "Regular"])
+
+    def test_strategic_focus_sorts_before_merely_busy_projects(self):
+        projects = [
+            {"name": "Busy", "status": "active", "priority": "normal", "activeTaskCount": 1, "nextStep": "Continue"},
+            {"name": "Strategic", "status": "active", "priority": "focus", "activeTaskCount": 0, "nextStep": "Validate"},
+        ]
+        projects.sort(key=APP.project_management_sort_key)
+        self.assertEqual([item["name"] for item in projects], ["Strategic", "Busy"])
 
     def test_blocked_project_sorts_before_healthy_focus_project(self):
         projects = [

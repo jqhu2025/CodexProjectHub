@@ -1119,17 +1119,35 @@ def open_project_tasks(tasks, project):
     ]
 
 
-def project_focus_state(project):
-    """Resolve the combined project badge while preserving priority semantics elsewhere."""
+def project_strategy_execution_signals(project):
+    """Keep deliberate strategic focus separate from evidence of work in progress."""
     if (project or {}).get("status", "active") != "active":
         status_text = STATUS_TEXT.get((project or {}).get("status"), "非活动")
-        return False, "", f"项目状态为{status_text}，不计入重点与推进", "#66758a", "#eef2f6"
-    if project_priority_key(project) == "focus":
-        return True, "重点", "已手动设为战略重点", "#7c3aed", "#f1eaff"
+        return {
+            "strategic": False, "executing": False,
+            "strategicReason": f"项目状态为{status_text}，不计入战略重点",
+            "executionReason": f"项目状态为{status_text}，不计入实际推进",
+            "executionColor": "#66758a", "executionBackground": "#eef2f6",
+        }
     live, reason, _active_tasks, running_conversations = project_live_work_state(project)
-    if live:
-        return True, "推进中", reason, "#087443" if running_conversations else "#1d4ed8", "#e7f7ef" if running_conversations else "#e8f0ff"
-    return False, "", "当前没有进行中的任务或 Codex 对话", "#66758a", "#eef2f6"
+    return {
+        "strategic": project_priority_key(project) == "focus",
+        "executing": live,
+        "strategicReason": "已由你手动设为战略重点" if project_priority_key(project) == "focus" else "尚未设为战略重点",
+        "executionReason": reason if live else "当前没有进行中的任务或 Codex 对话",
+        "executionColor": "#087443" if running_conversations else "#1d4ed8",
+        "executionBackground": "#e7f7ef" if running_conversations else "#e8f0ff",
+    }
+
+
+def project_focus_state(project):
+    """Resolve the legacy combined focus/execute facet without conflating its labels."""
+    signals = project_strategy_execution_signals(project)
+    if signals["strategic"]:
+        return True, "重点", "已手动设为战略重点", "#7c3aed", "#f1eaff"
+    if signals["executing"]:
+        return True, "推进中", signals["executionReason"], signals["executionColor"], signals["executionBackground"]
+    return False, "", signals["executionReason"], "#66758a", "#eef2f6"
 
 
 def project_stage_key(project):
@@ -1330,6 +1348,10 @@ def project_management_scope_matches(project, scope):
     """Filter projects by decisions the user can act on, not by decorative metrics."""
     if scope == "focus":
         return project_focus_state(project)[0]
+    if scope == "strategic_focus":
+        return project_strategy_execution_signals(project)["strategic"]
+    if scope == "executing":
+        return project_strategy_execution_signals(project)["executing"]
     if scope == "needs_next":
         return project.get("status", "active") == "active" and not str(project.get("nextStep") or "").strip()
     if scope == "attention":
@@ -1348,12 +1370,62 @@ def project_management_scope_matches(project, scope):
     return True
 
 
+def project_portfolio_overview(projects, direct_review_projects):
+    """Build unambiguous cockpit counts from strategy, execution, and routed decisions."""
+    projects = list(projects or [])
+    direct_review_projects = list(direct_review_projects or [])
+    signals = [project_strategy_execution_signals(project) for project in projects]
+    blocked_or_attention = sum(
+        project_control_state(project)[0] in {"blocked", "attention"}
+        for project in projects
+    )
+    review_projects = [project for project in projects if project_management_scope_matches(project, "review")]
+    direct_references = {
+        reference
+        for project in direct_review_projects
+        for reference in project_reference_ids(project)
+    }
+    direct_objects = {id(project) for project in direct_review_projects}
+    direct_review_count = sum(
+        id(project) in direct_objects
+        or bool(project_reference_ids(project) & direct_references)
+        for project in review_projects
+    )
+    return {
+        "total": len(projects),
+        "strategic": sum(item["strategic"] for item in signals),
+        "executing": sum(item["executing"] for item in signals),
+        "risk": blocked_or_attention,
+        "directReview": direct_review_count,
+        "routedReview": max(0, len(review_projects) - direct_review_count),
+    }
+
+
+def project_portfolio_overview_text(metrics):
+    parts = [
+        f"{metrics['total']} 个项目",
+        f"战略重点 {metrics['strategic']}",
+        f"实际推进 {metrics['executing']}",
+        f"风险/阻塞 {metrics['risk']}",
+        f"待确认 {metrics['directReview']}",
+    ]
+    if metrics["routedReview"]:
+        parts.append(f"另有决策 {metrics['routedReview']}")
+    return "  ·  ".join(parts)
+
+
 def project_management_sort_key(project):
-    priority_order = {"focus": 0, "normal": 1, "later": 2}
     control_order = {"blocked": 0, "attention": 1, "review": 2, "on_track": 3, "paused": 4, "completed": 5}
+    signals = project_strategy_execution_signals(project)
+    signal_order = (
+        0 if signals["strategic"] else
+        1 if signals["executing"] else
+        3 if project_priority_key(project) == "later" else
+        2
+    )
     return (
         control_order.get(project_control_state(project)[0], 2),
-        0 if project_focus_state(project)[0] else priority_order.get(project_priority_key(project), 1) + 1,
+        signal_order,
         0 if project.get("nextStep") else 1,
         str(project.get("name") or "").casefold(),
     )
@@ -2753,9 +2825,14 @@ class ProjectMapRow(QFrame):
         self.setToolTip("打开项目管理面板；总览不展开具体对话")
         control_key, control_label, control_color, _control_background, control_reason = project_control_state(project)
         stage_label = PROJECT_STAGE.get(project_stage_key(project), "执行")
-        is_focus, focus_label, focus_reason, focus_color, focus_background = project_focus_state(project)
-        focus_description = f"，{focus_label}：{focus_reason}" if is_focus else ""
-        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}{focus_description}，Codex {state_text}")
+        signals = project_strategy_execution_signals(project)
+        signal_descriptions = []
+        if signals["strategic"]:
+            signal_descriptions.append(f"战略重点：{signals['strategicReason']}")
+        if signals["executing"]:
+            signal_descriptions.append(f"实际推进：{signals['executionReason']}")
+        signal_description = f"，{'；'.join(signal_descriptions)}" if signal_descriptions else ""
+        self.setAccessibleName(f"项目：{project.get('name') or '未命名项目'}，{stage_label}阶段，{control_label}{signal_description}，Codex {state_text}")
         self.setStyleSheet(
             "QFrame#projectMapRow { background: #ffffff; border: 1px solid #e1e7ef; border-radius: 9px; }"
             "QFrame#projectMapRow:hover { background: #f5f8fc; border-color: #b8c8dc; }"
@@ -2775,10 +2852,14 @@ class ProjectMapRow(QFrame):
         name.setToolTip(project.get("name") or "未命名项目")
         name.setStyleSheet("color: #26364c; border: none; font-size: 13px; font-weight: 650;")
         title_row.addWidget(name, 1)
-        if is_focus:
-            focus = QLabel(focus_label); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(44, 20); focus.setToolTip(focus_reason)
-            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
+        if signals["strategic"]:
+            focus = QLabel("重点"); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(38, 20); focus.setToolTip(signals["strategicReason"])
+            focus.setStyleSheet("color: #7c3aed; background: #f1eaff; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
             title_row.addWidget(focus)
+        if signals["executing"]:
+            executing = QLabel("推进"); executing.setAlignment(Qt.AlignCenter); executing.setFixedSize(38, 20); executing.setToolTip(signals["executionReason"])
+            executing.setStyleSheet(f"color: {signals['executionColor']}; background: {signals['executionBackground']}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;")
+            title_row.addWidget(executing)
         text_box.addLayout(title_row)
         next_step = str(project.get("nextStep") or "").strip()
         if control_key in {"blocked", "review", "attention"}:
@@ -2883,27 +2964,23 @@ class ProjectMindMap(QGraphicsView):
         overview_layout.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
         title = QLabel("项目驾驶舱"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
-        subtitle = QLabel("重点由今日任务、Codex 活动和人工优先级实时汇总")
+        subtitle = QLabel("战略重点由你选择；实际推进来自今日任务与 Codex 活动")
         subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
         overview_layout.addLayout(title_box)
         overview_layout.addStretch(1)
-        focus_count = sum(project_focus_state(project)[0] for project in projects)
-        blocked_count = sum(project_control_state(project)[0] == "blocked" for project in projects)
-        attention_count = sum(project_control_state(project)[0] == "attention" for project in projects)
-        review_projects = [project for project in projects if project_management_scope_matches(project, "review")]
-        direct_ids = {id(project) for project in self.window.portfolio_review_queue()}
-        direct_review_count = sum(id(project) in direct_ids for project in review_projects)
-        routed_review_count = max(0, len(review_projects) - direct_review_count)
-        summary_parts = [
-            f"{len(projects)} 个项目",
-            f"{focus_count} 个重点",
-            f"{blocked_count + attention_count} 个异常",
-            f"{direct_review_count} 个待确认",
-        ]
-        if routed_review_count:
-            summary_parts.append(f"{routed_review_count} 个另有决策")
-        summary = QLabel("  ·  ".join(summary_parts))
+        overview_metrics = project_portfolio_overview(
+            projects,
+            self.window.portfolio_review_queue(),
+        )
+        summary = QLabel(project_portfolio_overview_text(overview_metrics))
+        summary.setToolTip(
+            "战略重点：你主动选定的有限项目\n"
+            "实际推进：今天有进行中任务或 Codex 对话的项目\n"
+            "待确认：当前可直接进入管理确认的项目\n"
+            "另有决策：已由风险、校准、生命周期或下一步队列承接"
+        )
+        summary.setAccessibleName(project_portfolio_overview_text(overview_metrics))
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         overview_layout.addWidget(summary)
         overview_proxy = self.map_scene.addWidget(overview)
@@ -2981,10 +3058,13 @@ class ProjectGroup(QFrame):
         name_box = QVBoxLayout(); name_box.setSpacing(2)
         name_row = QHBoxLayout(); name_row.setSpacing(6)
         name = ElidedLabel(project["name"]); name.setToolTip(project["name"]); name.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); name_row.addWidget(name, 1)
-        is_focus, focus_label, focus_reason, focus_color, focus_background = project_focus_state(project)
-        if is_focus:
-            focus = QLabel("当前重点" if focus_label == "重点" else "今日推进"); focus.setFixedSize(58, 20); focus.setAlignment(Qt.AlignCenter); focus.setToolTip(focus_reason)
-            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(focus)
+        signals = project_strategy_execution_signals(project)
+        if signals["strategic"]:
+            focus = QLabel("战略重点"); focus.setFixedSize(62, 20); focus.setAlignment(Qt.AlignCenter); focus.setToolTip(signals["strategicReason"])
+            focus.setStyleSheet("color: #7c3aed; background: #f1eaff; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(focus)
+        if signals["executing"]:
+            executing = QLabel("实际推进"); executing.setFixedSize(62, 20); executing.setAlignment(Qt.AlignCenter); executing.setToolTip(signals["executionReason"])
+            executing.setStyleSheet(f"color: {signals['executionColor']}; background: {signals['executionBackground']}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(executing)
         control_key, control_label, control_color, control_background, control_reason = project_control_state(project)
         health = QLabel(control_label); health.setFixedSize(48, 20); health.setAlignment(Qt.AlignCenter); health.setToolTip(control_reason)
         health.setStyleSheet(f"color: {control_color}; background: {control_background}; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); name_row.addWidget(health)
@@ -6345,8 +6425,8 @@ class MainWindow(QMainWindow):
             self.status_filter.addItem(label, value)
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
-        self.scope_filter.setToolTip("“重点与推进”同时呈现人工战略重点和当前真实执行；两种信号在重点容量面板中分别管理")
-        for label, value in (("全部项目", "all"), ("重点与推进", "focus"), ("管理确认", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        self.scope_filter.setToolTip("战略重点是人工决策；实际推进来自进行中任务和运行中的 Codex 对话")
+        for label, value in (("全部项目", "all"), ("战略重点", "strategic_focus"), ("实际推进", "executing"), ("管理确认", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.scope_filter)
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -6504,7 +6584,9 @@ class MainWindow(QMainWindow):
         if scope == "needs_next":
             self.show_next_step_decision_queue()
             return
-        if scope not in {"focus", "attention", "review", "needs_next"}:
+        if scope == "focus":
+            scope = "strategic_focus"
+        if scope not in {"strategic_focus", "executing", "attention", "review", "needs_next"}:
             return
         self.category = "全部"
         for control in (self.search, self.status_filter, self.scope_filter):
