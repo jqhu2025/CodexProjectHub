@@ -3841,6 +3841,17 @@ class MainWindow(QMainWindow):
 
     def restore_archived_task(self, task):
         stored = next((item for item in self.today_tasks if item.get("id") == (task or {}).get("id")), None)
+        if (stored or {}).get("origin") == "project_next_step":
+            project = self.project_by_id(stored.get("projectId"))
+            title = str(stored.get("projectNextStep") or stored.get("title") or "").strip()
+            existing = find_open_project_next_step_task(self.today_tasks, project, title, stored.get("date")) if project else None
+            if existing is not None and existing.get("id") != stored.get("id"):
+                QMessageBox.information(
+                    self,
+                    "已有相同项目下一步",
+                    "这个项目在原日期已经存在同名的开放任务。为避免项目行动重复，旧任务将继续保留在回收站。",
+                )
+                return False
         now = datetime.now().isoformat(timespec="seconds")
         if not restore_task_record(stored, now):
             return False

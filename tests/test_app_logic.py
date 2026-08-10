@@ -523,6 +523,24 @@ class TaskStatusHistoryTests(unittest.TestCase):
         date_field.setDate.assert_called_once()
         window.render_today_tasks.assert_called_once()
 
+    def test_restoring_an_old_project_next_step_never_creates_a_duplicate(self):
+        archived = {
+            "id": "old", "title": "Validate release", "projectNextStep": "Validate release",
+            "origin": "project_next_step", "projectId": "stable", "date": "2026-08-10",
+            "status": "planned", "archivedAt": "2026-08-10T10:00:00",
+        }
+        active = {
+            "id": "new", "title": "Validate release", "origin": "project_next_step",
+            "projectId": "stable", "date": "2026-08-10", "status": "doing",
+        }
+        project = {"id": "current", "savedId": "stable"}
+        window = SimpleNamespace(today_tasks=[archived, active], project_by_id=lambda _project_id: project)
+        with patch.object(APP.QMessageBox, "information") as information:
+            restored = APP.MainWindow.restore_archived_task(window, archived)
+        self.assertFalse(restored)
+        self.assertTrue(APP.task_is_archived(archived))
+        information.assert_called_once()
+
     def test_undo_reenters_the_status_engine_and_rejects_stale_transitions(self):
         event = {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"}
         task = {"id": "task-1", "status": "done", "statusHistory": [event]}
