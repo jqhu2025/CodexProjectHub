@@ -127,6 +127,76 @@ def task_status_events(tasks):
     return sorted(events, key=lambda event: str(event.get("at") or ""), reverse=True)
 
 
+def task_board_sort_key(task):
+    """Keep deliberate board order ahead of the stable creation-time fallback."""
+    value = (task or {}).get("boardOrder")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return 0, float(value), str((task or {}).get("createdAt") or ""), str((task or {}).get("id") or "")
+    return 1, 0.0, str((task or {}).get("createdAt") or ""), str((task or {}).get("id") or "")
+
+
+def ordered_board_tasks(tasks, target_date=None, status=None):
+    selected = [
+        task for task in (tasks or [])
+        if (target_date is None or str(task.get("date") or "") == str(target_date))
+        and (status is None or task.get("status", "planned") == status)
+    ]
+    return sorted(selected, key=task_board_sort_key)
+
+
+def reorder_task_board(tasks, task_id, target_status, target_index=None):
+    """Move one task across or within Kanban columns and normalize both orders."""
+    if target_status not in TASK_STATUS:
+        return {"changed": False}
+    task = next((item for item in (tasks or []) if str(item.get("id") or "") == str(task_id or "")), None)
+    if task is None:
+        return {"changed": False}
+    task_date = str(task.get("date") or "")
+    previous_status = task.get("status", "planned")
+    source = ordered_board_tasks(tasks, task_date, previous_status)
+    source_ids = [str(item.get("id") or "") for item in source]
+    try:
+        previous_index = source_ids.index(str(task_id))
+    except ValueError:
+        previous_index = 0
+    target_without_task = [
+        item for item in ordered_board_tasks(tasks, task_date, target_status)
+        if str(item.get("id") or "") != str(task_id)
+    ]
+    if target_index is None:
+        target_index = len(target_without_task)
+    try:
+        target_index = int(target_index)
+    except (TypeError, ValueError):
+        target_index = len(target_without_task)
+    target_index = max(0, min(target_index, len(target_without_task)))
+    target_order = list(target_without_task)
+    target_order.insert(target_index, task)
+    new_target_ids = [str(item.get("id") or "") for item in target_order]
+    changed = previous_status != target_status or new_target_ids != source_ids
+    if not changed:
+        return {
+            "changed": False,
+            "previousStatus": previous_status,
+            "previousIndex": previous_index,
+            "targetIndex": target_index,
+        }
+    if previous_status != target_status:
+        source_remaining = [item for item in source if str(item.get("id") or "") != str(task_id)]
+        for index, item in enumerate(source_remaining):
+            item["boardOrder"] = index
+    task["status"] = target_status
+    for index, item in enumerate(target_order):
+        item["boardOrder"] = index
+    return {
+        "changed": True,
+        "previousStatus": previous_status,
+        "previousIndex": previous_index,
+        "targetStatus": target_status,
+        "targetIndex": target_index,
+    }
+
+
 def rollover_in_progress_tasks(tasks, today=None):
     """Preserve each day's record and carry unfinished active work forward."""
     today = today or datetime.now().date().isoformat()
@@ -163,6 +233,7 @@ def rollover_in_progress_tasks(tasks, today=None):
         carried.pop("carriedToTaskId", None)
         carried.pop("carriedToDate", None)
         carried.pop("autoStartedAt", None)
+        carried.pop("boardOrder", None)
         source["carriedToTaskId"] = carried["id"]
         source["carriedToDate"] = next_date
         source["carriedAt"] = now

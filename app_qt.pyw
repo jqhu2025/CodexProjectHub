@@ -43,11 +43,13 @@ from codex_hub.management import (
     normalize_project_management_decision,
     normalized_action_text,
     normalized_decision_value,
+    ordered_board_tasks,
     project_decision_changes,
     project_management_validation_error,
     project_next_step_completion_update,
     project_next_step_reopen_update,
     record_task_status_event,
+    reorder_task_board,
     rollover_in_progress_tasks,
     restore_project_layout,
     task_status_events,
@@ -1692,8 +1694,8 @@ class TaskDragHandle(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setPixmap(fluent_icon("\uE76F", color="#8794a6", size=14).pixmap(QSize(14, 14)))
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip("拖到其他列可调整任务状态")
-        self.setAccessibleName(f"拖动任务 {(task or {}).get('title', '未命名任务')} 调整状态")
+        self.setToolTip("拖动调整任务顺序；拖到其他列可同时改变状态")
+        self.setAccessibleName(f"拖动任务 {(task or {}).get('title', '未命名任务')} 调整顺序或状态")
         self.setStyleSheet("border: none; background: transparent;")
 
     def mousePressEvent(self, event):
@@ -1725,6 +1727,7 @@ class TaskDropColumn(QFrame):
         self.setAcceptDrops(True)
         self.setObjectName("taskColumn")
         self.setProperty("dropActive", False)
+        self.current_drop_index = None
 
     def task_from_event(self, event):
         if not event.mimeData().hasFormat(TaskDragHandle.MIME_TYPE):
@@ -1741,33 +1744,61 @@ class TaskDropColumn(QFrame):
         self.setProperty("dropActive", bool(active))
         self.style().unpolish(self); self.style().polish(self)
 
+    def drop_index(self, event, moving_task):
+        moving_id = str((moving_task or {}).get("id") or "")
+        cards = sorted(
+            (
+                card for card in self.children() if isinstance(card, TodayTaskCard)
+                if card.task_id != moving_id
+            ),
+            key=lambda card: card.geometry().top(),
+        )
+        for index, card in enumerate(cards):
+            if event.pos().y() < card.geometry().center().y():
+                return index
+        return len(cards)
+
+    def update_drop_message(self, task, index):
+        same_column = task.get("status", "planned") == self.status
+        action = "调整为" if same_column else f"移至“{TASK_STATUS[self.status]}”并设为"
+        self.window.statusBar().showMessage(f"松开后{action}第 {index + 1} 项")
+
     def dragEnterEvent(self, event):
         task = self.task_from_event(event)
-        if not task_status_transition_allowed(task, self.status):
+        if task is None or self.status not in TASK_STATUS:
             event.ignore(); return
         self.set_drop_active(True)
-        self.window.statusBar().showMessage(f"松开后移至“{TASK_STATUS[self.status]}”")
+        self.current_drop_index = self.drop_index(event, task)
+        self.update_drop_message(task, self.current_drop_index)
         event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
         task = self.task_from_event(event)
-        if task_status_transition_allowed(task, self.status):
-            event.acceptProposedAction()
-        else:
+        if task is None or self.status not in TASK_STATUS:
             event.ignore()
+            return
+        index = self.drop_index(event, task)
+        if index != self.current_drop_index:
+            self.current_drop_index = index
+            self.update_drop_message(task, index)
+        event.acceptProposedAction()
 
     def dragLeaveEvent(self, event):
         self.set_drop_active(False)
+        self.current_drop_index = None
         self.window.statusBar().clearMessage()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         task = self.task_from_event(event)
+        target_index = self.drop_index(event, task) if task is not None else None
         self.set_drop_active(False)
-        if not task_status_transition_allowed(task, self.status):
+        self.current_drop_index = None
+        if task is None or self.status not in TASK_STATUS:
             event.ignore(); return
         event.acceptProposedAction()
-        self.window.set_task_status(task.get("id"), self.status, source="drag")
+        if not self.window.move_task_on_board(task.get("id"), self.status, target_index, source="drag"):
+            self.window.statusBar().clearMessage()
 
 
 class ProjectReorderContainer(QWidget):
@@ -2333,6 +2364,7 @@ class TaskEditor(QDialog):
 class TodayTaskCard(QFrame):
     def __init__(self, task, window):
         super().__init__()
+        self.task_id = str((task or {}).get("id") or "")
         self.setObjectName("todayTaskCard")
         project = window.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
         conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or "未关联 Codex"
@@ -3576,8 +3608,8 @@ class MainWindow(QMainWindow):
                 continue
             if str(task.get("sessionId") or "") not in running_sessions:
                 continue
+            reorder_task_board(self.today_tasks, task.get("id"), "doing", None)
             record_task_status_event(task, "planned", "doing", now, "codex")
-            task["status"] = "doing"
             task["autoStartedAt"] = now
             task["updatedAt"] = now
             changed.append(task)
@@ -3618,7 +3650,7 @@ class MainWindow(QMainWindow):
             quick_add.setStyleSheet(f"QToolButton {{ color: {accent}; background: #ffffff; border: 1px solid #d8e1eb; border-radius: 7px; }} QToolButton:hover, QToolButton:focus {{ background: {surface}; border-color: {accent}; }}")
             quick_add.clicked.connect(lambda _checked=False, value=status: self.new_today_task(value)); header.addWidget(quick_add)
             count = QLabel(str(counts[status])); count_bg = accent if counts[status] else "#e1eaf6"; count_color = "#ffffff" if counts[status] else "#637994"; count.setAlignment(Qt.AlignCenter); count.setFixedSize(24, 20); count.setStyleSheet(f"color: {count_color}; background: {count_bg}; font-size: 10px; font-weight: 700; border: none; border-radius: 9px;"); header.addWidget(count); column_layout.addLayout(header)
-            status_tasks = sorted([task for task in tasks if task.get("status", "planned") == status], key=lambda task: task.get("createdAt", ""))
+            status_tasks = ordered_board_tasks(tasks, date_key, status)
             if not status_tasks:
                 empty = QLabel("暂无任务\n新建任务或从其他状态移入"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
             for task in status_tasks:
@@ -3680,11 +3712,17 @@ class MainWindow(QMainWindow):
             return
         now = datetime.now().isoformat(timespec="seconds")
         previous_status = task.get("status", "planned") if task is not None else None
+        previous_date = task.get("date") if task is not None else None
         created = task is None
         if created:
             task = {"id": str(uuid.uuid4()), "createdAt": now}
             self.today_tasks.append(task)
         task.update(data); task["updatedAt"] = now
+        current_status = task.get("status", "planned")
+        if not created and (previous_status != current_status or previous_date != task.get("date")):
+            task["status"] = previous_status
+            task.pop("boardOrder", None)
+            reorder_task_board(self.today_tasks, task.get("id"), current_status, None)
         if created:
             record_task_status_event(task, None, task.get("status", "planned"), now, "manual")
         else:
@@ -3714,23 +3752,35 @@ class MainWindow(QMainWindow):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
         if not task_status_transition_allowed(task, status):
             return False
-        previous_status = task.get("status", "planned")
+        return MainWindow.move_task_on_board(self, task_id, status, None, source, allow_undo)
+
+    def move_task_on_board(self, task_id, status, target_index=None, source="drag", allow_undo=True):
+        task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
+        movement = reorder_task_board(self.today_tasks, task_id, status, target_index)
+        if task is None or not movement.get("changed"):
+            return False
+        previous_status = movement.get("previousStatus", "planned")
+        status_changed = previous_status != status
         now = datetime.now().isoformat(timespec="seconds")
-        record_task_status_event(task, previous_status, status, now, source)
-        task["status"] = status; task["updatedAt"] = now
-        completed_handoff = previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
-        reopened_handoff = previous_status == "done" and status != "done" and self.reopen_project_next_step(task, now, "undo" if source == "undo" else "task_reopen")
+        if status_changed:
+            record_task_status_event(task, previous_status, status, now, source)
+        task["updatedAt"] = now
+        completed_handoff = status_changed and previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
+        reopened_handoff = status_changed and previous_status == "done" and status != "done" and self.reopen_project_next_step(task, now, "undo" if source == "undo" else "task_reopen")
         save_json(TASKS_FILE, self.today_tasks)
         if completed_handoff or reopened_handoff:
             self.view_signature = None
             self.refresh(silent=True, scan=False)
             message = "任务已完成；项目已回到“需要下一步”，请明确后续动作" if completed_handoff else "任务已重新打开；项目下一步已同步恢复"
             self.statusBar().showMessage(message, 4500)
-        else:
+        elif status_changed:
             self.sync_project_workload(); self.view_signature = None
             self.render_today_tasks(); self.render()
             self.statusBar().showMessage(f"任务已移至“{TASK_STATUS[status]}”", 2200)
-        if allow_undo and source in {"manual", "selector", "drag"}:
+        else:
+            self.render_today_tasks()
+            self.statusBar().showMessage(f"“{task.get('title', '任务')}”已调整为第 {movement.get('targetIndex', 0) + 1} 项", 2200)
+        if status_changed and allow_undo and source in {"manual", "selector", "drag"}:
             self.offer_task_undo(task, previous_status, status, now)
         return True
 

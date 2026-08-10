@@ -61,7 +61,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Associate a task with a category, project, and optional Codex conversation.
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
 - Create a task directly in any board column with that state preselected.
-- Drag a task by its handle between Planned, In Progress, and Completed; the status selector remains available as an accessible fallback.
+- Drag a task by its handle to prioritize it within a column or move it between Planned, In Progress, and Completed; the saved order survives refreshes and restarts, while the status selector remains an accessible fallback.
 - Undo a recent manual status move from the status bar; reopening a completed project-next-action task restores the project handoff unless a newer next action already exists.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.

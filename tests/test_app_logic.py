@@ -384,6 +384,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
     def test_rollover_starts_a_new_daily_history_without_copying_old_events(self):
         tasks = [{
             "id": "old", "title": "Continue work", "status": "doing", "date": "2026-08-09",
+            "boardOrder": 3,
             "statusHistory": [{"at": "2026-08-09T09:00:00", "from": "planned", "to": "doing", "source": "manual"}],
         }]
         rolled, changed = APP.rollover_in_progress_tasks(tasks, "2026-08-10")
@@ -392,6 +393,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertEqual(len(carried["statusHistory"]), 1)
         self.assertEqual(carried["statusHistory"][0]["source"], "rollover")
         self.assertEqual(carried["statusHistory"][0]["to"], "doing")
+        self.assertNotIn("boardOrder", carried)
 
     def test_manual_status_move_offers_an_undo_without_bypassing_the_normal_engine(self):
         task = {"id": "task-1", "status": "planned", "statusHistory": []}
@@ -413,6 +415,34 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertEqual(task["status"], "doing")
         self.assertEqual(task["statusHistory"][-1]["source"], "drag")
         window.offer_task_undo.assert_called_once()
+
+    def test_same_column_drag_changes_priority_without_faking_a_status_event(self):
+        tasks = [
+            {"id": "first", "title": "First", "date": "2026-08-10", "status": "doing", "boardOrder": 0, "statusHistory": []},
+            {"id": "second", "title": "Second", "date": "2026-08-10", "status": "doing", "boardOrder": 1, "statusHistory": []},
+        ]
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=tasks,
+            render_today_tasks=Mock(),
+            statusBar=lambda: status_bar,
+        )
+        with patch.object(APP, "save_json"):
+            changed = APP.MainWindow.move_task_on_board(window, "second", "doing", 0, source="drag")
+        self.assertTrue(changed)
+        self.assertEqual([task["id"] for task in APP.ordered_board_tasks(tasks, "2026-08-10", "doing")], ["second", "first"])
+        self.assertEqual(tasks[1]["statusHistory"], [])
+        window.render_today_tasks.assert_called_once()
+
+    def test_reselecting_the_current_status_does_not_silently_reorder(self):
+        tasks = [
+            {"id": "first", "date": "2026-08-10", "status": "doing", "boardOrder": 0},
+            {"id": "second", "date": "2026-08-10", "status": "doing", "boardOrder": 1},
+        ]
+        window = SimpleNamespace(today_tasks=tasks)
+        changed = APP.MainWindow.set_task_status(window, "first", "doing", source="selector")
+        self.assertFalse(changed)
+        self.assertEqual([task["id"] for task in APP.ordered_board_tasks(tasks, "2026-08-10", "doing")], ["first", "second"])
 
     def test_undo_reenters_the_status_engine_and_rejects_stale_transitions(self):
         event = {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"}
