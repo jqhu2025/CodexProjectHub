@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -88,7 +88,7 @@ class ReviewDialogStructureTests(unittest.TestCase):
         parent.portfolio_review_queue = Mock(return_value=[project])
         dialog = APP.PortfolioReviewDialog(parent, [project])
         self.assertIn("到期复核 1", dialog.subtitle.text())
-        self.assertIn("缺项优先处理", dialog.subtitle.accessibleName())
+        self.assertIn("最久逾期优先", dialog.subtitle.accessibleName())
         dialog.render_current = Mock()
 
         dialog.open_current()
@@ -1446,15 +1446,38 @@ class ProjectManagementInteractionTests(unittest.TestCase):
     def test_project_confirmation_counts_keep_baseline_and_due_review_distinct(self):
         baseline = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
         incomplete = {**baseline, "objective": ""}
-        overdue = {**baseline, "reviewedAt": "2000-01-01T00:00:00"}
-        current = {**baseline, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        now = datetime.now()
+        overdue = {**baseline, "reviewedAt": (now - timedelta(days=11)).isoformat(timespec="seconds")}
+        current = {**baseline, "reviewedAt": now.isoformat(timespec="seconds")}
         counts = APP.project_confirmation_counts([baseline, incomplete, overdue, current])
         self.assertEqual(counts, {"governance": 1, "baseline": 1, "overdue": 1, "total": 3})
         self.assertEqual(
             APP.project_confirmation_batch_summary([baseline, incomplete, overdue, current]),
-            "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1",
+            "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1 · 最久逾期 4 天",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
+
+    def test_confirmation_urgency_never_mislabels_setup_work_as_overdue(self):
+        baseline = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        incomplete = {**baseline, "objective": ""}
+        invalid_date = {**baseline, "reviewedAt": "not-a-date"}
+        self.assertEqual(APP.project_review_urgency_summary([baseline, incomplete, invalid_date]), "")
+        self.assertNotIn("逾期", APP.project_confirmation_batch_summary([baseline, incomplete, invalid_date]))
+        self.assertNotIn("None", APP.project_review_summary(invalid_date))
+
+    def test_review_queue_orders_missing_data_then_real_debt_then_initial_baseline(self):
+        now = datetime.now()
+        baseline = {"id": "baseline", "name": "Baseline", "status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        incomplete = {**baseline, "id": "incomplete", "name": "Incomplete", "objective": ""}
+        older = {**baseline, "id": "older", "name": "Older", "reviewedAt": (now - timedelta(days=15)).isoformat(timespec="seconds")}
+        newer = {**baseline, "id": "newer", "name": "Newer", "reviewedAt": (now - timedelta(days=9)).isoformat(timespec="seconds")}
+        window = SimpleNamespace(
+            projects=[baseline, newer, older, incomplete],
+            execution_alignment_queue=Mock(return_value=[]),
+            lifecycle_calibration_queue=Mock(return_value=[]),
+        )
+        queue = APP.MainWindow.portfolio_review_queue(window)
+        self.assertEqual([project["id"] for project in queue], ["incomplete", "older", "newer", "baseline"])
 
     def test_guided_calibration_summaries_expose_pause_safety_and_choice_complexity(self):
         first = {"id": "first", "status": "active"}

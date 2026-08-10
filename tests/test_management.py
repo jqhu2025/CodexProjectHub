@@ -472,6 +472,20 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.project_review_phase(focus, now), "overdue")
         self.assertEqual(management.project_review_phase(normal, now), "current")
 
+    def test_review_overdue_days_excludes_baselines_and_measures_only_cadence_debt(self):
+        now = datetime(2026, 8, 10, 12, 0, 0)
+        baseline = {"status": "active", "priority": "normal"}
+        current = {"status": "active", "priority": "normal", "reviewedAt": "2026-08-05T12:00:00"}
+        due_today = {"status": "active", "priority": "normal", "reviewedAt": "2026-08-03T12:00:00"}
+        overdue = {"status": "active", "priority": "normal", "reviewedAt": "2026-07-30T12:00:00"}
+        paused = {"status": "paused", "priority": "normal", "reviewedAt": "2026-07-01T12:00:00"}
+
+        self.assertIsNone(management.project_review_overdue_days(baseline, now))
+        self.assertIsNone(management.project_review_overdue_days(current, now))
+        self.assertEqual(management.project_review_overdue_days(due_today, now), 0)
+        self.assertEqual(management.project_review_overdue_days(overdue, now), 4)
+        self.assertIsNone(management.project_review_overdue_days(paused, now))
+
     def test_explicit_project_review_is_auditable_without_fake_field_changes(self):
         project = {
             "id": "runtime-id", "savedId": "stable-id", "name": "Release",

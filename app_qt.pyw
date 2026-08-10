@@ -66,6 +66,7 @@ from codex_hub.management import (
     portfolio_execution_alignment_queue,
     project_review_status,
     project_review_phase,
+    project_review_overdue_days,
     project_management_validation_error,
     project_blocker_duration_label,
     project_completion_outcome,
@@ -1175,7 +1176,12 @@ def project_control_state(project):
     if review_due:
         if project_review_phase(project) == "baseline":
             return "review", "待建基线", "#315f9b", "#edf4ff", "尚未建立首次复核基线"
-        reason = f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
+        overdue_days = project_review_overdue_days(project)
+        reason = (
+            f"今天到达 {review_cadence} 天复核周期"
+            if overdue_days == 0 else
+            f"已逾期 {overdue_days} 天 · 上次复核距今 {review_age} 天 · {review_cadence} 天周期"
+        )
         return "review", "待复核", "#315f9b", "#edf4ff", reason
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
 
@@ -1183,8 +1189,13 @@ def project_control_state(project):
 def project_review_summary(project):
     due, age_days, cadence = project_review_status(project)
     reviewed_at = str((project or {}).get("reviewedAt") or "").strip()
-    if reviewed_at:
-        state = "已到复核周期" if due else f"{max(0, cadence - (age_days or 0))} 天后复核"
+    if reviewed_at and age_days is not None:
+        overdue_days = project_review_overdue_days(project)
+        state = (
+            ("今日到期" if overdue_days == 0 else f"已逾期 {overdue_days} 天")
+            if due else
+            f"{max(0, cadence - (age_days or 0))} 天后复核"
+        )
         return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}"
     if due:
         return f"尚未完成首次复核 · 确认后每 {cadence} 天自动提醒"
@@ -1207,6 +1218,32 @@ def project_confirmation_counts(projects):
     return counts
 
 
+def project_review_urgency_summary(projects, now=None):
+    """Describe only measured cadence debt; setup work is intentionally neutral."""
+    overdue_days = [
+        days
+        for project in projects or []
+        if project_management_scope_matches(project, "review")
+        for days in [project_review_overdue_days(project, now)]
+        if days is not None
+    ]
+    if not overdue_days:
+        return ""
+    longest = max(overdue_days)
+    return "今日到期" if longest == 0 else f"最久逾期 {longest} 天"
+
+
+def project_confirmation_priority_hint(projects):
+    counts = project_confirmation_counts(projects)
+    if counts["governance"]:
+        return "缺项优先处理"
+    if counts["overdue"]:
+        return "最久逾期优先"
+    if counts["baseline"]:
+        return "逐项建立基线"
+    return ""
+
+
 def project_confirmation_batch_summary(projects):
     """Summarize the remaining review batch without adding another dashboard."""
     counts = project_confirmation_counts(projects)
@@ -1219,6 +1256,9 @@ def project_confirmation_batch_summary(projects):
         parts.append(f"建基线 {counts['baseline']}")
     if counts["overdue"]:
         parts.append(f"到期复核 {counts['overdue']}")
+    urgency = project_review_urgency_summary(projects)
+    if urgency:
+        parts.append(urgency)
     return f"本轮剩余 {counts['total']} · " + " · ".join(parts)
 
 
@@ -4874,15 +4914,19 @@ class PortfolioReviewDialog(QDialog):
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
         batch_summary = project_confirmation_batch_summary(self.pending)
-        self.subtitle.setText(f"{batch_summary}；缺项优先处理" if remaining else batch_summary)
+        priority_hint = project_confirmation_priority_hint(self.pending)
+        self.subtitle.setText(f"{batch_summary}；{priority_hint}" if remaining and priority_hint else batch_summary)
         batch_explanation = (
             f"{batch_summary}\n"
             "补全：目标、阶段、健康度或下一步尚不完整\n"
             "建基线：资料完整，但尚未完成首次管理确认\n"
-            "到期复核：已经到达项目复核周期"
+            "到期复核：已有复核基线，并且已经到达项目复核周期\n"
+            "今日到期 / 最久逾期：只依据已建立基线后的真实周期计算"
         )
         self.subtitle.setToolTip(batch_explanation)
-        self.subtitle.setAccessibleName(f"项目确认批次。{batch_summary}。缺项优先处理")
+        self.subtitle.setAccessibleName(
+            f"项目确认批次。{batch_summary}。{priority_hint}" if priority_hint else f"项目确认批次。{batch_summary}"
+        )
         self.counter.setText(
             f"{self.reviewed_count + 1} / {total} · 总待确认 {self.portfolio_total}"
             if remaining else f"本轮完成 {self.reviewed_count}"
@@ -6153,7 +6197,15 @@ class MainWindow(QMainWindow):
             project for project in projects
             if not (project_reference_ids(project) & specific_refs)
         ]
-        return sorted(filtered, key=lambda project: 0 if project_governance_gaps(project) else 1)
+        def confirmation_order(project):
+            if project_governance_gaps(project):
+                return 0, 0, project_management_sort_key(project)
+            overdue_days = project_review_overdue_days(project)
+            if overdue_days is not None:
+                return 1, -overdue_days, project_management_sort_key(project)
+            return 2, 0, project_management_sort_key(project)
+
+        return sorted(filtered, key=confirmation_order)
 
     def show_portfolio_review_queue(self):
         projects = self.portfolio_review_queue()
@@ -6430,6 +6482,9 @@ class MainWindow(QMainWindow):
                         parts.append(f"建基线 {confirmation_counts['baseline']}")
                     if confirmation_counts["overdue"]:
                         parts.append(f"到期 {confirmation_counts['overdue']}")
+                    urgency = project_review_urgency_summary(projects)
+                    if urgency:
+                        parts.append(urgency)
                     summary = f"{' · '.join(parts)}：{preview}"
                 else:
                     summary = f"{prefixes[scope]}：{preview}"

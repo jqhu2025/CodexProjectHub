@@ -855,6 +855,14 @@ def project_review_phase(project, now=None):
     return "overdue" if due else "current"
 
 
+def project_review_overdue_days(project, now=None):
+    """Return real cadence debt, keeping first-time baselines out of aging."""
+    due, age_days, cadence = project_review_status(project, now)
+    if not due or age_days is None:
+        return None
+    return max(0, age_days - cadence)
+
+
 def display_project_decision_value(field, value):
     normalized = normalized_decision_value(value)
     if field == "priority":
