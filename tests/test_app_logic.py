@@ -102,6 +102,45 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(task_focus, "focus"))
         self.assertTrue(APP.project_management_scope_matches(codex_focus, "focus"))
 
+    def test_non_active_project_never_leaks_into_current_focus(self):
+        completed = {"status": "completed", "priority": "focus", "activeTaskCount": 1, "conversations": [{"state": "working"}]}
+        self.assertFalse(APP.project_focus_state(completed)[0])
+        self.assertFalse(APP.project_management_scope_matches(completed, "focus"))
+
+    def test_blocker_automatically_controls_health(self):
+        normalized, notes = APP.normalize_project_management_decision(
+            {"status": "active"},
+            {"status": "active", "stage": "execution", "health": "on_track", "blocker": "Awaiting calibration", "nextStep": "Validate"},
+        )
+        self.assertEqual(normalized["health"], "blocked")
+        self.assertTrue(notes)
+
+    def test_completed_project_is_closed_as_one_coherent_decision(self):
+        normalized, notes = APP.normalize_project_management_decision(
+            {"status": "active"},
+            {"status": "completed", "stage": "execution", "health": "blocked", "blocker": "Review", "nextStep": "Run again"},
+        )
+        self.assertEqual(normalized["stage"], "completion")
+        self.assertEqual(normalized["health"], "on_track")
+        self.assertEqual(normalized["blocker"], "")
+        self.assertEqual(normalized["nextStep"], "")
+        self.assertFalse(normalized["nextStepReviewNeeded"])
+        self.assertTrue(notes)
+
+    def test_blocked_health_requires_a_specific_reason(self):
+        self.assertIn("阻塞原因", APP.project_management_validation_error({"status": "active", "health": "blocked", "blocker": ""}))
+        self.assertEqual(APP.project_management_validation_error({"status": "completed", "health": "blocked", "blocker": ""}), "")
+
+    def test_open_project_tasks_use_stable_links_and_exclude_completed_work(self):
+        project = {"id": "current", "savedId": "stable"}
+        tasks = [
+            {"id": "planned", "projectId": "stable", "status": "planned"},
+            {"id": "doing", "projectId": "current", "status": "doing"},
+            {"id": "done", "projectId": "stable", "status": "done"},
+            {"id": "other", "projectId": "other", "status": "planned"},
+        ]
+        self.assertEqual([task["id"] for task in APP.open_project_tasks(tasks, project)], ["planned", "doing"])
+
     def test_portfolio_decision_groups_surface_actions_without_forcing_exclusivity(self):
         active_attention = {
             "name": "Active risk", "status": "active", "health": "attention",

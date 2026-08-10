@@ -1072,8 +1072,51 @@ def project_next_step_completion_update(project, task, completed_at):
     }
 
 
+def normalize_project_management_decision(current, requested):
+    """Keep project control fields coherent without overwriting deliberate active decisions."""
+    current = current or {}
+    normalized = dict(requested or {})
+    notes = []
+    status = normalized.get("status") if normalized.get("status") in STATUS_TEXT else current.get("status", "active")
+    normalized["status"] = status
+    blocker = normalized_decision_value(normalized.get("blocker"))
+    normalized["blocker"] = blocker
+    if status == "completed":
+        completion_values = {
+            "stage": "completion",
+            "health": "on_track",
+            "blocker": "",
+            "nextStep": "",
+            "nextStepReviewNeeded": False,
+        }
+        if any(normalized_decision_value(normalized.get(key)) != normalized_decision_value(value) for key, value in completion_values.items()):
+            notes.append("已对齐完成状态：收尾阶段、无阻塞、无待执行下一步")
+        normalized.update(completion_values)
+    elif blocker and normalized.get("health") != "blocked":
+        normalized["health"] = "blocked"
+        notes.append("已根据阻塞原因同步项目健康度")
+    return normalized, notes
+
+
+def project_management_validation_error(data):
+    data = data or {}
+    if data.get("status", "active") != "completed" and data.get("health") == "blocked" and not normalized_decision_value(data.get("blocker")):
+        return "项目标记为阻塞时，请写明具体阻塞原因。"
+    return ""
+
+
+def open_project_tasks(tasks, project):
+    return [
+        task for task in (tasks or [])
+        if task_matches_project(task, project) and task.get("status", "planned") != "done"
+    ]
+
+
 def project_focus_state(project):
     """Resolve the live portfolio focus from deliberate priority and actual work."""
+    if (project or {}).get("status", "active") != "active":
+        status_text = STATUS_TEXT.get((project or {}).get("status"), "非活动")
+        return False, "", f"项目状态为{status_text}，不计入当前重点", "#66758a", "#eef2f6"
     if project_priority_key(project) == "focus":
         return True, "重点", "已手动设为当前重点", "#7c3aed", "#f1eaff"
     active_tasks = int((project or {}).get("activeTaskCount") or 0)
@@ -1605,6 +1648,23 @@ class ProjectEditor(QDialog):
         if not self.fields["path"].text().strip():
             self.fields["path"].setFocus(); QMessageBox.information(self, "项目路径为空", "请选择项目所在文件夹。")
             return
+        data = self.value()
+        validation_error = project_management_validation_error(data)
+        if validation_error:
+            self.blocker.setFocus(); QMessageBox.information(self, "项目决策不完整", validation_error)
+            return
+        if self.project and self.project.get("status", "active") != "completed" and data.get("status") == "completed":
+            pending = open_project_tasks(getattr(self.parent(), "today_tasks", []), self.project)
+            if pending:
+                answer = QMessageBox.question(
+                    self,
+                    "项目仍有未完成任务",
+                    f"这个项目仍关联 {len(pending)} 项未完成任务。\n\n继续会完成项目本身，但不会改写这些任务，便于你逐项确认。是否继续？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
         self.accept()
 
     def value(self):
@@ -1617,7 +1677,7 @@ class ProjectEditor(QDialog):
         data["objective"] = self.objective.toPlainText().strip()
         data["nextStep"] = self.next_step.text().strip()
         data["blocker"] = self.blocker.text().strip()
-        return data
+        return normalize_project_management_decision(self.project, data)[0]
 
 
 class ElidedLabel(QLabel):
@@ -2659,6 +2719,21 @@ class ProjectWorkbenchDialog(QDialog):
         entries = self.window.project_decisions_for(self.project)
         ProjectDecisionHistoryDialog(self, self.project, entries).exec_()
 
+    def apply_management_values(self, data):
+        for control, key in (
+            (self.priority_field, "priority"),
+            (self.status_field, "status"),
+            (self.category_field, "category"),
+            (self.stage_field, "stage"),
+            (self.health_field, "health"),
+        ):
+            index = control.findData(data.get(key))
+            if index >= 0:
+                control.setCurrentIndex(index)
+        self.objective_field.setPlainText(str(data.get("objective") or ""))
+        self.next_step_field.setText(str(data.get("nextStep") or ""))
+        self.blocker_field.setText(str(data.get("blocker") or ""))
+
     def save_changes(self, notify=True):
         data = {
             "priority": self.priority_field.currentData(),
@@ -2670,15 +2745,36 @@ class ProjectWorkbenchDialog(QDialog):
             "nextStep": self.next_step_field.text().strip(),
             "blocker": self.blocker_field.text().strip(),
         }
-        self.window.update_project_management(self.project, data, notify=notify)
+        data, _notes = normalize_project_management_decision(self.project, data)
+        validation_error = project_management_validation_error(data)
+        if validation_error:
+            self.blocker_field.setFocus(); QMessageBox.information(self, "项目决策不完整", validation_error)
+            return False
+        if self.project.get("status", "active") != "completed" and data.get("status") == "completed":
+            pending = open_project_tasks(self.window.today_tasks, self.project)
+            if pending:
+                answer = QMessageBox.question(
+                    self,
+                    "项目仍有未完成任务",
+                    f"这个项目仍关联 {len(pending)} 项未完成任务。\n\n继续会完成项目本身，但不会改写这些任务，便于你逐项确认。是否继续？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return False
+        saved = self.window.update_project_management(self.project, data, notify=notify)
+        self.apply_management_values(saved or data)
         self.render_decision_history()
+        return True
 
     def new_task(self):
-        self.save_changes(notify=False)
+        if not self.save_changes(notify=False):
+            return
         self.window.new_project_task(self.project)
 
     def schedule_next_step(self):
-        self.save_changes(notify=False)
+        if not self.save_changes(notify=False):
+            return
         if self.window.schedule_project_next_step(self.project):
             self.render_tasks()
         self.render_tasks()
@@ -2688,7 +2784,8 @@ class ProjectWorkbenchDialog(QDialog):
         self.render_tasks()
 
     def continue_in_codex(self):
-        self.save_changes(notify=False)
+        if not self.save_changes(notify=False):
+            return
         self.window.continue_project(self.project)
         self.accept()
 
@@ -3730,6 +3827,12 @@ class MainWindow(QMainWindow):
     def update_project_management(self, project, data, notify=True):
         previous_category = project.get("category", "未分类")
         before = dict(project)
+        data, normalization_notes = normalize_project_management_decision(project, data)
+        validation_error = project_management_validation_error(data)
+        if validation_error:
+            if notify:
+                self.statusBar().showMessage(validation_error, 4000)
+            return None
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
@@ -3757,7 +3860,9 @@ class MainWindow(QMainWindow):
         self.view_signature = None
         self.refresh(silent=True, scan=False)
         if notify:
-            self.statusBar().showMessage("项目目标与下一步已保存", 2500)
+            message = normalization_notes[0] if normalization_notes else "项目目标与下一步已保存"
+            self.statusBar().showMessage(message, 3500 if normalization_notes else 2500)
+        return dict(target)
 
     def open_project_workspace(self, project):
         ProjectWorkbenchDialog(self, project).exec_()
