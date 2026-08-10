@@ -129,7 +129,7 @@ class ProjectDisplayStateTests(unittest.TestCase):
 class ProjectManagementInteractionTests(unittest.TestCase):
     def test_project_next_step_becomes_a_stably_linked_daily_task(self):
         project = {
-            "id": "current-id", "savedId": "stable-id", "category": "Research",
+            "id": "current-id", "savedId": "stable-id", "name": "Release", "category": "Research",
             "nextStep": "Run validation set",
         }
         task = APP.build_project_next_step_task(
@@ -140,6 +140,8 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(task["origin"], "project_next_step")
         self.assertEqual(task["status"], "planned")
         self.assertEqual(task["statusHistory"][0]["source"], "project")
+        self.assertEqual(task["projectNameSnapshot"], "Release")
+        self.assertEqual(task["projectCategorySnapshot"], "Research")
 
     def test_project_next_step_duplicate_detection_ignores_spacing_and_case(self):
         project = {"id": "current-id", "savedId": "stable-id"}
@@ -603,6 +605,24 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             queue = APP.MainWindow.portfolio_review_queue(window)
         self.assertEqual(queue, [incomplete, ready])
 
+    def test_task_editor_preserves_an_unresolved_historical_association(self):
+        date_value = Mock(); date_value.toString.return_value = "2026-08-10"
+        editor = SimpleNamespace(
+            project_field=SimpleNamespace(currentData=lambda: "old-project"),
+            projects=[], unresolved_project_id="old-project", unresolved_project_name="Original project",
+            task={"category": "Research", "projectCategorySnapshot": "Research", "conversationTitle": "Original conversation"},
+            conversation_field=SimpleNamespace(currentData=lambda: "old-session", currentText=lambda: "Original conversation · 历史关联"),
+            preferred_session_id="old-session",
+            title_field=SimpleNamespace(text=lambda: "Historical task"), category_field=SimpleNamespace(currentData=lambda: "Research"),
+            status_field=SimpleNamespace(currentData=lambda: "done"), date_field=SimpleNamespace(date=lambda: date_value),
+            notes_field=SimpleNamespace(toPlainText=lambda: ""), outcome_field=SimpleNamespace(toPlainText=lambda: "Completed"),
+        )
+        value = APP.TaskEditor.value(editor)
+        self.assertEqual(value["projectId"], "old-project")
+        self.assertEqual(value["projectNameSnapshot"], "Original project")
+        self.assertEqual(value["sessionId"], "old-session")
+        self.assertEqual(value["conversationTitle"], "Original conversation")
+
     def test_review_queue_defers_to_the_more_specific_lifecycle_decision(self):
         normal = {"id": "normal", "status": "active"}
         quiet = {"id": "quiet", "status": "active"}
@@ -1026,6 +1046,15 @@ class TaskStatusHistoryTests(unittest.TestCase):
 
 
 class DailySummaryTests(unittest.TestCase):
+    def test_payload_preserves_a_historical_project_snapshot_when_the_live_link_is_gone(self):
+        tasks = [{
+            "id": "task-1", "title": "Publish report", "date": "2026-08-08", "status": "done",
+            "projectId": "removed-project", "projectNameSnapshot": "Original project",
+        }]
+        payload = APP.build_daily_summary_payload(tasks, [], "2026-08-08")
+        self.assertEqual(payload["tasks"][0]["project"], "Original project（历史关联）")
+        self.assertEqual(payload["tasks"][0]["projectLinkState"], "historical")
+
     def test_payload_uses_only_requested_date_and_resolves_project(self):
         tasks = [
             {"date": "2026-08-08", "title": "Validate model", "status": "doing", "projectId": "p1", "notes": "Compare alpha", "completionNote": "Stale result"},

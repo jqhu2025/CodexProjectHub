@@ -36,6 +36,28 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(evidence["taskCount"], 1)
         self.assertEqual(evidence["conversationCount"], 1)
 
+    def test_task_project_identity_distinguishes_current_historical_orphan_and_unlinked(self):
+        task = {"projectId": "old", "projectNameSnapshot": "Original project"}
+        self.assertEqual(portfolio.task_project_identity(task, {"name": "Renamed project"}), {"name": "Renamed project", "state": "current"})
+        self.assertEqual(portfolio.task_project_identity(task), {"name": "Original project（历史关联）", "state": "historical"})
+        self.assertEqual(portfolio.task_project_identity({"projectId": "missing"})["state"], "orphan")
+        self.assertEqual(portfolio.task_project_identity({})["state"], "unlinked")
+
+    def test_snapshot_reconciliation_backfills_only_unique_resolved_links(self):
+        tasks = [
+            {"id": "resolved", "projectId": "stable"},
+            {"id": "preserved", "projectId": "stable", "projectNameSnapshot": "Original"},
+            {"id": "orphan", "projectId": "missing"},
+        ]
+        projects = [{"id": "runtime", "savedId": "stable", "name": "Current", "category": "Research"}]
+        changed = portfolio.reconcile_task_project_snapshots(tasks, projects)
+        self.assertEqual(changed, 3)
+        self.assertEqual(tasks[0]["projectNameSnapshot"], "Current")
+        self.assertEqual(tasks[0]["projectCategorySnapshot"], "Research")
+        self.assertEqual(tasks[1]["projectNameSnapshot"], "Original")
+        self.assertEqual(tasks[1]["projectCategorySnapshot"], "Research")
+        self.assertNotIn("projectNameSnapshot", tasks[2])
+
     def test_lifecycle_queue_excludes_focus_live_risk_and_nonactive_projects(self):
         now = datetime(2026, 8, 10, 12, 0, 0)
         stale = {"id": "stale", "name": "Stale", "status": "active", "priority": "normal", "health": "on_track", "conversations": [{"at": "2026-07-01T09:00:00", "state": "linked"}]}

@@ -53,6 +53,40 @@ def task_matches_project(task, project):
     return bool(project_id and project_id in project_reference_ids(project))
 
 
+def task_project_identity(task, project=None):
+    """Return a truthful task-project label without guessing a broken link."""
+    task = task or {}
+    project = project or {}
+    current_name = str(project.get("name") or "").strip()
+    if current_name:
+        return {"name": current_name, "state": "current"}
+    snapshot = str(task.get("projectNameSnapshot") or "").strip()
+    if snapshot:
+        return {"name": f"{snapshot}（历史关联）", "state": "historical"}
+    if str(task.get("projectId") or "").strip():
+        return {"name": "历史项目（关联已失效）", "state": "orphan"}
+    return {"name": "未关联项目", "state": "unlinked"}
+
+
+def reconcile_task_project_snapshots(tasks, projects):
+    """Backfill missing identity snapshots only when a unique live match exists."""
+    changed = 0
+    for task in tasks or []:
+        matches = [project for project in projects or [] if task_matches_project(task, project)]
+        if len(matches) != 1:
+            continue
+        project = matches[0]
+        additions = {
+            "projectNameSnapshot": str(project.get("name") or "").strip(),
+            "projectCategorySnapshot": str(project.get("category") or "未分类").strip(),
+        }
+        for field, value in additions.items():
+            if value and not str(task.get(field) or "").strip():
+                task[field] = value
+                changed += 1
+    return changed
+
+
 def _project_priority_key(project):
     value = str((project or {}).get("priority") or "normal")
     return value if value in PROJECT_PRIORITY else "normal"

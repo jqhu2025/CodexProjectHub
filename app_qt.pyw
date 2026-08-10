@@ -94,7 +94,9 @@ from codex_hub.portfolio import (
     project_lifecycle_calibration_state,
     project_live_work_state,
     project_reference_ids,
+    reconcile_task_project_snapshots,
     task_matches_project,
+    task_project_identity,
     task_wip_capacity_state,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
@@ -1048,6 +1050,8 @@ def build_project_next_step_task(project, target_date, now, conversation=None, t
         "title": title,
         "category": (project or {}).get("category") or "未分类",
         "projectId": stable_project_id,
+        "projectNameSnapshot": str((project or {}).get("name") or "").strip(),
+        "projectCategorySnapshot": str((project or {}).get("category") or "未分类").strip(),
         "sessionId": conversation.get("sessionId"),
         "conversationTitle": conversation_name(conversation) if conversation.get("sessionId") else "",
         "status": "planned",
@@ -1211,6 +1215,7 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
         if str(task.get("date") or "") != target_date:
             continue
         project = project_index.get(str(task.get("projectId") or ""), {})
+        project_identity = task_project_identity(task, project)
         transitions = [
             {
                 "at": str(event.get("at") or ""),
@@ -1223,7 +1228,8 @@ def build_daily_summary_payload(tasks, projects, target_date, project_decisions=
         selected_tasks.append({
             "title": str(task.get("title") or "未命名任务"),
             "status": TASK_STATUS.get(task.get("status", "planned"), "计划"),
-            "project": str(project.get("name") or "未关联项目"),
+            "project": project_identity["name"],
+            "projectLinkState": project_identity["state"],
             "notes": str(task.get("notes") or "").strip(),
             "completionOutcome": task_completion_outcome(task),
             "conversation": str(task.get("conversationTitle") or "").strip(),
@@ -2705,6 +2711,11 @@ class TaskEditor(QDialog):
         if current_project:
             current_project_id = current_project.get("id")
         current_category = (current_project or {}).get("category") or self.task.get("category")
+        if current_category and current_category not in categories:
+            categories.append(current_category)
+        self.unresolved_project_id = current_project_id if current_project is None and current_project_id else None
+        self.unresolved_project_name = str(self.task.get("projectNameSnapshot") or "").strip()
+        self.unresolved_category = current_category
         self.category_field = QComboBox(); self.project_field = QComboBox(); self.conversation_field = QComboBox()
         for category in categories: self.category_field.addItem(category, category)
         if current_category:
@@ -2747,6 +2758,10 @@ class TaskEditor(QDialog):
         selected = self.project_field.currentData() if self.project_field.count() else self.preferred_project_id
         category = self.category_field.currentData()
         self.project_field.blockSignals(True); self.project_field.clear()
+        self.project_field.addItem("不关联项目", None)
+        if self.unresolved_project_id and category == self.unresolved_category:
+            historical_name = self.unresolved_project_name or "历史项目（关联已失效）"
+            self.project_field.addItem(f"{historical_name} · 历史关联", self.unresolved_project_id)
         for project in self.projects:
             if (project.get("category") or "未分类") == category:
                 self.project_field.addItem(project.get("name", "未命名项目"), project.get("id"))
@@ -2761,6 +2776,9 @@ class TaskEditor(QDialog):
         self.conversation_field.clear(); self.conversation_field.addItem("不关联对话", None)
         project_id = self.project_field.currentData()
         project = next((item for item in self.projects if item.get("id") == project_id), None)
+        if project is None and project_id == self.unresolved_project_id and self.preferred_session_id:
+            historical_title = str(self.task.get("conversationTitle") or "历史对话").strip()
+            self.conversation_field.addItem(f"{historical_title} · 历史关联", self.preferred_session_id)
         for conversation in (project or {}).get("conversations", []):
             self.conversation_field.addItem(conversation_name(conversation), conversation.get("sessionId"))
         if selected:
@@ -2784,12 +2802,30 @@ class TaskEditor(QDialog):
         self.outcome_frame.setVisible(self.status_field.currentData() == "done")
 
     def value(self):
+        project_id = self.project_field.currentData()
+        project = next((item for item in self.projects if item.get("id") == project_id), None)
+        if project is not None:
+            project_name_snapshot = str(project.get("name") or "").strip()
+            project_category_snapshot = str(project.get("category") or "未分类").strip()
+        elif project_id == self.unresolved_project_id:
+            project_name_snapshot = self.unresolved_project_name
+            project_category_snapshot = str(self.task.get("projectCategorySnapshot") or self.task.get("category") or "未分类").strip()
+        else:
+            project_name_snapshot = ""
+            project_category_snapshot = ""
+        session_id = self.conversation_field.currentData()
+        if project_id == self.unresolved_project_id and session_id == self.preferred_session_id:
+            conversation_title = str(self.task.get("conversationTitle") or "").strip()
+        else:
+            conversation_title = self.conversation_field.currentText() if session_id else ""
         return {
             "title": self.title_field.text().strip(),
             "category": self.category_field.currentData(),
-            "projectId": self.project_field.currentData(),
-            "sessionId": self.conversation_field.currentData(),
-            "conversationTitle": self.conversation_field.currentText() if self.conversation_field.currentData() else "",
+            "projectId": project_id,
+            "projectNameSnapshot": project_name_snapshot,
+            "projectCategorySnapshot": project_category_snapshot,
+            "sessionId": session_id,
+            "conversationTitle": conversation_title,
             "status": self.status_field.currentData(),
             "date": self.date_field.date().toString(Qt.ISODate),
             "notes": self.notes_field.toPlainText().strip(),
@@ -2896,7 +2932,7 @@ class TodayTaskCard(QFrame):
         super().__init__()
         self.task_id = str((task or {}).get("id") or "")
         self.setObjectName("todayTaskCard")
-        project = window.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+        project = window.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
         conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or "未关联 Codex"
         conversation_state = codex_state(conversation)[0] if conversation else None
         accent = TASK_COLORS.get(task.get("status"), "#64748b")
@@ -3005,7 +3041,7 @@ class TaskAuditDialog(QDialog):
         eyebrow = QLabel("TASK RECORD"); eyebrow.setStyleSheet("color: #2563eb; font-size: 10px; font-weight: 750; letter-spacing: 1px;"); title_box.addWidget(eyebrow)
         title = QLabel(str(self.task.get("title") or "未命名任务")); title.setWordWrap(True)
         title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
-        project = self.window.project_by_id(self.task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+        project = self.window.project_by_id(self.task.get("projectId")); project_name = task_project_identity(self.task, project)["name"]
         conversation = self.window.conversation_by_id(self.task.get("sessionId"))
         conversation_title = conversation_name(conversation) if conversation else self.task.get("conversationTitle") or "未关联 Codex"
         task_date = QDate.fromString(str(self.task.get("date") or ""), Qt.ISODate)
@@ -3116,7 +3152,7 @@ class TaskHistoryRow(QFrame):
         dot = QLabel(); dot.setFixedSize(7, 7); dot.setStyleSheet(f"background: {color}; border-radius: 3px;"); layout.addWidget(dot)
         content = QVBoxLayout(); content.setSpacing(2)
         title = ElidedLabel(task.get("title") or "未命名任务"); title.setStyleSheet("color: #202b3c; font-size: 13px; font-weight: 600; border: none;"); content.addWidget(title)
-        project = window.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+        project = window.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
         carry_text = ""
         if task.get("carriedFromTaskId"):
             carry_text = f" · 延续自 {task.get('carriedFromDate', '前一天')}"
@@ -3262,7 +3298,7 @@ class TaskArchiveDialog(QDialog):
             dot = QLabel(); dot.setFixedSize(8, 8); dot.setStyleSheet(f"background: {accent}; border-radius: 4px;"); row_layout.addWidget(dot)
             text = QVBoxLayout(); text.setSpacing(3)
             name = ElidedLabel(task.get("title") or "未命名任务"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 680;"); text.addWidget(name)
-            project = self.window.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+            project = self.window.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
             task_date = QDate.fromString(str(task.get("date") or ""), Qt.ISODate)
             date_text = task_date.toString("yyyy年MM月dd日") if task_date.isValid() else str(task.get("date") or "日期未知")
             archived_at = format_project_decision_time(task.get("archivedAt"), compact=True)
@@ -3546,7 +3582,7 @@ class TaskWipDialog(QDialog):
         text = QVBoxLayout(); text.setSpacing(3)
         title = ElidedLabel(task.get("title") or "未命名任务"); title.setToolTip(task.get("title") or "未命名任务"); title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(title)
         project = self.window.project_by_id(task.get("projectId")) or {}
-        meta_text = f"{project.get('name') or task.get('category') or '未关联项目'}  ·  {task.get('conversationTitle') or '未关联 Codex 对话'}"
+        meta_text = f"{task_project_identity(task, project)['name']}  ·  {task.get('conversationTitle') or '未关联 Codex 对话'}"
         meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
         state = QLabel("● Codex 运行中" if protected else "进行中"); state.setAlignment(Qt.AlignCenter); state.setFixedSize(96 if protected else 66, 26)
         state.setStyleSheet(("color: #087443; background: #e7f7ef;" if protected else "color: #1d4ed8; background: #e8f0ff;") + " border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(state)
@@ -5208,6 +5244,10 @@ class MainWindow(QMainWindow):
             self.project_decisions = stored_decisions
         self.saved_projects = load_json(PROJECTS_FILE, [])
         self.projects = visible_project_catalog(self.saved_projects, self.project_layout)
+        snapshot_updates = reconcile_task_project_snapshots(self.today_tasks, self.projects)
+        if snapshot_updates:
+            save_json(TASKS_FILE, self.today_tasks)
+            self.render_today_tasks()
         events = self.live_sessions
         conversations = conversations_by_project(events)
         for project in self.projects:
@@ -5859,7 +5899,7 @@ class MainWindow(QMainWindow):
             icon = QLabel(); icon.setFixedSize(24, 24); icon.setPixmap(fluent_icon("\uE8A7", color=accent, size=15).pixmap(QSize(15, 15))); icon.setAlignment(Qt.AlignCenter)
             icon.setStyleSheet(f"background: { {'planned':'#f1eaff','doing':'#e6f1ff','done':'#e4f7ed'}.get(status, '#eef4fb') }; border: 1px solid {accent}; border-radius: 6px;"); row_layout.addWidget(icon)
             kind = QLabel(action_names.get(status, "任务更新")); kind.setFixedWidth(76); kind.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(kind)
-            project = self.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+            project = self.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
             description = ElidedLabel(f"{task.get('title') or '未命名任务'}  ·  {project_name}"); description.setStyleSheet("color: #34445c; font-size: 12px;"); row_layout.addWidget(description, 1)
             source_text = TASK_EVENT_SOURCES.get(event.get("source"), "手动")
             source = QLabel(source_text); source.setStyleSheet("color: #748094; font-size: 11px;"); row_layout.addWidget(source)
