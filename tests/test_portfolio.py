@@ -385,6 +385,32 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual([item["task"]["id"] for item in focus_fallback], ["later", "normal", "focus"])
         self.assertIn("其他候选不足", focus_fallback[-1]["reason"])
 
+    def test_wip_decisions_explain_every_task_without_weakening_runtime_protection(self):
+        tasks = [
+            {"id": "focus", "projectId": "focus-project", "date": "2026-08-10", "status": "doing", "boardOrder": 0},
+            {"id": "later", "projectId": "later-project", "date": "2026-08-10", "status": "doing", "boardOrder": 1},
+            {"id": "normal", "projectId": "normal-project", "date": "2026-08-10", "status": "doing", "boardOrder": 2},
+            {"id": "protected", "projectId": "later-project", "date": "2026-08-10", "status": "doing", "sessionId": "live"},
+        ]
+        projects = [
+            {"id": "focus-project", "priority": "focus"},
+            {"id": "later-project", "priority": "later"},
+            {"id": "normal-project", "priority": "normal"},
+        ]
+        state = portfolio.task_wip_capacity_state(tasks, "2026-08-10", 2, {"live"})
+        recommendations = portfolio.wip_deferral_recommendations(
+            tasks, projects, "2026-08-10", state["overBy"], {"protected"}
+        )
+        decisions = portfolio.wip_task_decisions(state, recommendations, projects)
+        self.assertEqual(decisions["later"]["action"], "defer")
+        self.assertEqual(decisions["normal"]["action"], "queued")
+        self.assertIn("后续候选", decisions["normal"]["label"])
+        self.assertEqual(decisions["focus"]["action"], "keep")
+        self.assertIn("当前重点", decisions["focus"]["reason"])
+        self.assertEqual(decisions["protected"]["action"], "protected")
+        self.assertIn("Codex", decisions["protected"]["reason"])
+        self.assertEqual(decisions["protected"]["priorityLabel"], "稍后处理")
+
     def test_capacity_settings_are_bounded(self):
         self.assertEqual(portfolio.normalized_portfolio_focus_capacity(0), 1)
         self.assertEqual(portfolio.normalized_portfolio_focus_capacity(20), 9)

@@ -127,6 +127,7 @@ from codex_hub.portfolio import (
     task_project_link_issues,
     task_wip_capacity_state,
     wip_deferral_recommendations,
+    wip_task_decisions,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 from codex_hub.storage import consume_json_recovery_events, load_json, save_json
@@ -4395,8 +4396,8 @@ class TaskWipDialog(QDialog):
         self.target_date = str(target_date or "")
         self.setWindowTitle("进行中容量")
         self.setObjectName("taskWipDialog")
-        self.setMinimumSize(720, 500)
-        self.resize(780, 570)
+        self.setMinimumSize(760, 560)
+        self.resize(840, 680)
         self.setStyleSheet(STYLE)
         root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
 
@@ -4482,6 +4483,7 @@ class TaskWipDialog(QDialog):
             state["overBy"],
             protected_ids,
         )
+        self.task_decisions = wip_task_decisions(state, self.recommendations, self.window.projects)
         primary_recommendation = self.recommendations[0] if self.recommendations else None
         if state["overBy"] and primary_recommendation:
             task = primary_recommendation["task"]
@@ -4490,6 +4492,7 @@ class TaskWipDialog(QDialog):
             self.guidance_text.setText(
                 f"建议收敛“{task.get('title') or '未命名任务'}”。依据：{primary_recommendation['reason']}。"
                 f"影响：任务回到计划并保留全部记录；{remaining_text}。"
+                "规则：先保护运行中的 Codex，再按项目优先级和你的看板顺序判断。"
             )
             self.guidance_icon.setPixmap(fluent_icon("\uE8EF", color="#b54708", size=15).pixmap(QSize(15, 15)))
             self.guidance_icon.setStyleSheet("background: #f8e7cd; border-radius: 7px;")
@@ -4498,7 +4501,7 @@ class TaskWipDialog(QDialog):
             self.recommend_button.setToolTip(f"移回计划：{task.get('title') or '未命名任务'}")
             self.recommend_button.setStyleSheet("QPushButton { color: #9a3412; background: #ffffff; border: 1px solid #e7bd82; border-radius: 8px; padding: 4px 10px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #fff3df; border-color: #c98b36; }")
         elif state["overBy"]:
-            self.guidance_text.setText("当前超载任务均由 Codex 运行保护，暂不建议移回计划；可等待运行结束，或主动调整 WIP 容量。")
+            self.guidance_text.setText("当前超载任务均由 Codex 运行保护，暂不建议移回计划；可等待运行结束，或主动调整 WIP 容量。运行保护始终高于项目优先级和看板顺序。")
             self.guidance_icon.setPixmap(fluent_icon("\uE7BA", color="#b54708", size=15).pixmap(QSize(15, 15)))
             self.guidance_icon.setStyleSheet("background: #f8e7cd; border-radius: 7px;")
             self.guidance.setStyleSheet("QFrame#taskWipGuidance { background: #fff8ed; border: 1px solid #efd7b4; border-radius: 9px; }")
@@ -4515,36 +4518,41 @@ class TaskWipDialog(QDialog):
             empty = QLabel("当前没有进行中的任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;"); self.rows_layout.addWidget(empty)
         for task in state["doing"]:
             task_id = str(task.get("id") or "")
-            self.rows_layout.addWidget(self.task_row(
-                task,
-                task_id in protected_ids,
-                task_id == recommended_id,
-                recommended_reason if task_id == recommended_id else "",
-            ))
+            decision = dict(self.task_decisions.get(task_id) or {})
+            if task_id == recommended_id and recommended_reason:
+                decision["reason"] = recommended_reason
+            self.rows_layout.addWidget(self.task_row(task, decision))
         self.rows_layout.addStretch()
 
-    def task_row(self, task, protected, recommended=False, recommendation_reason=""):
+    def task_row(self, task, decision):
+        action = str((decision or {}).get("action") or "keep")
+        protected = action == "protected"
+        recommended = action == "defer"
+        queued = action == "queued"
+        decision_reason = str((decision or {}).get("reason") or "当前在制任务")
         row = QFrame(); row.setObjectName("taskWipRow")
-        accent = "#10a361" if protected else ("#d97706" if recommended else "#2563eb")
+        accent = "#10a361" if protected else ("#d97706" if recommended or queued else "#2563eb")
         row.setStyleSheet(f"QFrame#taskWipRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#taskWipRow QLabel {{ background: transparent; border: none; }}")
         layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
         text = QVBoxLayout(); text.setSpacing(3)
         title = ElidedLabel(task.get("title") or "未命名任务"); title.setToolTip(task.get("title") or "未命名任务"); title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(title)
         project = self.window.project_by_id(task.get("projectId")) or {}
         meta_text = f"{task_project_identity(task, project)['name']}  ·  {task.get('conversationTitle') or '未关联 Codex 对话'}"
-        meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
-        state_text = "● Codex 运行中" if protected else ("建议移回" if recommended else "进行中")
-        state = QLabel(state_text); state.setAlignment(Qt.AlignCenter); state.setFixedSize(96 if protected else (72 if recommended else 66), 26)
-        state_style = "color: #087443; background: #e7f7ef;" if protected else ("color: #9a3412; background: #fff1dc;" if recommended else "color: #1d4ed8; background: #e8f0ff;")
+        meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 11px;"); text.addWidget(meta)
+        basis_text = f"管理依据 · {(decision or {}).get('priorityLabel') or '常规推进'} · {decision_reason}"
+        basis = ElidedLabel(basis_text); basis.setToolTip(basis_text)
+        basis.setStyleSheet(f"color: {accent}; font-size: 10px; font-weight: 600;"); text.addWidget(basis); layout.addLayout(text, 1)
+        state_text = str((decision or {}).get("label") or "建议保留")
+        state = QLabel(state_text); state.setAlignment(Qt.AlignCenter); state.setFixedSize(88 if queued else 78, 26)
+        state_style = "color: #087443; background: #e7f7ef;" if protected else ("color: #9a3412; background: #fff1dc;" if recommended or queued else "color: #1d4ed8; background: #e8f0ff;")
         state.setStyleSheet(state_style + " border-radius: 8px; font-size: 10px; font-weight: 650;")
-        if recommendation_reason:
-            state.setToolTip(recommendation_reason)
+        state.setToolTip(decision_reason)
         layout.addWidget(state)
         if task.get("sessionId"):
             open_codex = QToolButton(); open_codex.setFixedSize(34, 34); open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_codex.setIconSize(QSize(14, 14)); open_codex.setToolTip("打开关联的 Codex 对话")
             open_codex.clicked.connect(lambda _checked=False, value=task: self.open_codex_task(value)); layout.addWidget(open_codex)
-        defer = QPushButton("执行中保护" if protected else "移回计划"); defer.setFixedSize(96 if protected else 90, 34); defer.setEnabled(not protected)
-        defer.setToolTip("Codex 正在执行，不能移回计划" if protected else "保留任务与全部历史记录，只将状态改回计划")
+        defer = QPushButton("运行保护" if protected else "移回计划"); defer.setFixedSize(90, 34); defer.setEnabled(not protected)
+        defer.setToolTip("Codex 正在执行，不能移回计划" if protected else f"{decision_reason}。仍可由你决定移回计划；全部历史记录会保留")
         if protected:
             defer.setStyleSheet("QPushButton:disabled { color: #708097; background: #eef2f6; border: 1px solid #d8e1eb; border-radius: 8px; font-size: 11px; font-weight: 650; }")
         elif recommended:

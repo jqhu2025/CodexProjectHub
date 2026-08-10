@@ -810,5 +810,77 @@ def wip_deferral_recommendations(tasks, projects, target_date, over_by, protecte
             reason = "看板顺序最低；仅在其他候选不足时建议"
         else:
             reason = "非战略重点，且看板顺序靠后"
-        result.append({"task": task, "project": project, "reason": reason})
+        result.append({
+            "task": task,
+            "project": project,
+            "priority": priority,
+            "boardPosition": position,
+            "reason": reason,
+        })
     return result
+
+
+def wip_task_decisions(state, recommendations, projects):
+    """Explain the role of every in-progress task in one WIP decision.
+
+    The recommendation algorithm remains deliberately conservative and moves
+    one task at a time.  This companion view makes the complete reasoning
+    visible: active Codex work is protected, the first reduction is explicit,
+    additional reductions are queued, and everything else has a concrete keep
+    reason instead of appearing to be ignored.
+    """
+    state = state or {}
+    recommendations = list(recommendations or [])
+    protected_ids = {
+        str(task.get("id") or "")
+        for task in state.get("protected") or []
+        if task.get("id")
+    }
+    recommendation_rank = {
+        str((item.get("task") or {}).get("id") or ""): (index, item)
+        for index, item in enumerate(recommendations, start=1)
+        if (item.get("task") or {}).get("id")
+    }
+    project_index = {
+        reference: project
+        for project in projects or []
+        for reference in project_reference_ids(project)
+    }
+    over_by = max(0, int(state.get("overBy") or 0))
+    decisions = {}
+    for task in state.get("doing") or []:
+        task_id = str(task.get("id") or "")
+        project = project_index.get(str(task.get("projectId") or ""))
+        priority = str((project or {}).get("priority") or "normal")
+        if priority not in PROJECT_PRIORITY:
+            priority = "normal"
+        priority_label = PROJECT_PRIORITY.get(priority, PROJECT_PRIORITY["normal"])
+        if task_id in protected_ids:
+            decision = {
+                "action": "protected",
+                "label": "运行保护",
+                "reason": "关联的 Codex 对话仍在运行，避免中断正在执行的工作",
+            }
+        elif task_id in recommendation_rank:
+            rank, recommendation = recommendation_rank[task_id]
+            if rank == 1:
+                action, label = "defer", "优先收敛"
+                reason = str(recommendation.get("reason") or "当前是最合适的可逆收敛项")
+            else:
+                action, label = "queued", f"后续候选 {rank}"
+                reason = f"若上一项处理后仍超载，再考虑本项；{recommendation.get('reason') or '排序次于当前建议'}"
+            decision = {"action": action, "label": label, "reason": reason}
+        elif over_by:
+            if priority == "focus":
+                reason = "所属项目是当前重点，本轮优先保留"
+            else:
+                reason = "优先级或看板顺序高于当前收敛候选，本轮建议保留"
+            decision = {"action": "keep", "label": "建议保留", "reason": reason}
+        else:
+            decision = {"action": "keep", "label": "容量内", "reason": "当前在制任务未超过设定容量"}
+        decisions[task_id] = {
+            **decision,
+            "priority": priority,
+            "priorityLabel": priority_label,
+        }
+    return decisions
