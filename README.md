@@ -33,7 +33,7 @@ All screenshots use fictional sample data. They do not contain real project path
 ### Project management
 
 - Organize work as **category → project → Codex conversation**.
-- Create, edit, remove, and reorder projects.
+- Create, edit, archive, restore, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
 - Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
@@ -45,6 +45,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
 - Keep a local, source-labelled history of real project-decision changes, including manual edits, Codex suggestions, category moves, and completed next-action handoffs.
+- Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links.
 - Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, and completion warns when linked tasks remain open without rewriting them.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
 - Filter the portfolio by current focus, missing next action, or paused/idea state.
@@ -52,7 +53,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Expand a project to view its linked Codex conversations.
 - Continue a project by copying its handoff context and opening the running or most recent Codex conversation.
 
-Removing a project from the application does not delete its folder or Codex conversations.
+Archiving a project removes it from the active portfolio without deleting its management record, folder, or Codex conversations. Archived projects can be restored from the project page.
 
 ### Daily tasks
 
@@ -177,7 +178,7 @@ Runtime data is stored in the `data` directory:
 | `data/today_tasks.json` | Daily tasks and optional conversation references. |
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
 | `data/settings.json` | Local configuration, including the optional summary conversation ID. |
-| `data/project_layout.json` | Project order and hidden-project settings. |
+| `data/project_layout.json` | Project order and recoverable archive settings. |
 | `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, and next-action changes. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.

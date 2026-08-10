@@ -34,6 +34,7 @@ from codex_hub.management import (
     TASK_COLORS,
     TASK_EVENT_SOURCES,
     TASK_STATUS,
+    archive_project_layout,
     build_project_decision_entry,
     compact_project_decision_value,
     display_project_decision_value,
@@ -48,6 +49,7 @@ from codex_hub.management import (
     project_next_step_reopen_update,
     record_task_status_event,
     rollover_in_progress_tasks,
+    restore_project_layout,
     task_status_events,
     task_status_transition_allowed,
 )
@@ -276,6 +278,21 @@ def visible_project_catalog(saved_projects, layout):
 
     projects.sort(key=order_key)
     return projects
+
+
+def archived_project_catalog(saved_projects, layout):
+    """Return recoverable projects hidden from the active portfolio."""
+    archived_ids = set((layout or {}).get("hiddenProjectIds") or [])
+    if not archived_ids:
+        return []
+    complete_layout = {
+        **(layout or {}),
+        "hiddenProjectIds": [],
+    }
+    return [
+        project for project in visible_project_catalog(saved_projects, complete_layout)
+        if project.get("id") in archived_ids
+    ]
 
 
 def sidebar_thread_project_map(projects):
@@ -2063,7 +2080,7 @@ class ProjectGroup(QFrame):
         down_action = project_menu.addAction(fluent_icon("\uE74B", size=14), "向下移动"); down_action.triggered.connect(lambda: window.move_project(project, 1))
         project_menu.addSeparator()
         edit_action = project_menu.addAction(fluent_icon("\uE70F", size=14), "编辑项目"); edit_action.triggered.connect(lambda: window.edit_project(project))
-        delete_action = project_menu.addAction(fluent_icon("\uE74D", color="#b42318", size=14), "从项目中心移除"); delete_action.triggered.connect(lambda: window.delete_project(project))
+        delete_action = project_menu.addAction(fluent_icon("\uE7B8", color="#526071", size=14), "归档项目"); delete_action.triggered.connect(lambda: window.delete_project(project))
         more.setMenu(project_menu); more.setPopupMode(QToolButton.InstantPopup); layout.addWidget(more); root.addWidget(header)
         self.details = QFrame(); self.details.setObjectName("conversationDetails"); self.details.setStyleSheet("QFrame#conversationDetails { background: #f7f9fc; border: none; border-top: 1px solid #e3e9f0; border-radius: 0 0 10px 10px; }")
         detail_layout = QVBoxLayout(self.details); detail_layout.setContentsMargins(54, 8, 12, 10); detail_layout.setSpacing(6)
@@ -2123,6 +2140,75 @@ class CategoryOrderDialog(QDialog):
 
     def value(self):
         return [self.category_list.item(index).text() for index in range(self.category_list.count())]
+
+
+class ArchivedProjectsDialog(QDialog):
+    def __init__(self, parent, projects):
+        super().__init__(parent)
+        self.window = parent
+        self.projects = list(projects or [])
+        self.setWindowTitle("项目归档箱")
+        self.setObjectName("archivedProjectsDialog")
+        self.setMinimumSize(680, 440)
+        self.resize(740, 500)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE7B8", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("项目归档箱"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        hint = QLabel("归档只影响项目中心视图，不会删除本地文件或 Codex 对话；需要时可以随时恢复。")
+        hint.setWordWrap(True); hint.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(hint); heading.addLayout(title_box, 1)
+        self.count_label = QLabel(); self.count_label.setAlignment(Qt.AlignCenter); self.count_label.setFixedHeight(30)
+        self.count_label.setStyleSheet("color: #315f9b; background: #edf3ff; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.count_label)
+        root.addLayout(heading)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.content = QWidget(); self.content.setStyleSheet("background: transparent;")
+        self.rows = QVBoxLayout(self.content); self.rows.setContentsMargins(0, 0, 6, 0); self.rows.setSpacing(8)
+        scroll.setWidget(self.content); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.addStretch()
+        close = QPushButton("关闭"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_rows()
+
+    def render_rows(self):
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.count_label.setText(f"{len(self.projects)} 个项目")
+        if not self.projects:
+            empty = QFrame(); empty.setObjectName("archiveEmpty"); empty.setMinimumHeight(220)
+            empty.setStyleSheet("QFrame#archiveEmpty { background: #ffffff; border: 1px dashed #cbd5e1; border-radius: 12px; }")
+            empty_layout = QVBoxLayout(empty); empty_layout.setAlignment(Qt.AlignCenter); empty_layout.setSpacing(8)
+            empty_icon = QLabel(); empty_icon.setFixedSize(40, 40); empty_icon.setAlignment(Qt.AlignCenter)
+            empty_icon.setPixmap(fluent_icon("\uE7B8", color="#7890aa", size=19).pixmap(QSize(19, 19))); empty_icon.setStyleSheet("background: #eef3f8; border-radius: 10px;"); empty_layout.addWidget(empty_icon, 0, Qt.AlignCenter)
+            empty_title = QLabel("归档箱为空"); empty_title.setStyleSheet("color: #34445c; font-size: 15px; font-weight: 700;"); empty_layout.addWidget(empty_title, 0, Qt.AlignCenter)
+            empty_hint = QLabel("从项目列表归档的项目会安全保存在这里"); empty_hint.setStyleSheet("color: #748094; font-size: 11px;"); empty_layout.addWidget(empty_hint, 0, Qt.AlignCenter)
+            self.rows.addWidget(empty); self.rows.addStretch(); return
+        for project in self.projects:
+            row = QFrame(); row.setObjectName("archivedProjectRow"); row.setFixedHeight(68)
+            row.setStyleSheet("QFrame#archivedProjectRow { background: #ffffff; border: 1px solid #dbe3ee; border-radius: 10px; }")
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(14, 8, 10, 8); row_layout.setSpacing(12)
+            project_icon = QLabel(); project_icon.setFixedSize(34, 34); project_icon.setAlignment(Qt.AlignCenter)
+            project_icon.setPixmap(fluent_icon("\uE8B7", color="#526f93", size=17).pixmap(QSize(17, 17))); project_icon.setStyleSheet("background: #f0f4f8; border-radius: 9px;"); row_layout.addWidget(project_icon)
+            text = QVBoxLayout(); text.setSpacing(2)
+            name = ElidedLabel(project.get("name") or "未命名项目"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 680;"); text.addWidget(name)
+            origin = "Codex 同步项目" if project.get("codexProjectId") else "本地手建项目"
+            meta = QLabel(f"{project.get('category', '未分类')}  ·  {origin}"); meta.setStyleSheet("color: #748094; font-size: 11px;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            restore = QPushButton("恢复项目"); restore.setFixedSize(92, 36); restore.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); restore.setIconSize(QSize(13, 13))
+            restore.setToolTip("恢复到原分类和原有排序"); restore.clicked.connect(lambda _checked=False, value=project: self.restore_project(value)); row_layout.addWidget(restore)
+            self.rows.addWidget(row)
+        self.rows.addStretch()
+
+    def restore_project(self, project):
+        if self.window.restore_project(project):
+            self.projects = [item for item in self.projects if item.get("id") != project.get("id")]
+            self.render_rows()
 
 
 class TaskEditor(QDialog):
@@ -2915,6 +3001,9 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("集中管理项目阶段、健康度、阻塞项、下一步与 Codex 工作上下文")
         subtitle.setStyleSheet("color: #66758a; font-size: 13px;"); heading_text.addWidget(subtitle)
         heading.addLayout(heading_text); heading.addStretch()
+        self.archive_button = QPushButton("归档箱"); self.archive_button.setFixedHeight(40)
+        self.archive_button.setIcon(fluent_icon("\uE7B8", color="#42526a", size=15)); self.archive_button.setIconSize(QSize(15, 15))
+        self.archive_button.setToolTip("查看并恢复从项目中心归档的项目"); self.archive_button.clicked.connect(self.show_archived_projects); heading.addWidget(self.archive_button)
         new_project = QPushButton("新建项目"); new_project.setIcon(fluent_icon("\uE710", color="#ffffff", size=15)); new_project.setIconSize(QSize(15, 15)); new_project.setObjectName("primary"); new_project.setFixedHeight(40); new_project.clicked.connect(lambda: self.edit_project(None)); heading.addWidget(new_project); main_layout.addLayout(heading)
         tools = QHBoxLayout(); tools.setSpacing(8)
         self.search = QLineEdit(); self.search.setFixedHeight(42); self.search.setPlaceholderText("搜索项目、分类或 Codex 对话"); self.search.setClearButtonEnabled(True); self.search.textChanged.connect(self.render); tools.addWidget(self.search, 1)
@@ -3976,26 +4065,41 @@ class MainWindow(QMainWindow):
         ids[index], ids[target] = ids[target], ids[index]
         self.reorder_projects(category, ids)
 
-    def delete_project(self, project):
-        message = f"确定从项目中心移除“{project.get('name', '未命名项目')}”吗？\n\n不会删除磁盘文件，也不会删除 Codex 对话。"
-        if QMessageBox.question(self, "移除项目", message) != QMessageBox.Yes:
-            return
-        project_id = project.get("id")
-        if project.get("codexProjectId"):
-            hidden = self.project_layout.setdefault("hiddenProjectIds", [])
-            if project_id not in hidden:
-                hidden.append(project_id)
-        else:
-            saved_id = project.get("savedId")
-            self.saved_projects = [item for item in self.saved_projects if item.get("id") != saved_id]
-            save_json(PROJECTS_FILE, self.saved_projects)
-        for values in self.project_layout.setdefault("categoryOrders", {}).values():
-            while project_id in values:
-                values.remove(project_id)
+    def archived_projects(self):
+        return archived_project_catalog(self.saved_projects, self.project_layout)
+
+    def show_archived_projects(self):
+        ArchivedProjectsDialog(self, self.archived_projects()).exec_()
+
+    def restore_project(self, project):
+        project_id = str((project or {}).get("id") or "")
+        updated_layout, changed = restore_project_layout(self.project_layout, project_id)
+        if not changed:
+            return False
+        self.project_layout = updated_layout
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
-        self.statusBar().showMessage("项目已从项目中心移除", 2500)
+        self.statusBar().showMessage(f"{project.get('name', '项目')} 已恢复到项目中心", 2500)
+        return True
+
+    def delete_project(self, project):
+        message = (
+            f"确定归档“{project.get('name', '未命名项目')}”吗？\n\n"
+            "项目会离开当前项目列表，但保留全部本地管理信息；之后可从“归档箱”恢复。\n"
+            "不会删除磁盘文件，也不会删除 Codex 对话。"
+        )
+        if QMessageBox.question(self, "归档项目", message) != QMessageBox.Yes:
+            return
+        project_id = project.get("id")
+        self.project_layout, changed = archive_project_layout(self.project_layout, project_id)
+        if not changed:
+            self.statusBar().showMessage("项目已经在归档箱中", 2000)
+            return
+        save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        self.view_signature = None
+        self.refresh(silent=True, scan=False)
+        self.statusBar().showMessage("项目已归档，可随时从归档箱恢复", 2800)
 
     def shown(self):
         query = self.search.text().strip().lower()
@@ -4039,6 +4143,9 @@ class MainWindow(QMainWindow):
 
     def render(self):
         projects = self.shown()
+        if hasattr(self, "archive_button"):
+            archived_count = len(self.archived_projects())
+            self.archive_button.setText(f"归档箱  {archived_count}" if archived_count else "归档箱")
         if hasattr(self, "project_result_count"):
             self.project_result_count.setText(f"{len(projects)} 个项目")
         if not projects:

@@ -57,6 +57,31 @@ PROJECT_DECISION_SOURCES = {
 }
 
 
+def archive_project_layout(layout, project_id):
+    """Add a project to the recoverable archive without touching its record."""
+    updated = dict(layout or {})
+    hidden = [str(value) for value in updated.get("hiddenProjectIds", []) if value]
+    project_id = str(project_id or "")
+    if not project_id or project_id in hidden:
+        updated["hiddenProjectIds"] = hidden
+        return updated, False
+    hidden.append(project_id)
+    updated["hiddenProjectIds"] = hidden
+    return updated, True
+
+
+def restore_project_layout(layout, project_id):
+    """Remove a project from the archive while preserving category ordering."""
+    updated = dict(layout or {})
+    hidden = [str(value) for value in updated.get("hiddenProjectIds", []) if value]
+    project_id = str(project_id or "")
+    if not project_id or project_id not in hidden:
+        updated["hiddenProjectIds"] = hidden
+        return updated, False
+    updated["hiddenProjectIds"] = [value for value in hidden if value != project_id]
+    return updated, True
+
+
 def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
     """Append one real task status transition, avoiding no-op events."""
     if not isinstance(task, dict) or status not in TASK_STATUS:

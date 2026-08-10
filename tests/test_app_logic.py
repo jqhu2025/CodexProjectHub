@@ -35,6 +35,40 @@ class ConversationMappingTests(unittest.TestCase):
         self.assertEqual(result["new-thread"], "project-a")
 
 
+class ProjectArchiveTests(unittest.TestCase):
+    def test_archived_manual_project_keeps_its_complete_management_record(self):
+        saved = [{
+            "id": "manual-id",
+            "manualProject": True,
+            "name": "Release planning",
+            "path": "C:\\workspace\\release-planning",
+            "category": "Operations",
+            "objective": "Prepare the release",
+            "nextStep": "Validate the package",
+        }]
+        layout = {"hiddenProjectIds": ["manual:manual-id"], "categoryOrders": {"Operations": ["manual:manual-id"]}}
+        with patch.object(APP, "codex_sidebar_projects", return_value=[]):
+            self.assertEqual(APP.visible_project_catalog(saved, layout), [])
+            archived = APP.archived_project_catalog(saved, layout)
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0]["name"], "Release planning")
+        self.assertEqual(archived[0]["objective"], "Prepare the release")
+        self.assertEqual(archived[0]["nextStep"], "Validate the package")
+
+    def test_archived_codex_project_can_be_resolved_for_restore(self):
+        imported = [{
+            "id": "codex-project-id",
+            "codexProjectId": "codex-project-id",
+            "name": "Model validation",
+            "path": "C:\\workspace\\model-validation",
+            "category": "Research",
+        }]
+        layout = {"hiddenProjectIds": ["codex-project-id"], "categoryOrders": {}}
+        with patch.object(APP, "codex_sidebar_projects", return_value=imported):
+            archived = APP.archived_project_catalog([], layout)
+        self.assertEqual([project["id"] for project in archived], ["codex-project-id"])
+
+
 class ProjectDisplayStateTests(unittest.TestCase):
     def test_running_conversation_takes_priority(self):
         project = {"status": "completed", "conversations": [{"state": "working"}]}
