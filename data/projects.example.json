@@ -11,6 +11,7 @@
     "health": "on_track",
     "reviewedAt": "2026-08-10T09:30:00",
     "objective": "Deliver a reliable desktop workflow for spectral analysis",
+    "successCriteria": "A validation user can import, inspect, and export one dataset without manual repair",
     "color": "#2474FF",
     "nextStep": "Polish the export workflow"
   },
@@ -23,6 +24,7 @@
     "status": "active",
     "priority": "normal",
     "objective": "Turn local experiment data into a clear desktop dashboard",
+    "successCriteria": "The dashboard reproduces the reference metrics and exports a review-ready report",
     "color": "#00A6C8",
     "nextStep": "Validate the new dashboard layout"
   },
@@ -35,6 +37,7 @@
     "status": "active",
     "priority": "focus",
     "objective": "Establish a reproducible benchmark for signal models",
+    "successCriteria": "The benchmark runs from a clean environment and records comparable metrics for every model",
     "color": "#7C3AED",
     "nextStep": "Compare the latest benchmark results"
   },
@@ -47,6 +50,7 @@
     "status": "active",
     "priority": "normal",
     "objective": "Prepare publication-ready figures with traceable revisions",
+    "successCriteria": "Every final figure has approved labels, source data, and a traceable revision record",
     "color": "#10A361",
     "nextStep": "Review the revised figure set"
   },
@@ -59,6 +63,7 @@
     "status": "active",
     "priority": "later",
     "objective": "Standardize repeatable release and maintenance workflows",
+    "successCriteria": "A documented release can be executed twice with the same checks and artifacts",
     "color": "#F59E0B",
     "nextStep": "Document the release workflow"
   }

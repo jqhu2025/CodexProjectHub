@@ -15,6 +15,7 @@ class NavigationCatalogTests(unittest.TestCase):
             "stage": "validation",
             "status": "active",
             "objective": "Validate the denoising benchmark",
+            "successCriteria": "Reproduce all benchmark metrics from a clean environment",
             "nextStep": "Compare alpha settings",
             "path": "C:\\work\\signals",
             "conversations": [
@@ -40,6 +41,7 @@ class NavigationCatalogTests(unittest.TestCase):
         entries = self.sample_catalog()
 
         self.assertEqual(search_navigation_entries(entries, "denoising")[0]["kind"], "project")
+        self.assertEqual(search_navigation_entries(entries, "clean environment")[0]["kind"], "project")
         self.assertEqual(search_navigation_entries(entries, "0.1 0.2")[0]["kind"], "task")
         self.assertEqual(search_navigation_entries(entries, "noise levels")[0]["kind"], "conversation")
 

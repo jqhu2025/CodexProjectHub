@@ -80,7 +80,7 @@ def build_navigation_entries(projects, tasks, today=None):
         entries.append(_entry(
             "project", f"project:{project_id}", name, subtitle,
             (
-                project.get("objective"), project.get("nextStep"), project.get("blocker"),
+                project.get("objective"), project.get("successCriteria"), project.get("nextStep"), project.get("blocker"),
                 project.get("path"), project.get("health"), project.get("priority"),
             ),
             project, project_priority, order,

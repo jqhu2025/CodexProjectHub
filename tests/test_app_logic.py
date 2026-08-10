@@ -88,7 +88,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         project = {
             "id": "runtime", "savedId": "stable", "name": "Release", "category": "Research",
             "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
-            "objective": "Ship a validated release", "nextStep": "Validate candidate", "blocker": "",
+            "objective": "Ship a validated release", "successCriteria": "Pass all release checks",
+            "nextStep": "Validate candidate", "blocker": "",
             "conversations": [],
         }
 
@@ -100,10 +101,26 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("在制工作", dialog.command_title.text())
         self.assertEqual(dialog.command_action.text(), "继续执行")
         self.assertEqual(dialog.next_step_field.cursorPosition(), 0)
+        self.assertEqual(dialog.success_criteria_field.toPlainText(), "Pass all release checks")
         dialog.set_management_expanded(True)
         self.assertFalse(dialog.management_body.isHidden())
         self.assertTrue(dialog.activity_panel.isHidden())
         self.assertEqual(dialog.management_toggle.text(), "返回项目概览")
+        dialog.close(); parent.close()
+
+    def test_project_editor_keeps_success_criteria_in_the_management_record(self):
+        parent = APP.QWidget(); parent.today_tasks = []
+        project = {
+            "name": "Release", "path": "C:/Projects/Release", "category": "Research",
+            "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
+            "objective": "Ship a validated release", "successCriteria": "Pass all release checks",
+            "nextStep": "Run validation", "blocker": "",
+        }
+        dialog = APP.ProjectEditor(parent, project, ["全部", "Research", "未分类"])
+
+        self.assertEqual(dialog.success_criteria.toPlainText(), "Pass all release checks")
+        dialog.success_criteria.setPlainText("Pass 18 checks and publish artifacts")
+        self.assertEqual(dialog.value()["successCriteria"], "Pass 18 checks and publish artifacts")
         dialog.close(); parent.close()
 
     def test_risk_dialog_returns_to_the_refreshed_ranked_queue(self):
@@ -695,7 +712,8 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         accepted = Mock()
         checkbox = SimpleNamespace(isChecked=lambda: False)
         dialog = SimpleNamespace(
-            objective_snapshot="", value=lambda: "Delivered release", acceptance=checkbox, accept=accepted,
+            objective_snapshot="", criteria_snapshot="Pass 18 checks",
+            value=lambda: "Delivered release", acceptance=checkbox, accept=accepted,
         )
         with patch.object(APP.QMessageBox, "information") as information:
             APP.ProjectCloseoutDialog.accept_outcome(dialog)
@@ -712,6 +730,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         APP.ProjectCloseoutDialog.accept_outcome(dialog)
         accepted.assert_called_once_with()
         self.assertEqual(APP.ProjectCloseoutDialog.acceptance_objective(dialog), "Deliver a validated release")
+        self.assertEqual(APP.ProjectCloseoutDialog.acceptance_criteria(dialog), "Pass 18 checks")
 
     def test_project_next_step_becomes_a_stably_linked_daily_task(self):
         project = {
@@ -2000,11 +2019,13 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         project = {
             "id": "runtime", "savedId": "stable", "name": "Release",
             "status": "active", "objective": "Deliver a validated release package",
+            "successCriteria": "Pass 18 release checks",
         }
         before = dict(project)
         target = {
             "id": "stable", "name": "Release", "status": "completed",
             "objective": "Deliver a validated release package",
+            "successCriteria": "Pass 18 release checks",
         }
         window = SimpleNamespace(record_project_closeout=Mock())
         self.assertTrue(APP.MainWindow.apply_project_completion_lifecycle(
@@ -2015,6 +2036,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
             {
                 "status": "completed", "completionSummary": "Passed all release checks.",
                 "completionObjectiveSnapshot": "Deliver a validated release package",
+                "completionCriteriaSnapshot": "Pass 18 release checks",
             },
             "2026-08-10T12:00:00",
             "manual",
@@ -2022,6 +2044,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertEqual(project["completionSummary"], "Passed all release checks.")
         self.assertEqual(target["completedAt"], "2026-08-10T12:00:00")
         self.assertEqual(target["completionObjectiveSnapshot"], "Deliver a validated release package")
+        self.assertEqual(target["completionCriteriaSnapshot"], "Pass 18 release checks")
         self.assertEqual(target["completionAcceptedAt"], "2026-08-10T12:00:00")
         args = window.record_project_closeout.call_args.args
         self.assertEqual((args[0]["savedId"], args[1:]), ("stable", ("complete", "Passed all release checks.", "2026-08-10T12:00:00")))
@@ -2034,6 +2057,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         ))
         self.assertNotIn("completionSummary", project)
         self.assertNotIn("completionObjectiveSnapshot", project)
+        self.assertNotIn("completionCriteriaSnapshot", project)
         self.assertEqual(target["completionHistory"][-1]["source"], "reopen")
         args = window.record_project_closeout.call_args.args
         self.assertEqual((args[0]["savedId"], args[1:]), ("stable", ("reopen", "Passed all release checks.", "2026-08-10T13:00:00")))

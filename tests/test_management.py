@@ -100,13 +100,18 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.task_completion_revisions(None), [])
 
     def test_project_completion_outcome_forms_a_reopen_safe_audit_chain(self):
-        project = {"id": "project-1", "status": "completed", "objective": "Deliver a validated release package"}
+        project = {
+            "id": "project-1", "status": "completed",
+            "objective": "Deliver a validated release package",
+            "successCriteria": "Pass all 18 release checks and publish the package",
+        }
         self.assertTrue(management.record_project_completion_outcome(
             project, "Delivered the validated release package.", "2026-08-10T12:00:00"
         ))
         self.assertEqual(management.project_completion_outcome(project), "Delivered the validated release package.")
         self.assertEqual(project["completedAt"], "2026-08-10T12:00:00")
         self.assertEqual(project["completionObjectiveSnapshot"], "Deliver a validated release package")
+        self.assertEqual(project["completionCriteriaSnapshot"], "Pass all 18 release checks and publish the package")
         self.assertEqual(project["completionAcceptedAt"], "2026-08-10T12:00:00")
         self.assertTrue(management.record_project_completion_outcome(
             project, "Delivered the package and passed 18 release checks.", "2026-08-10T12:30:00", "closeout_editor"
@@ -119,9 +124,11 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertNotIn("completionSummary", project)
         self.assertNotIn("completedAt", project)
         self.assertNotIn("completionObjectiveSnapshot", project)
+        self.assertNotIn("completionCriteriaSnapshot", project)
         self.assertNotIn("completionAcceptedAt", project)
         self.assertEqual(project["completionHistory"][-1]["source"], "reopen")
         self.assertEqual(project["completionHistory"][-1]["objective"], "Deliver a validated release package")
+        self.assertEqual(project["completionHistory"][-1]["criteria"], "Pass all 18 release checks and publish the package")
         self.assertEqual(
             management.latest_project_completion_outcome(project),
             "Delivered the package and passed 18 release checks.",
@@ -140,6 +147,7 @@ class ManagementModuleTests(unittest.TestCase):
             "id": "runtime", "savedId": "stable", "name": "Release",
             "completedAt": "2026-08-10T12:00:00",
             "completionObjectiveSnapshot": "Deliver a validated release package",
+            "completionCriteriaSnapshot": "Pass all 18 release checks",
             "completionAcceptedAt": "2026-08-10T12:00:00",
         }
         completed = management.build_project_closeout_entry(
@@ -150,9 +158,25 @@ class ManagementModuleTests(unittest.TestCase):
         )
         self.assertEqual((completed["projectId"], completed["kind"], completed["action"]), ("stable", "closeout", "complete"))
         self.assertEqual(completed["snapshot"]["objective"], "Deliver a validated release package")
+        self.assertEqual(completed["snapshot"]["criteria"], "Pass all 18 release checks")
         self.assertIn("验收目标", management.format_project_decision_summary(completed))
+        self.assertIn("验收标准", management.format_project_decision_summary(completed))
         self.assertIn("重新打开", management.format_project_decision_summary(reopened))
         self.assertIsNone(management.build_project_closeout_entry(project, "archive", "Result", "2026-08-10T14:00:00"))
+
+    def test_success_criteria_is_audited_without_becoming_a_legacy_governance_gap(self):
+        project = {
+            "id": "project-1", "status": "active", "objective": "Ship release",
+            "nextStep": "Run checks", "stage": "validation", "health": "on_track",
+        }
+        self.assertNotIn("successCriteria", management.project_governance_gaps(project))
+        changes = management.project_decision_changes(
+            project, {**project, "successCriteria": "Pass all checks and publish artifacts"}
+        )
+        self.assertEqual(changes, [{
+            "field": "successCriteria", "label": "验收标准", "before": "",
+            "after": "Pass all checks and publish artifacts",
+        }])
 
     def test_blocker_lifecycle_preserves_continuous_age_and_records_resolution(self):
         project = {"status": "active", "blocker": "Waiting for calibration"}

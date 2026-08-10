@@ -43,7 +43,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Move projects between categories.
 - Treat category renames and deletions as portfolio-wide taxonomy migrations: active, archived, and locally retained projects move together with linked task labels, project snapshots, and saved ordering. Every affected project receives an auditable category decision, and rolling back a project-level category decision can safely restore a category that was previously removed.
 - Give a Codex-synchronized project a local display name without changing its Codex source identity, folder, or conversations. The original Codex name remains recoverable from the editor, and every explicit rename or restore is recorded in project decision history and can be rolled back.
-- Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
+- Define a project objective, optional verifiable acceptance criteria, management priority, lifecycle state, execution stage, health, blocker, and concrete next action. Codex can propose the criteria from read-only project evidence, while legacy projects remain valid until the user chooses to strengthen their closeout contract.
 - Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning. The dedicated response queue ranks known blockers by longest recorded duration, labels unknown clocks instead of guessing, and returns to the refreshed queue after each project workbench is closed.
 - Separate **strategic focus** from **actual execution**: the former is a deliberate portfolio decision, while the latter is detected from today's in-progress tasks and running Codex conversations.
 - Carry that distinction through the project cockpit instead of merging it into a generic “focus” count. The current view reports strategic focus and actual execution separately, filters expose each signal independently, and a project can display both badges at once; global focus capacity remains in the portfolio control where it cannot be confused with a filtered category count. Risk remains the first sort key, followed by deliberate strategic focus and then merely busy work, so activity is never mistaken for importance.
@@ -72,9 +72,9 @@ All screenshots use fictional sample data. They do not contain real project path
 - Restore any recorded project decision selectively: only fields touched by that event are rolled back, newer conflicting edits are disclosed before confirmation, and the rollback is preserved as a new audit event.
 - Use a recoverable project archive for both Codex-synchronized and manually created projects, preserving management metadata, category placement, local files, and conversation links. Every new archive and restore action enters the unified decision history with its timestamp and a frozen snapshot of project status, stage, next action, blocker, and confirmed closeout outcome; the archive shows cycle counts while legacy records remain honestly marked as time unknown. Projects with unfinished tasks or running Codex conversations must close that live work first, preventing archived projects from leaving orphaned activity records.
 - Close a project with an explicit, human-confirmed delivery outcome instead of a status flag alone. The closeout stores the original completion time, supports outcome revisions, appears in the project workbench and handoff context, and enters the unified audit history. Reopening retires the current completion claim while preserving the previous outcome as historical evidence.
-- Confirm closeout against the project's stated objective. The completion record freezes that objective, the acceptance time, and the delivered outcome together, so later objective edits or a reopen cannot erase the basis on which the project was declared complete.
+- Confirm closeout against the project's stated objective and, when defined, its verifiable acceptance criteria. The completion record freezes the objective, acceptance criteria, acceptance time, and delivered outcome together, so later edits or a reopen cannot erase the basis on which the project was declared complete.
 - Enforce coherent project decisions: blockers control health automatically, completed projects close their execution fields, linked open tasks remain untouched for deliberate follow-up, and completed projects cannot schedule new work until they are reopened.
-- Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
+- Search projects by name, category, path, objective, acceptance criteria, next action, conversation title, or conversation summary.
 - Filter the portfolio by strategic focus or actual live execution, missing next action, or paused/idea state.
 - Filter projects by running, completed, linked, or unlinked state.
 - Expand a project to view its linked Codex conversations.
@@ -223,13 +223,13 @@ Runtime data is stored in the `data` directory:
 
 | File | Contents |
 | --- | --- |
-| `data/projects.json` | Project names, categories, local paths, and status. |
+| `data/projects.json` | Project identity, local paths, objective, acceptance criteria, management state, and current closeout evidence. |
 | `data/categories.json` | Custom category names and order. |
 | `data/today_tasks.json` | Daily tasks and optional conversation references. |
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
 | `data/settings.json` | Local configuration, including the optional summary conversation ID, strategic-focus capacity, active-portfolio inactivity threshold, and daily task WIP limit. |
 | `data/project_layout.json` | Project order and recoverable archive settings. |
-| `data/project_decisions.json` | Local audit trail for real project-name, objective, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
+| `data/project_decisions.json` | Local audit trail for real project-name, objective, acceptance-criteria, stage, health, blocker, category, next-action, lifecycle, and project-closeout events. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 
