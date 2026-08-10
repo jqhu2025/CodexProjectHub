@@ -91,6 +91,8 @@ from codex_hub.portfolio import (
     normalized_portfolio_focus_capacity,
     normalized_portfolio_inactivity_days,
     normalized_task_wip_limit,
+    migrate_task_category_references,
+    migrate_project_task_category_references,
     portfolio_focus_capacity_state,
     portfolio_lifecycle_calibration_queue,
     project_activity_evidence,
@@ -100,6 +102,7 @@ from codex_hub.portfolio import (
     assign_task_project,
     reconcile_task_project_links_from_conversations,
     reconcile_task_project_snapshots,
+    reconcile_task_project_categories,
     task_matches_project,
     task_project_identity,
     task_project_link_events,
@@ -5515,7 +5518,8 @@ class MainWindow(QMainWindow):
         self.saved_projects = load_json(PROJECTS_FILE, [])
         self.projects = visible_project_catalog(self.saved_projects, self.project_layout)
         snapshot_updates = reconcile_task_project_snapshots(self.today_tasks, self.projects)
-        if snapshot_updates:
+        category_updates = reconcile_task_project_categories(self.today_tasks, self.managed_project_catalog())
+        if snapshot_updates or category_updates:
             save_json(TASKS_FILE, self.today_tasks)
             self.render_today_tasks()
         events = self.live_sessions
@@ -6472,6 +6476,74 @@ class MainWindow(QMainWindow):
         self.render_nav(); self.render()
         self.statusBar().showMessage("项目分类顺序已保存", 2500)
 
+    def managed_project_catalog(self):
+        """Return active, archived, and detached saved records for taxonomy migrations."""
+        catalog = visible_project_catalog(self.saved_projects, {**self.project_layout, "hiddenProjectIds": []})
+        represented = {str(project.get("savedId") or "") for project in catalog if project.get("savedId")}
+        for saved in self.saved_projects:
+            saved_id = str(saved.get("id") or "")
+            if not saved_id or saved_id in represented:
+                continue
+            catalog.append({
+                **saved,
+                "id": f"saved:{saved_id}",
+                "savedId": saved_id,
+                "codexProjectId": None,
+                "_detached": True,
+            })
+        return catalog
+
+    def apply_category_migration(self, previous_category, next_category, occurred_at=None):
+        """Migrate one taxonomy label across projects, tasks, layout, and audit history."""
+        previous = str(previous_category or "").strip()
+        replacement = str(next_category or "").strip()
+        if not previous or not replacement or previous == replacement:
+            return {"projects": 0, "tasks": 0, "decisions": 0}
+        timestamp = occurred_at or datetime.now().isoformat(timespec="seconds")
+        projects = [project for project in self.managed_project_catalog() if project.get("category") == previous]
+        task_categories_before = [
+            (str(task.get("category") or ""), str(task.get("projectCategorySnapshot") or ""))
+            for task in self.today_tasks
+        ]
+        migrate_task_category_references(self.today_tasks, previous, replacement)
+        entries = []
+        for project in projects:
+            before = dict(project)
+            target = self.saved_record_for_project(project)
+            target["category"] = replacement
+            project["category"] = replacement
+            migrate_project_task_category_references(self.today_tasks, project, replacement)
+            after = {**target, "name": project.get("name") or target.get("name")}
+            entry = build_project_decision_entry(project, before, after, "category", timestamp)
+            if entry is not None:
+                entries.append(entry)
+        reconcile_task_project_categories(self.today_tasks, self.managed_project_catalog())
+        task_count = sum(
+            before != (str(task.get("category") or ""), str(task.get("projectCategorySnapshot") or ""))
+            for before, task in zip(task_categories_before, self.today_tasks)
+        )
+        orders = self.project_layout.setdefault("categoryOrders", {})
+        moved_ids = list(orders.pop(previous, []))
+        moved_ids.extend(
+            project.get("id") for project in projects
+            if project.get("id") and not project.get("_detached")
+        )
+        destination = orders.setdefault(replacement, [])
+        for project_id in moved_ids:
+            if project_id and project_id not in destination:
+                destination.append(project_id)
+        self.project_decisions.extend(entries)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(CATEGORIES_FILE, self.categories[1:])
+        save_json(PROJECTS_FILE, self.saved_projects)
+        save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        if task_count:
+            save_json(TASKS_FILE, self.today_tasks)
+        if entries:
+            save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        return {"projects": len(projects), "tasks": task_count, "decisions": len(entries)}
+
     def rename_category(self):
         editable = [category for category in self.categories[1:] if category != "未分类"]
         if not editable:
@@ -6488,20 +6560,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "名称不可用", "该分类名称已经存在。")
             return
         self.categories[self.categories.index(old_name)] = new_name
-        for item in self.saved_projects:
-            if item.get("category") == old_name:
-                item["category"] = new_name
-        orders = self.project_layout.setdefault("categoryOrders", {})
-        if old_name in orders:
-            orders[new_name] = orders.pop(old_name)
         if self.category == old_name:
             self.category = new_name
-        save_json(CATEGORIES_FILE, self.categories[1:])
-        save_json(PROJECTS_FILE, self.saved_projects)
-        save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        result = self.apply_category_migration(old_name, new_name)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
-        self.statusBar().showMessage(f"分类已重命名：{old_name} → {new_name}", 3000)
+        self.statusBar().showMessage(
+            f"分类已重命名：{old_name} → {new_name} · {result['projects']} 个项目 · {result['tasks']} 条任务记录已同步",
+            4200,
+        )
 
     def delete_category(self):
         editable = [category for category in self.categories[1:] if category != "未分类"]
@@ -6511,40 +6578,31 @@ class MainWindow(QMainWindow):
         category, accepted = QInputDialog.getItem(self, "删除分类", "选择要删除的分类：", editable, 0, False)
         if not accepted or not category:
             return
-        affected = [project for project in self.projects if project.get("category") == category]
+        affected = [project for project in self.managed_project_catalog() if project.get("category") == category]
+        task_count = sum(
+            str(task.get("category") or "").strip() == category
+            or str(task.get("projectCategorySnapshot") or "").strip() == category
+            or any(task_matches_project(task, project) for project in affected)
+            for task in self.today_tasks
+        )
         message = f"确定删除分类“{category}”吗？"
-        if affected:
-            message += f"\n\n其中 {len(affected)} 个项目会移到“未分类”，项目文件和 Codex 对话不会被删除。"
+        if affected or task_count:
+            message += f"\n\n{len(affected)} 个项目和 {task_count} 条任务记录会迁移到“未分类”。项目文件、Codex 对话和历史记录不会被删除。"
         else:
             message += "\n\n该操作不会删除任何项目文件或 Codex 对话。"
         if QMessageBox.question(self, "确认删除分类", message) != QMessageBox.Yes:
             return
 
-        for project in affected:
-            target = self.saved_record_for_project(project)
-            target["category"] = "未分类"
-            project["category"] = "未分类"
-        for project in self.saved_projects:
-            if project.get("category") == category:
-                project["category"] = "未分类"
-
-        orders = self.project_layout.setdefault("categoryOrders", {})
-        moved_ids = orders.pop(category, [])
-        moved_ids.extend(project.get("id") for project in affected if project.get("id"))
-        unclassified_order = orders.setdefault("未分类", [])
-        for project_id in moved_ids:
-            if project_id and project_id not in unclassified_order:
-                unclassified_order.append(project_id)
-
         self.categories = [value for value in self.categories if value != category]
         if self.category == category:
             self.category = "未分类"
-        save_json(CATEGORIES_FILE, self.categories[1:])
-        save_json(PROJECTS_FILE, self.saved_projects)
-        save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        result = self.apply_category_migration(category, "未分类")
         self.view_signature = None
         self.refresh(silent=True, scan=False)
-        self.statusBar().showMessage(f"分类“{category}”已删除，项目已移到“未分类”", 3500)
+        self.statusBar().showMessage(
+            f"分类“{category}”已删除 · {result['projects']} 个项目 · {result['tasks']} 条任务记录已移到“未分类”",
+            4200,
+        )
 
     def saved_record_for_project(self, project):
         saved_id = project.get("savedId")
@@ -6589,6 +6647,8 @@ class MainWindow(QMainWindow):
         occurred_at = datetime.now().isoformat(timespec="seconds")
         data, normalization_notes = normalize_project_management_decision(project, data)
         name_requested = "name" in data
+        restored_category = ""
+        requested_category = str(data.get("category") or "").strip()
         validation_error = project_management_validation_error(data)
         if validation_error:
             if notify:
@@ -6608,6 +6668,15 @@ class MainWindow(QMainWindow):
             data["completionObjectiveSnapshot"] = str(
                 data.get("completionObjectiveSnapshot") or data.get("objective") or ""
             ).strip()
+        if (
+            source == "undo"
+            and requested_category
+            and requested_category != "全部"
+            and requested_category not in self.categories[1:]
+        ):
+            insert_at = max(1, len(self.categories) - 1)
+            self.categories.insert(insert_at, requested_category)
+            restored_category = requested_category
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
@@ -6629,11 +6698,13 @@ class MainWindow(QMainWindow):
         if target.get("nextStep"):
             target["nextStepReviewNeeded"] = False
         new_category = target.get("category", previous_category)
+        task_category_updates = 0
         if new_category != previous_category:
             orders = self.project_layout.setdefault("categoryOrders", {})
             orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
             if project.get("id") not in orders.setdefault(new_category, []):
                 orders[new_category].append(project.get("id"))
+            task_category_updates = migrate_project_task_category_references(self.today_tasks, project, new_category)
         for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded", "completionSummary", "completedAt", "completionHistory", "completionObjectiveSnapshot", "completionAcceptedAt", *PROJECT_BLOCKER_LIFECYCLE_FIELDS):
             project[key] = target.get(key)
         if name_requested:
@@ -6655,6 +6726,10 @@ class MainWindow(QMainWindow):
             project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        if task_category_updates:
+            save_json(TASKS_FILE, self.today_tasks)
+        if restored_category:
+            save_json(CATEGORIES_FILE, self.categories[1:])
         self.view_signature = None
         self.refresh(silent=True, scan=False)
         if notify:
@@ -6807,12 +6882,15 @@ class MainWindow(QMainWindow):
         target["category"] = category
         project["category"] = category
         self.record_project_decision(project, before, target, "category")
+        task_category_updates = migrate_project_task_category_references(self.today_tasks, project, category)
         orders = self.project_layout.setdefault("categoryOrders", {})
         orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
         if project.get("id") not in orders.setdefault(category, []):
             orders[category].append(project.get("id"))
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        if task_category_updates:
+            save_json(TASKS_FILE, self.today_tasks)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
         self.statusBar().showMessage(f"{project.get('name', '项目')} 已移至“{category}”", 2500)
@@ -7081,6 +7159,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "还没有项目成果", "完成项目需要先记录最终交付或验证结果。")
                 return
             data["completionSummary"] = closeout
+        task_category_updates = 0
         if project:
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
@@ -7091,7 +7170,10 @@ class MainWindow(QMainWindow):
             if data.get("category") != previous_category:
                 orders = self.project_layout.setdefault("categoryOrders", {})
                 orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
-                orders.setdefault(data["category"], []).append(project.get("id"))
+                destination = orders.setdefault(data["category"], [])
+                if project.get("id") not in destination:
+                    destination.append(project.get("id"))
+                task_category_updates = migrate_project_task_category_references(self.today_tasks, project, data["category"])
         else:
             target = next((item for item in self.saved_projects if normalized_path(item.get("path")) == normalized_path(data.get("path"))), None)
             if target is None:
@@ -7119,6 +7201,8 @@ class MainWindow(QMainWindow):
             decision_project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
+        if task_category_updates:
+            save_json(TASKS_FILE, self.today_tasks)
         self.view_signature = None
         self.refresh()
         blocker_messages = {

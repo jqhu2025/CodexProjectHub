@@ -58,6 +58,46 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(tasks[1]["projectCategorySnapshot"], "Research")
         self.assertNotIn("projectNameSnapshot", tasks[2])
 
+    def test_taxonomy_migration_updates_current_task_references_without_touching_history_events(self):
+        tasks = [
+            {"id": "linked", "projectId": "stable", "category": "Old", "projectCategorySnapshot": "Old"},
+            {"id": "unlinked", "category": "Old"},
+            {"id": "archived", "category": "Old", "archivedAt": "2026-08-10T12:00:00"},
+            {"id": "other", "category": "Other"},
+        ]
+        changed = portfolio.migrate_task_category_references(tasks, "Old", "Renamed")
+        self.assertEqual(changed, 3)
+        self.assertEqual(tasks[0]["projectCategorySnapshot"], "Renamed")
+        self.assertEqual(tasks[1]["category"], "Renamed")
+        self.assertEqual(tasks[2]["category"], "Renamed")
+        self.assertEqual(tasks[3]["category"], "Other")
+
+        tasks[0]["category"] = "Inconsistent"
+        project = {"id": "runtime", "savedId": "stable"}
+        self.assertEqual(portfolio.migrate_project_task_category_references(tasks, project, "Research"), 1)
+        self.assertEqual((tasks[0]["category"], tasks[0]["projectCategorySnapshot"]), ("Research", "Research"))
+
+    def test_category_reconciliation_repairs_only_uniquely_resolved_links(self):
+        projects = [
+            {"id": "runtime", "savedId": "stable", "category": "Research"},
+            {"id": "duplicate-a", "savedId": "ambiguous", "category": "A"},
+            {"id": "duplicate-b", "savedId": "ambiguous", "category": "B"},
+        ]
+        tasks = [
+            {
+                "id": "repair", "projectId": "stable", "category": "Legacy",
+                "projectCategorySnapshot": "Research", "updatedAt": "2026-08-01T09:00:00",
+            },
+            {"id": "ambiguous", "projectId": "ambiguous", "category": "Legacy"},
+            {"id": "unlinked", "category": "Personal"},
+        ]
+        changed = portfolio.reconcile_task_project_categories(tasks, projects)
+        self.assertEqual(changed, 1)
+        self.assertEqual((tasks[0]["category"], tasks[0]["projectCategorySnapshot"]), ("Research", "Research"))
+        self.assertEqual(tasks[0]["updatedAt"], "2026-08-01T09:00:00")
+        self.assertEqual(tasks[1]["category"], "Legacy")
+        self.assertEqual(tasks[2]["category"], "Personal")
+
     def test_project_link_issues_ignore_resolved_and_recycled_tasks(self):
         projects = [{"id": "runtime", "savedId": "stable"}]
         tasks = [

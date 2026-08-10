@@ -36,6 +36,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Create, edit, archive, restore, and reorder projects.
 - Create, rename, delete, and reorder categories.
 - Move projects between categories.
+- Treat category renames and deletions as portfolio-wide taxonomy migrations: active, archived, and locally retained projects move together with linked task labels, project snapshots, and saved ordering. Every affected project receives an auditable category decision, and rolling back a project-level category decision can safely restore a category that was previously removed.
 - Give a Codex-synchronized project a local display name without changing its Codex source identity, folder, or conversations. The original Codex name remains recoverable from the editor, and every explicit rename or restore is recorded in project decision history and can be rolled back.
 - Define a project objective, management priority, lifecycle state, execution stage, health, blocker, and concrete next action.
 - Use the portfolio cockpit to surface explicitly blocked or attention-needed projects without treating incomplete legacy metadata as a warning.

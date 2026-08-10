@@ -87,6 +87,67 @@ def reconcile_task_project_snapshots(tasks, projects):
     return changed
 
 
+def reconcile_task_project_categories(tasks, projects):
+    """Repair current taxonomy fields when one linked project resolves unambiguously."""
+    changed = 0
+    for task in tasks or []:
+        matches = [project for project in projects or [] if task_matches_project(task, project)]
+        if len(matches) != 1:
+            continue
+        category = str(matches[0].get("category") or "未分类").strip()
+        if not category:
+            continue
+        if (
+            str(task.get("category") or "").strip() == category
+            and str(task.get("projectCategorySnapshot") or "").strip() == category
+        ):
+            continue
+        task["category"] = category
+        task["projectCategorySnapshot"] = category
+        changed += 1
+    return changed
+
+
+def migrate_task_category_references(tasks, previous_category, next_category):
+    """Rename one taxonomy label everywhere it is currently referenced by a task."""
+    previous = str(previous_category or "").strip()
+    replacement = str(next_category or "").strip()
+    if not previous or not replacement or previous == replacement:
+        return 0
+    changed = 0
+    for task in tasks or []:
+        touched = False
+        if str(task.get("category") or "").strip() == previous:
+            task["category"] = replacement
+            touched = True
+        if str(task.get("projectCategorySnapshot") or "").strip() == previous:
+            task["projectCategorySnapshot"] = replacement
+            touched = True
+        if touched:
+            changed += 1
+    return changed
+
+
+def migrate_project_task_category_references(tasks, project, next_category):
+    """Keep every task linked to one project inside the project's current taxonomy."""
+    replacement = str(next_category or "").strip()
+    if not replacement:
+        return 0
+    changed = 0
+    for task in tasks or []:
+        if not task_matches_project(task, project):
+            continue
+        if (
+            str(task.get("category") or "").strip() == replacement
+            and str(task.get("projectCategorySnapshot") or "").strip() == replacement
+        ):
+            continue
+        task["category"] = replacement
+        task["projectCategorySnapshot"] = replacement
+        changed += 1
+    return changed
+
+
 def task_project_link_issues(tasks, projects):
     """Return live task records whose saved project reference no longer resolves."""
     known_references = {

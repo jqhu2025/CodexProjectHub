@@ -169,6 +169,135 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_category_migration_updates_catalog_tasks_layout_and_audit_together(self):
+        visible = {
+            "id": "runtime-1", "savedId": "stable-1", "name": "Alpha",
+            "category": "Old", "status": "active",
+        }
+        detached = {
+            "id": "saved:stable-2", "savedId": "stable-2", "name": "Beta",
+            "category": "Old", "status": "active", "_detached": True,
+        }
+        saved_alpha = {**visible, "id": "stable-1"}
+        saved_beta = {**detached, "id": "stable-2"}
+        saved_by_id = {"stable-1": saved_alpha, "stable-2": saved_beta}
+        tasks = [
+            {
+                "id": "linked", "projectId": "stable-1", "category": "Wrong",
+                "projectCategorySnapshot": "Old",
+            },
+            {"id": "unlinked", "category": "Old"},
+            {"id": "other", "category": "Other"},
+        ]
+        window = SimpleNamespace(
+            categories=["全部", "Renamed", "未分类"],
+            saved_projects=[saved_alpha, saved_beta],
+            today_tasks=tasks,
+            project_layout={
+                "hiddenProjectIds": [],
+                "categoryOrders": {"Old": ["runtime-1"], "Renamed": ["existing"]},
+            },
+            project_decisions=[],
+            managed_project_catalog=lambda: [visible, detached],
+            saved_record_for_project=lambda project: saved_by_id[project["savedId"]],
+        )
+
+        with patch.object(APP, "save_json") as save:
+            result = APP.MainWindow.apply_category_migration(
+                window, "Old", "Renamed", occurred_at="2026-08-10T10:00:00"
+            )
+
+        self.assertEqual(result, {"projects": 2, "tasks": 2, "decisions": 2})
+        self.assertEqual((saved_alpha["category"], saved_beta["category"]), ("Renamed", "Renamed"))
+        self.assertEqual((tasks[0]["category"], tasks[0]["projectCategorySnapshot"]), ("Renamed", "Renamed"))
+        self.assertEqual(tasks[1]["category"], "Renamed")
+        self.assertEqual(tasks[2]["category"], "Other")
+        self.assertEqual(window.project_layout["categoryOrders"]["Renamed"], ["existing", "runtime-1"])
+        self.assertNotIn("Old", window.project_layout["categoryOrders"])
+        self.assertEqual({entry["source"] for entry in window.project_decisions}, {"category"})
+        self.assertTrue(all(entry["changes"][0]["field"] == "category" for entry in window.project_decisions))
+        saved_paths = {call.args[0] for call in save.call_args_list}
+        self.assertEqual(
+            saved_paths,
+            {
+                APP.CATEGORIES_FILE, APP.PROJECTS_FILE, APP.PROJECT_LAYOUT_FILE,
+                APP.TASKS_FILE, APP.PROJECT_DECISIONS_FILE,
+            },
+        )
+
+    def test_category_rollback_restores_removed_taxonomy_and_linked_task_snapshot(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release",
+            "status": "active", "category": "Research", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        target = {**project, "id": "stable"}
+        task = {
+            "id": "task-1", "projectId": "stable", "category": "Research",
+            "projectCategorySnapshot": "Research",
+        }
+        window = SimpleNamespace(
+            categories=["全部", "Research", "未分类"],
+            project_layout={"categoryOrders": {"Research": ["runtime"]}},
+            saved_projects=[target], project_decisions=[], today_tasks=[task],
+            saved_record_for_project=lambda _project: target,
+            apply_project_completion_lifecycle=Mock(return_value=True),
+            refresh=Mock(), statusBar=lambda: Mock(), view_signature="old",
+        )
+
+        def record_decision(identity, before, after, source, occurred_at):
+            entry = APP.build_project_decision_entry(identity, before, after, source, occurred_at)
+            if entry:
+                window.project_decisions.append(entry)
+            return entry
+
+        window.record_project_decision = Mock(side_effect=record_decision)
+        rollback = {
+            "priority": "normal", "stage": "validation", "health": "on_track",
+            "status": "active", "category": "Retired", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        with patch.object(APP, "save_json") as save:
+            result = APP.MainWindow.update_project_management(
+                window, project, rollback, notify=False, source="undo"
+            )
+
+        self.assertEqual(result["category"], "Retired")
+        self.assertEqual(window.categories, ["全部", "Research", "Retired", "未分类"])
+        self.assertEqual((project["category"], target["category"]), ("Retired", "Retired"))
+        self.assertEqual((task["category"], task["projectCategorySnapshot"]), ("Retired", "Retired"))
+        self.assertEqual(window.project_decisions[-1]["source"], "undo")
+        saved_paths = {call.args[0] for call in save.call_args_list}
+        self.assertIn(APP.CATEGORIES_FILE, saved_paths)
+        self.assertIn(APP.TASKS_FILE, saved_paths)
+
+    def test_rejected_rollback_does_not_create_a_missing_category(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release",
+            "status": "active", "category": "Research", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship",
+            "nextStep": "Validate", "blocker": "",
+        }
+        saved_lookup = Mock()
+        window = SimpleNamespace(
+            categories=["全部", "Research", "未分类"], project_decisions=[],
+            saved_record_for_project=saved_lookup, statusBar=lambda: Mock(),
+        )
+        rejected = {
+            "priority": "normal", "stage": "completion", "health": "on_track",
+            "status": "completed", "category": "Retired", "objective": "Ship",
+            "nextStep": "", "blocker": "",
+        }
+
+        result = APP.MainWindow.update_project_management(
+            window, project, rejected, notify=False, source="undo"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(window.categories, ["全部", "Research", "未分类"])
+        saved_lookup.assert_not_called()
+
     def test_project_closeout_requires_an_objective_outcome_and_explicit_acceptance(self):
         accepted = Mock()
         checkbox = SimpleNamespace(isChecked=lambda: False)
