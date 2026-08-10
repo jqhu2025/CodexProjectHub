@@ -4753,7 +4753,10 @@ class PortfolioReviewDialog(QDialog):
         actions = QHBoxLayout(); actions.setSpacing(8)
         close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close)
         actions.addStretch()
-        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14)); self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
+        self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14))
+        self.open_button.setToolTip("查看完整项目资料；关闭项目面板后返回本轮确认")
+        self.open_button.setAccessibleName("查看当前项目详情并返回项目确认队列")
+        self.open_button.clicked.connect(self.open_current); actions.addWidget(self.open_button)
         self.skip_button = QPushButton("稍后处理"); self.skip_button.clicked.connect(self.skip_current); actions.addWidget(self.skip_button)
         self.recover_button = QPushButton("已恢复正常"); self.recover_button.setIcon(fluent_icon("\uE73E", color="#087443", size=14)); self.recover_button.setIconSize(QSize(14, 14))
         self.recover_button.setToolTip("将历史需关注状态校准为正常，并建立本次复核基线"); self.recover_button.setAccessibleName("确认项目已经恢复正常")
@@ -4943,8 +4946,36 @@ class PortfolioReviewDialog(QDialog):
         project = self.current_project()
         if project is None:
             return
-        self.accept()
+        references = project_reference_ids(project)
         self.window.open_project_workspace(project)
+        queue_provider = getattr(self.window, "portfolio_review_queue", None)
+        if callable(queue_provider) and references:
+            refreshed = next(
+                (
+                    candidate for candidate in queue_provider()
+                    if project_reference_ids(candidate) & references
+                ),
+                None,
+            )
+            if refreshed is None:
+                self.pending.pop(0)
+                self.reviewed_count += 1
+            else:
+                self.pending[0] = refreshed
+        else:
+            project_lookup = getattr(self.window, "project_by_id", None)
+            if callable(project_lookup) and references:
+                refreshed = next(
+                    (
+                        candidate
+                        for reference in references
+                        for candidate in (project_lookup(reference),)
+                        if candidate is not None
+                    ),
+                    project,
+                )
+                self.pending[0] = refreshed
+        self.render_current()
 
     def recover_current(self):
         project = self.current_project()

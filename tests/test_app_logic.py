@@ -76,6 +76,52 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("目标：Ship verified release", row.accessibleName())
         dialog.close(); parent.close()
 
+    def test_project_review_returns_to_the_same_batch_after_inspecting_the_workspace(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship release",
+            "nextStep": "Validate candidate", "reviewedAt": "2026-01-01T09:00:00",
+            "conversations": [],
+        }
+        parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
+        parent.open_project_workspace = Mock()
+        parent.portfolio_review_queue = Mock(return_value=[project])
+        dialog = APP.PortfolioReviewDialog(parent, [project])
+        dialog.render_current = Mock()
+
+        dialog.open_current()
+
+        self.assertIn("关闭项目面板后返回本轮确认", dialog.open_button.toolTip())
+        self.assertIn("返回项目确认队列", dialog.open_button.accessibleName())
+        parent.open_project_workspace.assert_called_once_with(project)
+        parent.portfolio_review_queue.assert_called_once_with()
+        self.assertEqual(dialog.pending, [project])
+        self.assertEqual(dialog.reviewed_count, 0)
+        dialog.render_current.assert_called_once_with()
+        self.assertEqual(dialog.result(), APP.QDialog.Rejected)
+        dialog.close(); parent.close()
+
+    def test_project_review_advances_when_workspace_resolves_the_current_item(self):
+        project = {
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship release",
+            "nextStep": "Validate candidate", "reviewedAt": "2026-01-01T09:00:00",
+            "conversations": [],
+        }
+        parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
+        parent.open_project_workspace = Mock()
+        parent.portfolio_review_queue = Mock(return_value=[])
+        dialog = APP.PortfolioReviewDialog(parent, [project])
+        dialog.render_current = Mock()
+
+        dialog.open_current()
+
+        self.assertEqual(dialog.pending, [])
+        self.assertEqual(dialog.reviewed_count, 1)
+        dialog.render_current.assert_called_once_with()
+        self.assertEqual(dialog.result(), APP.QDialog.Rejected)
+        dialog.close(); parent.close()
+
 
 class StorageRecoveryNoticeTests(unittest.TestCase):
     def test_recovered_files_get_a_calm_status_notice(self):
