@@ -42,6 +42,30 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertTrue(planning.undo_move.isHidden())
         wip.close(); planning.close(); parent.close()
 
+    def test_home_defaults_to_the_daily_workflow_without_management_dashboards(self):
+        window = APP.MainWindow.__new__(APP.MainWindow)
+        APP.QMainWindow.__init__(window)
+        window.projects = []; window.today_tasks = []
+        window.render_daily_summary = Mock()
+        window.render_today_tasks = Mock()
+        window.render_portfolio_decisions = Mock()
+
+        page = APP.MainWindow.build_home_page(window)
+
+        self.assertIsNotNone(page.findChild(APP.QWidget, "taskBoard"))
+        self.assertIsNotNone(page.findChild(APP.QFrame, "dailySummaryPanel"))
+        self.assertIsNone(page.findChild(APP.QFrame, "portfolioDecisionQueue"))
+        self.assertIsNone(page.findChild(APP.QFrame, "portfolioPriorityPanel"))
+        self.assertIsNone(page.findChild(APP.QFrame, "activityPanel"))
+        self.assertFalse(hasattr(window, "task_wip_button"))
+        self.assertFalse(hasattr(window, "task_link_repair_button"))
+        self.assertFalse(hasattr(window, "task_archive_button"))
+        self.assertTrue(hasattr(window, "task_tools_button"))
+        self.assertEqual(window.task_tools_button.accessibleName(), "更多任务工具")
+        self.assertFalse(window.task_link_repair_action.isVisible())
+        window.render_portfolio_decisions.assert_not_called()
+        page.close(); window.close()
+
     def test_legacy_attention_review_exposes_two_explicit_health_decisions(self):
         parent = APP.QWidget(); parent.today_tasks = []
         project = {
@@ -193,21 +217,23 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(len(dialog.findChildren(APP.QFrame, "focusProjectRow")), 2)
         dialog.close(); parent.close()
 
-    def test_project_row_can_show_strategy_and_execution_without_merging_them(self):
+    def test_project_row_stays_focused_on_project_and_conversation_state(self):
         project = {
             "id": "both", "name": "Validation", "status": "active", "priority": "focus",
             "activeTaskCount": 1, "objective": "Ship", "nextStep": "Validate",
-            "stage": "validation", "health": "on_track", "conversations": [],
+            "stage": "validation", "health": "on_track",
+            "conversations": [{"sessionId": "thread", "state": "working"}],
         }
         row = APP.ProjectMapRow(project, "已关联", "#526071", "#eef2f6", lambda: None)
         labels = [label.text() for label in row.findChildren(APP.QLabel)]
-        self.assertIn("重点", labels)
-        self.assertIn("推进", labels)
-        self.assertIn("战略重点", row.accessibleName())
-        self.assertIn("实际推进", row.accessibleName())
+        self.assertIn("1 个 Codex 对话 · 1 个运行中", labels)
+        self.assertNotIn("重点", labels)
+        self.assertNotIn("推进", labels)
+        self.assertNotIn("首要动作", row.accessibleName())
+        self.assertIn("点击打开项目", row.accessibleName())
         row.close()
 
-    def test_project_cockpit_keeps_global_strategy_and_queue_counts_when_cards_are_filtered(self):
+    def test_project_map_starts_with_category_cards_without_a_management_cockpit(self):
         visible = {
             "id": "visible", "name": "Visible", "category": "A", "status": "active",
             "priority": "normal", "activeTaskCount": 1, "stage": "execution", "health": "on_track",
@@ -218,31 +244,24 @@ class ReviewDialogStructureTests(unittest.TestCase):
             "priority": "focus", "activeTaskCount": 0, "stage": "validation", "health": "on_track",
             "objective": "Ship B", "nextStep": "Test B", "conversations": [],
         }
-        routing = APP.route_project_decision_queues((("review", [visible, hidden]),))
         window = SimpleNamespace(
-            projects=[visible, hidden], project_decision_routing=Mock(return_value=routing),
-            project_command_for=Mock(return_value=None), open_project_workspace=Mock(),
-            select_category=Mock(), open_project_decision_queue=Mock(),
-            show_focus_capacity=Mock(), open_project_scope=Mock(),
+            projects=[visible, hidden], open_project_workspace=Mock(), select_category=Mock(),
         )
         view = APP.ProjectMindMap(window); view.resize(1100, 700)
-        with patch.object(APP, "portfolio_focus_capacity", return_value=3):
-            view.update_map([visible], ["全部", "A", "B"])
+        view.update_map([visible], ["全部", "A", "B"])
 
-        overview = next(
+        widgets = [
             widget for item in view.scene().items()
             for widget in [item.widget() if hasattr(item, "widget") else None]
-            if widget is not None and widget.objectName() == "mapOverview"
-        )
-        label_text = " ".join(label.text() for label in overview.findChildren(APP.QLabel))
-        button_text = [button.text() for button in overview.findChildren(APP.QPushButton)]
-        self.assertIn("2 个项目", label_text)
-        self.assertIn("战略重点 1/3", label_text)
-        self.assertTrue(any("实际推进" in text and "1" in text for text in button_text))
-        self.assertTrue(any("管理确认" in text and "2" in text for text in button_text))
+            if widget is not None
+        ]
+        self.assertFalse(any(widget.objectName() == "mapOverview" for widget in widgets))
+        cards = [widget for widget in widgets if widget.objectName() == "mapCategoryCard"]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(len(cards[0].findChildren(APP.QFrame, "projectMapRow")), 1)
         view.close()
 
-    def test_project_rows_show_the_routed_primary_command_instead_of_a_secondary_review_state(self):
+    def test_project_rows_keep_management_commands_out_of_the_default_scan(self):
         project = {
             "id": "runtime", "savedId": "stable", "name": "Validation", "category": "Research",
             "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
@@ -258,17 +277,16 @@ class ReviewDialogStructureTests(unittest.TestCase):
         )
 
         row = APP.ProjectMapRow(project, "已关联", "#526071", "#eef2f6", lambda: None, command)
-        self.assertIn("校准方向", row.command_label.text())
-        self.assertIn("先确认实际执行方向", row.command_label.text())
-        self.assertNotIn("待建基线", row.command_label.text())
-        self.assertIn("首要动作：校准方向", row.accessibleName())
+        self.assertEqual(row.command_label.text(), "暂无 Codex 对话")
+        self.assertNotIn("校准方向", row.accessibleName())
+        self.assertNotIn("首要动作", row.accessibleName())
 
         parent = APP.QWidget(); parent.categories = ["全部", "Research"]; parent.expansion_preferences = {}
         group = APP.ProjectGroup(project, parent, command)
         labels = [label.text() for label in group.findChildren(APP.QLabel)]
-        self.assertIn("校准方向", labels)
-        self.assertNotIn("待建基线", labels)
-        self.assertIn("首要动作：校准方向", group.accessibleName())
+        self.assertIn("0 个 Codex 对话", labels)
+        self.assertNotIn("校准方向", labels)
+        self.assertNotIn("首要动作", group.accessibleName())
         status = next(label for label in group.findChildren(APP.QLabel) if label.text() == "● 未关联")
         self.assertEqual((status.width(), status.height()), (78, 28))
         row.close(); group.close(); parent.close()
