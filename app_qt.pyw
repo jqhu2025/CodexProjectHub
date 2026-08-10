@@ -1054,6 +1054,21 @@ def project_management_sort_key(project):
     )
 
 
+def portfolio_decision_groups(projects):
+    ordered = sorted(projects or [], key=project_management_sort_key)
+    return {
+        "focus": [project for project in ordered if project_focus_state(project)[0]],
+        "attention": [
+            project for project in ordered
+            if project_control_state(project)[0] in {"attention", "blocked"}
+        ],
+        "needs_next": [
+            project for project in ordered
+            if project_management_scope_matches(project, "needs_next")
+        ],
+    }
+
+
 def build_daily_summary_payload(tasks, projects, target_date):
     """Create a compact, factual source packet for the fixed Codex summary task."""
     project_index = {
@@ -2745,6 +2760,39 @@ class MainWindow(QMainWindow):
         self.daily_summary_meta.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_meta.setStyleSheet("color: #718096; font-size: 11px;"); summary_layout.addWidget(self.daily_summary_meta)
         layout.addWidget(self.daily_summary_panel)
 
+        decision_panel = QFrame(); decision_panel.setObjectName("portfolioDecisionQueue")
+        decision_panel.setStyleSheet("QFrame#portfolioDecisionQueue { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
+        decision_layout = QHBoxLayout(decision_panel); decision_layout.setContentsMargins(14, 12, 14, 12); decision_layout.setSpacing(10)
+        decision_intro = QWidget(); decision_intro.setFixedWidth(178); intro_layout = QHBoxLayout(decision_intro); intro_layout.setContentsMargins(0, 0, 8, 0); intro_layout.setSpacing(10)
+        decision_icon = QLabel(); decision_icon.setAttribute(Qt.WA_TransparentForMouseEvents); decision_icon.setFixedSize(34, 34); decision_icon.setAlignment(Qt.AlignCenter)
+        decision_icon.setPixmap(fluent_icon("\uE9D9", color="#1d4ed8", size=18).pixmap(QSize(18, 18))); decision_icon.setStyleSheet("background: #eaf1ff; border: none; border-radius: 9px;"); intro_layout.addWidget(decision_icon)
+        intro_text = QVBoxLayout(); intro_text.setSpacing(1)
+        decision_title = QLabel("项目决策"); decision_title.setAttribute(Qt.WA_TransparentForMouseEvents); decision_title.setStyleSheet("color: #253247; font-size: 15px; font-weight: 700;"); intro_text.addWidget(decision_title)
+        decision_hint = QLabel("点击直达处理队列"); decision_hint.setAttribute(Qt.WA_TransparentForMouseEvents); decision_hint.setStyleSheet("color: #748094; font-size: 10px;"); intro_text.addWidget(decision_hint); intro_layout.addLayout(intro_text); decision_layout.addWidget(decision_intro)
+        self.portfolio_decision_cards = {}
+        decision_specs = (
+            ("focus", "正在推进", "#1d4ed8", "#f2f6ff", "#cfdbf1"),
+            ("attention", "需要关注", "#9a5b12", "#fbf7f1", "#eadbc7"),
+            ("needs_next", "待定下一步", "#6d3fc0", "#f6f3fb", "#dfd5f1"),
+        )
+        for scope, caption, color, background, border in decision_specs:
+            card = ClickableFrame(); card.setObjectName(f"decisionCard_{scope}"); card.setMinimumHeight(64)
+            card.setStyleSheet(
+                f"QFrame#decisionCard_{scope} {{ background: {background}; border: 1px solid {border}; border-radius: 10px; }}"
+                f"QFrame#decisionCard_{scope}:hover, QFrame#decisionCard_{scope}:focus {{ background: #ffffff; border-color: {color}; }}"
+            )
+            card.clicked.connect(lambda value=scope: self.open_project_scope(value))
+            card_layout = QHBoxLayout(card); card_layout.setContentsMargins(12, 8, 10, 8); card_layout.setSpacing(9)
+            count = QLabel("0"); count.setAttribute(Qt.WA_TransparentForMouseEvents); count.setFixedSize(34, 34); count.setAlignment(Qt.AlignCenter)
+            count.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid {border}; border-radius: 9px; font-size: 16px; font-weight: 750;"); card_layout.addWidget(count)
+            card_text = QVBoxLayout(); card_text.setSpacing(1)
+            card_title = QLabel(caption); card_title.setAttribute(Qt.WA_TransparentForMouseEvents); card_title.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: 700;"); card_text.addWidget(card_title)
+            preview = ElidedLabel("当前无需处理"); preview.setAttribute(Qt.WA_TransparentForMouseEvents); preview.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); card_text.addWidget(preview); card_layout.addLayout(card_text, 1)
+            arrow = QLabel(); arrow.setAttribute(Qt.WA_TransparentForMouseEvents); arrow.setFixedSize(18, 18); arrow.setPixmap(fluent_icon("\uE72A", color=color, size=12).pixmap(QSize(12, 12))); arrow.setAlignment(Qt.AlignCenter); card_layout.addWidget(arrow)
+            self.portfolio_decision_cards[scope] = {"frame": card, "count": count, "preview": preview, "caption": caption}
+            decision_layout.addWidget(card, 1)
+        layout.addWidget(decision_panel)
+
         board_head = QHBoxLayout(); board_head.setSpacing(9)
         board_icon = QLabel(); board_icon.setFixedSize(26, 26); board_icon.setPixmap(fluent_icon("\uE9D2", color="#176cff", size=19).pixmap(QSize(19, 19))); board_icon.setAlignment(Qt.AlignCenter); board_head.addWidget(board_icon)
         self.task_board_title = QLabel("今日任务规划"); self.task_board_title.setStyleSheet("font-size: 20px; font-weight: 700; color: #172033;"); board_head.addWidget(self.task_board_title)
@@ -2771,6 +2819,7 @@ class MainWindow(QMainWindow):
         self.activity_rows_layout = QVBoxLayout(activity_rows); self.activity_rows_layout.setContentsMargins(10, 4, 10, 6); self.activity_rows_layout.setSpacing(0); activity_layout.addWidget(activity_rows); layout.addWidget(self.activity_panel)
         layout.addStretch()
         self.render_daily_summary()
+        self.render_portfolio_decisions()
         self.render_today_tasks()
         return page
 
@@ -2781,6 +2830,43 @@ class MainWindow(QMainWindow):
             button.setProperty("active", active); button.style().unpolish(button); button.style().polish(button)
         if hasattr(self, "nav"):
             self.render_nav()
+
+    def open_project_scope(self, scope):
+        if scope not in {"focus", "attention", "needs_next"}:
+            return
+        self.category = "全部"
+        for control in (self.search, self.status_filter, self.scope_filter):
+            control.blockSignals(True)
+        self.search.clear()
+        self.status_filter.setCurrentIndex(max(0, self.status_filter.findData("all")))
+        self.scope_filter.setCurrentIndex(max(0, self.scope_filter.findData(scope)))
+        for control in (self.search, self.status_filter, self.scope_filter):
+            control.blockSignals(False)
+        self.select_section("projects")
+        self.render_nav(); self.render()
+
+    def render_portfolio_decisions(self):
+        if not hasattr(self, "portfolio_decision_cards"):
+            return
+        groups = portfolio_decision_groups(self.projects)
+        prefixes = {"focus": "今日推进", "attention": "优先复核", "needs_next": "等待决策"}
+        for scope, controls in self.portfolio_decision_cards.items():
+            projects = groups.get(scope, [])
+            controls["count"].setText(str(len(projects)))
+            if projects:
+                names = [str(project.get("name") or "未命名项目") for project in projects]
+                preview = "、".join(names[:2])
+                if len(names) > 2:
+                    preview += f" 等 {len(names)} 项"
+                summary = f"{prefixes[scope]}：{preview}"
+                tooltip = f"{prefixes[scope]}\n" + "\n".join(f"• {name}" for name in names)
+            else:
+                summary = "当前无需处理"
+                tooltip = f"{controls['caption']}：当前没有项目"
+            controls["preview"].setText(summary)
+            controls["preview"].setToolTip(tooltip)
+            controls["frame"].setToolTip(tooltip)
+            controls["frame"].setAccessibleName(f"{controls['caption']}，{len(projects)} 个项目。{summary}")
 
     def refresh(self, silent=False, scan=True):
         categories = load_categories()
@@ -3129,6 +3215,7 @@ class MainWindow(QMainWindow):
             field = field_by_status.get(task.get("status", "planned"))
             if project is not None and field:
                 project[field] = int(project.get(field) or 0) + 1
+        self.render_portfolio_decisions()
 
     def conversation_by_id(self, session_id):
         if not session_id:

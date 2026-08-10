@@ -102,6 +102,20 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(task_focus, "focus"))
         self.assertTrue(APP.project_management_scope_matches(codex_focus, "focus"))
 
+    def test_portfolio_decision_groups_surface_actions_without_forcing_exclusivity(self):
+        active_attention = {
+            "name": "Active risk", "status": "active", "health": "attention",
+            "activeTaskCount": 1, "nextStep": "Review",
+        }
+        blocked = {"name": "Blocked", "status": "active", "blocker": "Missing input", "nextStep": "Wait"}
+        needs_next = {"name": "Needs next", "status": "active", "nextStep": ""}
+        paused = {"name": "Paused", "status": "paused", "nextStep": ""}
+        groups = APP.portfolio_decision_groups([active_attention, blocked, needs_next, paused])
+        self.assertIn(active_attention, groups["focus"])
+        self.assertIn(active_attention, groups["attention"])
+        self.assertIn(blocked, groups["attention"])
+        self.assertEqual(groups["needs_next"], [needs_next])
+
     def test_project_insight_requires_an_existing_project_folder(self):
         with patch.object(APP, "find_summary_codex_binary", return_value="codex"):
             result = APP.generate_project_insight({"path": "Z:/definitely-missing-project"})
