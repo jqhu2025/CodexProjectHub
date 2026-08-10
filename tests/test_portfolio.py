@@ -220,7 +220,10 @@ class PortfolioModuleTests(unittest.TestCase):
         }
         tasks = [
             {"id": "planned", "projectId": "stable", "date": "2026-08-10", "status": "planned"},
-            {"id": "doing", "projectId": "runtime", "date": "2026-08-10", "status": "doing", "title": "Different work"},
+            {
+                "id": "doing", "projectId": "runtime", "date": "2026-08-10", "status": "doing",
+                "title": "Different work", "origin": "project_next_step", "projectNextStep": "Different work",
+            },
             {"id": "done", "projectId": "stable", "date": "2026-08-10", "status": "done"},
             {"id": "archived", "projectId": "stable", "date": "2026-08-10", "status": "doing", "archivedAt": "2026-08-10T12:00:00"},
             {"id": "history", "projectId": "stable", "date": "2026-08-10", "status": "doing", "carriedToTaskId": "doing"},

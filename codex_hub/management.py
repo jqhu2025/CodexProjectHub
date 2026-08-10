@@ -1267,12 +1267,13 @@ def normalized_action_text(value):
 
 
 def project_execution_alignment(project, tasks, target_date):
-    """Describe a real divergence between a project's declared and live next action.
+    """Describe a real divergence in work explicitly bound to the next action.
 
-    The result is intentionally neutral: a different live task can be valid.  A
-    saved signature records that the user deliberately reviewed the exact pair
-    of declared direction and live tasks, and becomes stale as soon as either
-    side changes.
+    Ordinary linked tasks may be parallel work or sub-steps, so their titles
+    must never manufacture a direction conflict.  Only tasks created from, or
+    explicitly carrying, ``projectNextStep`` participate in this comparison.
+    A saved signature records that the exact bound direction was reviewed and
+    becomes stale as soon as either side changes.
     """
     project = project or {}
     if project.get("status", "active") != "active":
@@ -1293,11 +1294,18 @@ def project_execution_alignment(project, tasks, target_date):
         and str(task.get("date") or "") == str(target_date or "")
         and task.get("status", "planned") == "doing"
         and str(task.get("projectId") or "") in references
+        and (
+            task.get("origin") == "project_next_step"
+            or bool(str(task.get("projectNextStep") or "").strip())
+        )
     ]
-    if not live_tasks or any(normalized_action_text(task.get("title")) == declared_key for task in live_tasks):
+    if not live_tasks or any(
+        normalized_action_text(task.get("projectNextStep") or task.get("title")) == declared_key
+        for task in live_tasks
+    ):
         return None
     task_parts = sorted(
-        f"{str(task.get('id') or '')}:{normalized_action_text(task.get('title'))}"
+        f"{str(task.get('id') or '')}:{normalized_action_text(task.get('projectNextStep') or task.get('title'))}"
         for task in live_tasks
     )
     signature = "|".join([str(target_date or ""), declared_key, *task_parts])

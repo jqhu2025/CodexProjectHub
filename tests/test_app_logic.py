@@ -121,6 +121,9 @@ class ReviewDialogStructureTests(unittest.TestCase):
 
         self.assertTrue(dialog.management_body.isHidden())
         self.assertFalse(dialog.activity_panel.isHidden())
+        self.assertTrue(dialog.command_card.isHidden())
+        self.assertTrue(dialog.decision_history_frame.isHidden())
+        self.assertTrue(dialog.review_meta.isHidden())
         self.assertEqual(dialog.command_kind.text(), "当前执行")
         self.assertIn("在制工作", dialog.command_title.text())
         self.assertEqual(dialog.command_action.text(), "继续执行")
@@ -129,7 +132,24 @@ class ReviewDialogStructureTests(unittest.TestCase):
         dialog.set_management_expanded(True)
         self.assertFalse(dialog.management_body.isHidden())
         self.assertTrue(dialog.activity_panel.isHidden())
-        self.assertEqual(dialog.management_toggle.text(), "返回项目概览")
+        self.assertEqual(dialog.management_toggle.text(), "收起")
+        dialog.close(); parent.close()
+
+    def test_project_workbench_only_surfaces_a_command_card_for_an_actionable_exception(self):
+        parent = APP.QWidget(); parent.categories = ["全部", "Research"]; parent.today_tasks = []
+        parent.project_decision_routing = lambda: {"queues": {}}
+        parent.project_decisions_for = lambda _project: []
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release", "category": "Research",
+            "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
+            "objective": "Ship a validated release", "nextStep": "", "blocker": "", "conversations": [],
+        }
+
+        dialog = APP.ProjectWorkbenchDialog(parent, project)
+
+        self.assertFalse(dialog.command_card.isHidden())
+        self.assertEqual(dialog.command_title.text(), "当前没有可执行动作")
+        self.assertEqual(dialog.command_action.text(), "完善项目")
         dialog.close(); parent.close()
 
     def test_project_editor_keeps_success_criteria_in_the_management_record(self):
@@ -1953,6 +1973,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         task = {
             "id": "task", "projectId": "stable", "date": today,
             "status": "doing", "title": "Repair benchmark",
+            "origin": "project_next_step", "projectNextStep": "Repair benchmark",
         }
         window = SimpleNamespace(today_tasks=[task], record_project_review=Mock())
         dialog = SimpleNamespace(current_project=lambda: project, accept=Mock(), window=window)
@@ -2462,6 +2483,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         task = {
             "id": "task-1", "projectId": "stable", "date": today,
             "status": "doing", "title": "Repair benchmark",
+            "origin": "project_next_step", "projectNextStep": "Repair benchmark",
         }
         status_bar = Mock(); saved_lookup = Mock()
         window = SimpleNamespace(
@@ -2487,6 +2509,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         divergent_task = {
             "id": "task", "projectId": "stable", "date": today,
             "status": "doing", "title": "Repair benchmark",
+            "origin": "project_next_step", "projectNextStep": "Repair benchmark",
         }
         eligible, reason = APP.project_baseline_batch_eligibility(project, [divergent_task], today)
         self.assertFalse(eligible)
@@ -2555,7 +2578,10 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
     def test_keep_execution_direction_records_signature_and_audit_event(self):
         today = datetime.now().date().isoformat()
         project = {"id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "nextStep": "Ship candidate"}
-        task = {"id": "task-1", "projectId": "stable", "date": today, "status": "doing", "title": "Repair benchmark"}
+        task = {
+            "id": "task-1", "projectId": "stable", "date": today, "status": "doing",
+            "title": "Repair benchmark", "origin": "project_next_step", "projectNextStep": "Repair benchmark",
+        }
         target = {"id": "stable", "name": "Release", "nextStep": "Ship candidate"}
         alignment = APP.project_execution_alignment(project, [task], today)
         status_bar = Mock()
@@ -2578,7 +2604,10 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
             "id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "category": "Lab",
             "priority": "normal", "stage": "validation", "health": "on_track", "objective": "Ship", "nextStep": "Ship candidate", "blocker": "",
         }
-        task = {"id": "task-1", "projectId": "stable", "date": today, "status": "doing", "title": "Repair benchmark"}
+        task = {
+            "id": "task-1", "projectId": "stable", "date": today, "status": "doing",
+            "title": "Repair benchmark", "origin": "project_next_step", "projectNextStep": "Repair benchmark",
+        }
         alignment = APP.project_execution_alignment(project, [task], today)
         status_bar = Mock()
         window = SimpleNamespace(

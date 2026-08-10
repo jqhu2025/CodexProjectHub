@@ -5853,32 +5853,29 @@ class ProjectWorkbenchDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel(project.get("name") or "未命名项目"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel(f"{project.get('category', '未分类')}  ·  在一个地方维护目标、验收标准、下一步、任务和 Codex 对话")
+        conversations = project.get("conversations") or []
+        running_conversations = sum(codex_state(conversation)[0] == "running" for conversation in conversations)
+        subtitle = QLabel(f"{project.get('category', '未分类')}  ·  {len(conversations)} 个 Codex 对话")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
-        is_focus, focus_text, focus_reason, focus_color, focus_background = project_focus_state(project)
-        if is_focus:
-            focus = QLabel(focus_text); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(64, 30); focus.setToolTip(focus_reason)
-            focus.setStyleSheet(f"color: {focus_color}; background: {focus_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(focus)
-        _control_key, control_text, control_color, control_background, control_reason = project_control_state(project)
+        control_key, control_text, control_color, control_background, control_reason = project_control_state(project)
         self.control_badge = QLabel(control_text); self.control_badge.setAlignment(Qt.AlignCenter); self.control_badge.setFixedSize(64, 30); self.control_badge.setToolTip(control_reason)
         self.control_badge.setStyleSheet(f"color: {control_color}; background: {control_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.control_badge)
         _state, state_text, state_color, state_background = project_display_state(project)
-        self.project_state_badge = QLabel(f"● {state_text}"); self.project_state_badge.setAlignment(Qt.AlignCenter); self.project_state_badge.setFixedSize(78, 30)
+        live_text = f"● {running_conversations} 个对话运行中" if running_conversations else f"● {state_text}"
+        self.project_state_badge = QLabel(live_text); self.project_state_badge.setAlignment(Qt.AlignCenter); self.project_state_badge.setFixedSize(112 if running_conversations else 78, 30)
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.project_state_badge)
-        self.control_badge.setVisible(control_text != state_text)
-        continue_button = QPushButton("在 Codex 中继续"); continue_button.setObjectName("primary"); continue_button.setFixedHeight(38)
+        self.control_badge.setVisible(control_key in {"blocked", "attention", "review"} and control_text != state_text)
+        continue_button = QPushButton("继续 Codex"); continue_button.setObjectName("primary"); continue_button.setFixedHeight(38)
         continue_button.setIcon(fluent_icon("\uE72A", color="#ffffff", size=15)); continue_button.setIconSize(QSize(15, 15)); continue_button.clicked.connect(self.continue_in_codex); heading.addWidget(continue_button)
         root.addLayout(heading)
 
-        self.command_card = QFrame(); self.command_card.setObjectName("projectCommandCard"); self.command_card.setMinimumHeight(112)
-        command_layout = QHBoxLayout(self.command_card); command_layout.setContentsMargins(16, 13, 14, 13); command_layout.setSpacing(12)
-        self.command_icon = QLabel(); self.command_icon.setFixedSize(42, 42); self.command_icon.setAlignment(Qt.AlignCenter); command_layout.addWidget(self.command_icon)
-        command_body = QVBoxLayout(); command_body.setSpacing(2)
+        self.command_card = QFrame(); self.command_card.setObjectName("projectCommandCard"); self.command_card.setFixedHeight(82)
+        command_layout = QHBoxLayout(self.command_card); command_layout.setContentsMargins(14, 10, 12, 10); command_layout.setSpacing(10)
+        self.command_icon = QLabel(); self.command_icon.setFixedSize(34, 34); self.command_icon.setAlignment(Qt.AlignCenter); command_layout.addWidget(self.command_icon)
+        command_body = QVBoxLayout(); command_body.setSpacing(1)
         self.command_kind = QLabel(); self.command_kind.setStyleSheet("font-size: 10px; font-weight: 720; letter-spacing: 0.4px;"); command_body.addWidget(self.command_kind)
-        self.command_title = ElidedLabel(); self.command_title.setStyleSheet("color: #172033; font-size: 17px; font-weight: 740;"); command_body.addWidget(self.command_title)
-        self.command_reason = ElidedLabel(); self.command_reason.setStyleSheet("color: #526071; font-size: 11px;"); command_body.addWidget(self.command_reason)
-        self.command_context = ElidedLabel(); self.command_context.setStyleSheet("color: #3e526d; font-size: 10px; font-weight: 600;"); command_body.addWidget(self.command_context)
-        self.command_evidence = ElidedLabel(); self.command_evidence.setStyleSheet("color: #748094; font-size: 10px;"); command_body.addWidget(self.command_evidence)
+        self.command_title = ElidedLabel(); self.command_title.setStyleSheet("color: #172033; font-size: 14px; font-weight: 720;"); command_body.addWidget(self.command_title)
+        self.command_reason = ElidedLabel(); self.command_reason.setStyleSheet("color: #526071; font-size: 10px;"); command_body.addWidget(self.command_reason)
         command_layout.addLayout(command_body, 1)
         self.command_action = QPushButton(); self.command_action.setFixedSize(122, 38); self.command_action.clicked.connect(self.run_primary_command); command_layout.addWidget(self.command_action, 0, Qt.AlignVCenter)
         root.addWidget(self.command_card)
@@ -5887,13 +5884,16 @@ class ProjectWorkbenchDialog(QDialog):
         management.setStyleSheet("QFrame#managementCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
         management_layout = QVBoxLayout(management); management_layout.setContentsMargins(18, 12, 18, 13); management_layout.setSpacing(10)
         management_head = QHBoxLayout(); management_head.setSpacing(9)
-        management_title = QLabel("项目资料与决策"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
-        management_head.addStretch()
+        management_title = QLabel("项目资料"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
+        next_step_summary = str(project.get("nextStep") or "尚未设置下一步")
+        self.project_context_summary = ElidedLabel(f"下一步 · {next_step_summary}")
+        self.project_context_summary.setToolTip(f"目标：{project.get('objective') or '尚未明确'}\n下一步：{next_step_summary}")
+        self.project_context_summary.setStyleSheet("color: #66758a; font-size: 10px; border: none;"); management_head.addWidget(self.project_context_summary, 1)
         self.review_meta = QLabel(project_review_summary(project))
         initial_drift = project_review_drift_presentation(project)
         self.review_meta.setToolTip(initial_drift.get("tooltip") or initial_drift["detail"])
-        self.review_meta.setStyleSheet(f"color: {'#9a5b00' if initial_drift['state'] == 'changed' else '#66758a'}; font-size: 10px; font-weight: {'650' if initial_drift['state'] == 'changed' else '500'};"); management_head.addWidget(self.review_meta)
-        self.management_toggle = QPushButton("编辑项目资料"); self.management_toggle.setFixedHeight(32); self.management_toggle.setCheckable(True)
+        self.review_meta.setStyleSheet("color: #9a5b00; font-size: 10px; font-weight: 650;"); self.review_meta.setVisible(initial_drift["state"] == "changed"); management_head.addWidget(self.review_meta)
+        self.management_toggle = QPushButton("编辑"); self.management_toggle.setFixedHeight(32); self.management_toggle.setCheckable(True)
         self.management_toggle.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.management_toggle.setIconSize(QSize(13, 13)); self.management_toggle.clicked.connect(self.toggle_management_details); management_head.addWidget(self.management_toggle)
         review_button = QPushButton("确认变化"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
         review_button.setToolTip("核对与上次记录不同的关键决策；没有变化时不会显示")
@@ -5989,10 +5989,16 @@ class ProjectWorkbenchDialog(QDialog):
         conversations_layout.addStretch(); lower.addWidget(conversations_card, 1)
         root.addWidget(self.activity_panel, 1)
 
-        actions = QHBoxLayout(); actions.setSpacing(8)
-        folder = QPushButton("打开项目文件夹"); folder.setIcon(fluent_icon("\uE838", size=14)); folder.setIconSize(QSize(14, 14)); folder.clicked.connect(lambda: parent.open_folder(project)); actions.addWidget(folder)
-        edit = QPushButton("完整编辑"); edit.setIcon(fluent_icon("\uE70F", size=14)); edit.setIconSize(QSize(14, 14)); edit.clicked.connect(self.full_edit); actions.addWidget(edit)
-        actions.addStretch(); close = QPushButton("关闭"); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        actions = QHBoxLayout(); actions.setSpacing(8); actions.addStretch()
+        more = QToolButton(); more.setFixedSize(36, 36); more.setIcon(fluent_icon("\uE712", color="#526071", size=15)); more.setIconSize(QSize(15, 15)); more.setAccessibleName("更多项目工具")
+        more.setStyleSheet("QToolButton { background: #ffffff; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #f1f5fa; border-color: #9fb6d0; }")
+        more_menu = QMenu(more)
+        full_edit_action = more_menu.addAction(fluent_icon("\uE70F", size=14), "完整编辑")
+        full_edit_action.triggered.connect(self.full_edit)
+        folder_action = more_menu.addAction(fluent_icon("\uE838", size=14), "打开项目文件夹")
+        folder_action.setEnabled(bool(str(project.get("path") or "").strip())); folder_action.triggered.connect(lambda: parent.open_folder(project))
+        more.setMenu(more_menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
+        close = QPushButton("关闭"); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
         self.status_field.currentIndexChanged.connect(self.update_completion_controls)
         self.update_completion_controls()
         self.render_tasks()
@@ -6006,7 +6012,7 @@ class ProjectWorkbenchDialog(QDialog):
         expanded = bool(expanded)
         self.management_toggle.blockSignals(True)
         self.management_toggle.setChecked(expanded)
-        self.management_toggle.setText("返回项目概览" if expanded else "编辑项目资料")
+        self.management_toggle.setText("收起" if expanded else "编辑")
         self.management_toggle.setIcon(
             fluent_icon("\uE72B" if expanded else "\uE70F", color="#315f9b", size=13)
         )
@@ -6029,6 +6035,10 @@ class ProjectWorkbenchDialog(QDialog):
         )
         self._primary_decision = primary
         self._primary_command = command
+        self.command_card.setVisible(str(command.get("key") or "") in {
+            "attention", "alignment", "lifecycle", "needs_next", "focus_commitment",
+            "review", "ready", "idle",
+        })
         palettes = {
             "danger": ("#b42318", "#fff7f5", "#efc9c2", "#fee9e5", "\uE7BA"),
             "warning": ("#a15c00", "#fffaf0", "#ead8ad", "#f8ebcf", "\uE7BA"),
@@ -6048,12 +6058,7 @@ class ProjectWorkbenchDialog(QDialog):
         self.command_kind.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 720; letter-spacing: 0.4px;")
         self.command_title.setText(str(command.get("title") or "当前项目"))
         self.command_reason.setText(str(command.get("reason") or "")); self.command_reason.setToolTip(self.command_reason.text())
-        objective = str(command.get("objective") or "目标未明确")
-        next_step = str(command.get("nextStep") or "下一步未明确")
-        context = f"目标 · {objective}    |    下一步 · {next_step}"
-        self.command_context.setText(context); self.command_context.setToolTip(context)
         evidence = str(command.get("evidenceText") or "")
-        self.command_evidence.setText(evidence); self.command_evidence.setToolTip(evidence)
         action = str(command.get("action") or "")
         action_icons = {
             "resolve_blocker": "\uE7BA", "edit_decision": "\uE70F", "calibrate_alignment": "\uE8A7",
@@ -6234,6 +6239,7 @@ class ProjectWorkbenchDialog(QDialog):
 
     def render_decision_history(self):
         entries = self.window.project_decisions_for(self.project)
+        self.decision_history_frame.setVisible(bool(entries))
         if not entries:
             summary = "暂无记录；首次保存真实变更后会自动形成历史"
             count = "0 条"
@@ -6276,17 +6282,22 @@ class ProjectWorkbenchDialog(QDialog):
         self.blocker_field.setCursorPosition(0)
 
     def refresh_header_states(self):
-        _key, text, color, background, reason = project_control_state(self.project)
+        key, text, color, background, reason = project_control_state(self.project)
         self.control_badge.setText(text); self.control_badge.setToolTip(reason)
         self.control_badge.setStyleSheet(f"color: {color}; background: {background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
         _state, state_text, state_color, state_background = project_display_state(self.project)
-        self.project_state_badge.setText(f"● {state_text}")
+        running_count = sum(codex_state(conversation)[0] == "running" for conversation in (self.project.get("conversations") or []))
+        self.project_state_badge.setText(f"● {running_count} 个对话运行中" if running_count else f"● {state_text}")
+        self.project_state_badge.setFixedWidth(112 if running_count else 78)
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
-        self.control_badge.setVisible(text != state_text)
+        self.control_badge.setVisible(key in {"blocked", "attention", "review"} and text != state_text)
         self.review_meta.setText(project_review_summary(self.project))
         drift = project_review_drift_presentation(self.project)
         self.review_meta.setToolTip(drift.get("tooltip") or drift["detail"])
-        self.review_meta.setStyleSheet(f"color: {'#9a5b00' if drift['state'] == 'changed' else '#66758a'}; font-size: 10px; font-weight: {'650' if drift['state'] == 'changed' else '500'};")
+        self.review_meta.setVisible(drift["state"] == "changed")
+        next_step = str(self.project.get("nextStep") or "尚未设置下一步")
+        self.project_context_summary.setText(f"下一步 · {next_step}")
+        self.project_context_summary.setToolTip(f"目标：{self.project.get('objective') or '尚未明确'}\n下一步：{next_step}")
         if hasattr(self, "command_card"):
             self.refresh_command_state()
 

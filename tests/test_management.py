@@ -591,10 +591,16 @@ class ManagementModuleTests(unittest.TestCase):
             "id": "runtime-id", "savedId": "stable-id", "name": "Release",
             "status": "active", "priority": "normal", "nextStep": "Run verification",
         }
-        matching = {"id": "task-1", "projectId": "stable-id", "date": "2026-08-10", "status": "doing", "title": " Run   verification "}
+        ordinary = {"id": "ordinary", "projectId": "stable-id", "date": "2026-08-10", "status": "doing", "title": "Investigate failed benchmark"}
+        self.assertIsNone(management.project_execution_alignment(project, [ordinary], "2026-08-10"))
+
+        matching = {
+            "id": "task-1", "projectId": "stable-id", "date": "2026-08-10", "status": "doing",
+            "title": "Verification sub-step", "origin": "project_next_step", "projectNextStep": " Run   verification ",
+        }
         self.assertIsNone(management.project_execution_alignment(project, [matching], "2026-08-10"))
 
-        live = {**matching, "title": "Investigate failed benchmark"}
+        live = {**matching, "title": "Investigate failed benchmark", "projectNextStep": "Investigate failed benchmark"}
         alignment = management.project_execution_alignment(project, [live], "2026-08-10")
         self.assertFalse(alignment["acknowledged"])
         self.assertEqual(alignment["tasks"], [live])
@@ -602,7 +608,7 @@ class ManagementModuleTests(unittest.TestCase):
 
         project["executionAlignmentSignature"] = alignment["signature"]
         self.assertEqual(management.portfolio_execution_alignment_queue([project], [live], "2026-08-10"), [])
-        changed_live = {**live, "title": "Validate corrected benchmark"}
+        changed_live = {**live, "title": "Validate corrected benchmark", "projectNextStep": "Validate corrected benchmark"}
         self.assertEqual(len(management.portfolio_execution_alignment_queue([project], [changed_live], "2026-08-10")), 1)
         self.assertIsNone(management.project_execution_alignment(project, [{**live, "archivedAt": "2026-08-10T12:00:00"}], "2026-08-10"))
 
