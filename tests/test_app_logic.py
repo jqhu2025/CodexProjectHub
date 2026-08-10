@@ -182,6 +182,41 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("实际推进", row.accessibleName())
         row.close()
 
+    def test_project_cockpit_keeps_global_strategy_and_queue_counts_when_cards_are_filtered(self):
+        visible = {
+            "id": "visible", "name": "Visible", "category": "A", "status": "active",
+            "priority": "normal", "activeTaskCount": 1, "stage": "execution", "health": "on_track",
+            "objective": "Ship A", "nextStep": "Test A", "conversations": [],
+        }
+        hidden = {
+            "id": "hidden", "name": "Hidden", "category": "B", "status": "active",
+            "priority": "focus", "activeTaskCount": 0, "stage": "validation", "health": "on_track",
+            "objective": "Ship B", "nextStep": "Test B", "conversations": [],
+        }
+        routing = APP.route_project_decision_queues((("review", [visible, hidden]),))
+        window = SimpleNamespace(
+            projects=[visible, hidden], project_decision_routing=Mock(return_value=routing),
+            project_command_for=Mock(return_value=None), open_project_workspace=Mock(),
+            select_category=Mock(), open_project_decision_queue=Mock(),
+            show_focus_capacity=Mock(), open_project_scope=Mock(),
+        )
+        view = APP.ProjectMindMap(window); view.resize(1100, 700)
+        with patch.object(APP, "portfolio_focus_capacity", return_value=3):
+            view.update_map([visible], ["全部", "A", "B"])
+
+        overview = next(
+            widget for item in view.scene().items()
+            for widget in [item.widget() if hasattr(item, "widget") else None]
+            if widget is not None and widget.objectName() == "mapOverview"
+        )
+        label_text = " ".join(label.text() for label in overview.findChildren(APP.QLabel))
+        button_text = [button.text() for button in overview.findChildren(APP.QPushButton)]
+        self.assertIn("2 个项目", label_text)
+        self.assertIn("战略重点 1/3", label_text)
+        self.assertTrue(any("实际推进" in text and "1" in text for text in button_text))
+        self.assertTrue(any("管理确认" in text and "2" in text for text in button_text))
+        view.close()
+
     def test_project_rows_show_the_routed_primary_command_instead_of_a_secondary_review_state(self):
         project = {
             "id": "runtime", "savedId": "stable", "name": "Validation", "category": "Research",
@@ -953,7 +988,10 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(
             metrics,
             {
-                "total": 6, "strategic": 2, "executing": 2, "risk": 1, "decisionTotal": 3,
+                "total": 6, "strategic": 2, "focusCapacity": 3, "executing": 2,
+                "executionOutsideFocus": 1, "focusWithoutExecution": 1,
+                "focusAlignmentGap": 2, "focusGuidance": "1 项执行候选 · 还可选 1 项",
+                "risk": 1, "decisionTotal": 3,
                 "decisionCounts": {
                     "attention": 1, "alignment": 0, "lifecycle": 1,
                     "needs_next": 0, "focus_commitment": 0, "review": 1,
@@ -962,7 +1000,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         )
         self.assertEqual(
             APP.project_portfolio_overview_text(metrics),
-            "6 个项目  ·  战略重点 2  ·  实际推进 2  ·  风险/阻塞 1  ·  管理待办 3",
+            "6 个项目  ·  战略重点 2/3  ·  实际推进 2  ·  风险/阻塞 1  ·  管理待办 3",
         )
         self.assertEqual(APP.project_decision_queue_summary(metrics["decisionCounts"]), "风险处置 1 · 生命周期 1 · 管理确认 1")
         self.assertNotIn("另有决策", APP.project_portfolio_overview_text(metrics))

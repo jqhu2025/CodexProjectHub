@@ -1490,10 +1490,10 @@ def project_decision_queue_summary(counts):
     return " · ".join(parts) if parts else "当前没有项目级管理待办"
 
 
-def project_portfolio_overview(projects, routing):
+def project_portfolio_overview(projects, routing, focus_capacity=None):
     """Build unambiguous cockpit counts from strategy, execution, risk, and decisions."""
     projects = list(projects or [])
-    signals = [project_strategy_execution_signals(project) for project in projects]
+    focus_state = portfolio_focus_capacity_state(projects, focus_capacity or DEFAULT_PORTFOLIO_FOCUS_CAPACITY)
     blocked_or_attention = sum(
         project_control_state(project)[0] in {"blocked", "attention"}
         for project in projects
@@ -1501,8 +1501,13 @@ def project_portfolio_overview(projects, routing):
     decision_counts = project_decision_queue_counts(projects, routing)
     return {
         "total": len(projects),
-        "strategic": sum(item["strategic"] for item in signals),
-        "executing": sum(item["executing"] for item in signals),
+        "strategic": len(focus_state["strategic"]),
+        "focusCapacity": focus_state["capacity"],
+        "executing": len(focus_state["executing"]),
+        "executionOutsideFocus": len(focus_state["executionOutsideFocus"]),
+        "focusWithoutExecution": len(focus_state["focusWithoutExecution"]),
+        "focusAlignmentGap": len(focus_state["executionOutsideFocus"]) + len(focus_state["focusWithoutExecution"]),
+        "focusGuidance": portfolio_focus_guidance(focus_state),
         "risk": blocked_or_attention,
         "decisionTotal": sum(decision_counts.values()),
         "decisionCounts": decision_counts,
@@ -1512,7 +1517,7 @@ def project_portfolio_overview(projects, routing):
 def project_portfolio_overview_text(metrics):
     parts = [
         f"{metrics['total']} 个项目",
-        f"战略重点 {metrics['strategic']}",
+        f"战略重点 {metrics['strategic']}/{metrics['focusCapacity']}",
         f"实际推进 {metrics['executing']}",
         f"风险/阻塞 {metrics['risk']}",
         f"管理待办 {metrics['decisionTotal']}",
@@ -3069,7 +3074,7 @@ class ProjectMindMap(QGraphicsView):
         card_width = int((canvas_width - side_margin * 2 - column_gap * (columns - 1)) / columns)
 
         overview = QFrame()
-        overview.setFixedSize(canvas_width - side_margin * 2, 104)
+        overview.setFixedSize(canvas_width - side_margin * 2, 140)
         overview.setObjectName("mapOverview")
         overview.setStyleSheet(
             "QFrame#mapOverview { background: transparent; border: none; }"
@@ -3077,18 +3082,19 @@ class ProjectMindMap(QGraphicsView):
         )
         overview_layout = QVBoxLayout(overview)
         overview_layout.setContentsMargins(4, 2, 4, 2)
-        overview_layout.setSpacing(7)
+        overview_layout.setSpacing(6)
         headline = QHBoxLayout(); headline.setSpacing(10)
         accent = QLabel(); accent.setFixedSize(4, 30); accent.setStyleSheet("background: #2563eb; border-radius: 2px;")
         headline.addWidget(accent)
         title_box = QVBoxLayout(); title_box.setSpacing(1)
         title = QLabel("项目驾驶舱"); title.setStyleSheet("color: #172033; font-size: 19px; font-weight: 700;")
-        subtitle = QLabel("战略态势与主决策分开呈现；每个项目只进入一个管理队列")
+        subtitle = QLabel("全局组合态势与主决策分开呈现；筛选项目不会改变全局队列数字")
         subtitle.setStyleSheet("color: #748094; font-size: 12px;")
         title_box.addWidget(title); title_box.addWidget(subtitle)
         headline.addLayout(title_box)
         headline.addStretch(1)
-        overview_metrics = project_portfolio_overview(projects, routing)
+        portfolio_projects = list(getattr(self.window, "projects", None) or projects)
+        overview_metrics = project_portfolio_overview(portfolio_projects, routing, portfolio_focus_capacity())
         summary = QLabel(project_portfolio_overview_text(overview_metrics))
         decision_summary = project_decision_queue_summary(overview_metrics["decisionCounts"])
         summary.setToolTip(
@@ -3100,6 +3106,39 @@ class ProjectMindMap(QGraphicsView):
         summary.setAccessibleName(project_portfolio_overview_text(overview_metrics))
         summary.setStyleSheet("color: #65758b; background: transparent; border: none; padding: 4px 2px; font-size: 12px; font-weight: 500;")
         headline.addWidget(summary); overview_layout.addLayout(headline)
+
+        strategy_row = QHBoxLayout(); strategy_row.setSpacing(7)
+        strategy_caption = QLabel("战略执行")
+        strategy_caption.setStyleSheet("color: #526071; font-size: 11px; font-weight: 700; letter-spacing: 0.4px;")
+        strategy_row.addWidget(strategy_caption)
+        focus_button = QPushButton(f"战略重点  {overview_metrics['strategic']} / {overview_metrics['focusCapacity']}")
+        focus_button.setFixedHeight(30); focus_button.setIcon(fluent_icon("\uE735", color="#6d3fc0", size=13)); focus_button.setIconSize(QSize(13, 13))
+        focus_button.setToolTip("查看并调整有限的战略重点组合；重点由你决定，不由运行状态自动推断")
+        focus_button.setAccessibleName(f"战略重点 {overview_metrics['strategic']} / {overview_metrics['focusCapacity']}，点击校准")
+        focus_button.setStyleSheet("QPushButton { color: #6d3fc0; background: #f3edff; border: 1px solid #d6e0eb; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #ffffff; border-color: #8b5cf6; }")
+        focus_button.clicked.connect(self.window.show_focus_capacity); strategy_row.addWidget(focus_button)
+        execution_button = QPushButton(f"实际推进  {overview_metrics['executing']}")
+        execution_button.setFixedHeight(30); execution_button.setIcon(fluent_icon("\uE768", color="#087443", size=13)); execution_button.setIconSize(QSize(13, 13))
+        execution_button.setToolTip("筛选今天有进行中任务或运行中 Codex 对话的项目")
+        execution_button.setAccessibleName(f"实际推进 {overview_metrics['executing']} 个项目，点击查看")
+        execution_button.setStyleSheet("QPushButton { color: #087443; background: #eef8f2; border: 1px solid #d6e0eb; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #ffffff; border-color: #58a47c; }")
+        execution_button.clicked.connect(lambda: self.window.open_project_scope("executing")); strategy_row.addWidget(execution_button)
+        alignment_gap = int(overview_metrics["focusAlignmentGap"] or 0)
+        guidance_color, guidance_background = ("#9a5b00", "#fff8e8") if alignment_gap else ("#087443", "#eef8f2")
+        guidance_button = QPushButton(overview_metrics["focusGuidance"])
+        guidance_button.setFixedHeight(30); guidance_button.setIcon(fluent_icon("\uE9D2", color=guidance_color, size=13)); guidance_button.setIconSize(QSize(13, 13))
+        guidance_button.setToolTip(
+            f"重点外执行 {overview_metrics['executionOutsideFocus']} 项；重点未落地 {overview_metrics['focusWithoutExecution']} 项。点击进行组合校准"
+        )
+        guidance_button.setAccessibleName(
+            f"战略执行校准。{overview_metrics['focusGuidance']}。重点外执行 {overview_metrics['executionOutsideFocus']} 项；重点未落地 {overview_metrics['focusWithoutExecution']} 项"
+        )
+        guidance_button.setStyleSheet(
+            f"QPushButton {{ color: {guidance_color}; background: {guidance_background}; border: 1px solid #d6e0eb; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 650; }}"
+            f"QPushButton:hover, QPushButton:focus {{ background: #ffffff; border-color: {guidance_color}; }}"
+        )
+        guidance_button.clicked.connect(self.window.show_focus_capacity); strategy_row.addWidget(guidance_button)
+        strategy_row.addStretch(1); overview_layout.addLayout(strategy_row)
 
         decision_row = QHBoxLayout(); decision_row.setSpacing(7)
         decision_caption = QLabel("管理决策")
@@ -3131,7 +3170,7 @@ class ProjectMindMap(QGraphicsView):
         overview_proxy = self.map_scene.addWidget(overview)
         overview_proxy.setPos(side_margin, 8)
 
-        column_heights = [130] * columns
+        column_heights = [166] * columns
         for category_index, category in enumerate(order):
             items = groups[category]
             color = self.CATEGORY_COLORS[category_index % len(self.CATEGORY_COLORS)]
