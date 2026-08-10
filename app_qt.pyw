@@ -91,14 +91,17 @@ from codex_hub.portfolio import (
     normalized_portfolio_focus_capacity,
     normalized_portfolio_inactivity_days,
     normalized_task_wip_limit,
+    find_open_project_next_step_task,
     migrate_task_category_references,
     migrate_project_task_category_references,
+    portfolio_focus_commitment_queue,
     portfolio_focus_capacity_state,
     portfolio_lifecycle_calibration_queue,
     project_activity_evidence,
     project_review_evidence,
     project_lifecycle_calibration_state,
     project_live_work_state,
+    project_next_step_commitment_state,
     project_reference_ids,
     assign_task_project,
     reconcile_task_project_links_from_conversations,
@@ -1067,27 +1070,6 @@ def project_priority_key(project):
     return value if value in PROJECT_PRIORITY else "normal"
 
 
-def find_open_project_next_step_task(tasks, project, title):
-    """Return the one current open work item for a declared project action.
-
-    A project next step is a portfolio decision, not a per-day template. Search
-    across dates and ignore rollover predecessors so scheduling or restoring
-    cannot create a second live copy of the same action.
-    """
-    expected = normalized_action_text(title)
-    return next(
-        (
-            task for task in tasks
-            if task_matches_project(task, project)
-            and not task_is_archived(task)
-            and not task_is_superseded_daily_record(task)
-            and task.get("status", "planned") != "done"
-            and normalized_action_text(task.get("title")) == expected
-        ),
-        None,
-    )
-
-
 def build_project_next_step_task(project, target_date, now, conversation=None, task_id=None):
     title = str((project or {}).get("nextStep") or "").strip()
     stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
@@ -1249,13 +1231,14 @@ def portfolio_decision_groups(projects):
     }
 
 
-def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None):
+def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None, focus_commitments=None):
     """Choose one calm, evidence-based management decision from competing queues."""
     groups = groups or {}
     capacity_state = capacity_state or {}
     alignments = list(alignments or [])
     lifecycle_items = list(lifecycle_items or [])
     wip_state = wip_state or {}
+    focus_commitments = list(focus_commitments or [])
 
     def names_for(items, nested=False):
         projects = [(item.get("project") or {}) if nested else item for item in items]
@@ -1271,6 +1254,8 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             secondary.append(f"执行校准 {len(alignments)}")
         if lifecycle_items and decision["scope"] != "lifecycle":
             secondary.append(f"生命周期 {len(lifecycle_items)}")
+        if focus_commitments and decision["scope"] != "focus_commitment":
+            secondary.append(f"重点落地 {len(focus_commitments)}")
         decision["secondary"] = " · ".join(secondary)
         return decision
 
@@ -1328,6 +1313,14 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "focus_capacity", "count": len(outside_focus), "title": "校准战略重点",
             "summary": f"实际推进尚未纳入重点组合：{preview(names)}",
             "names": names, "action": "调整重点",
+        })
+
+    if focus_commitments:
+        names = names_for(focus_commitments, nested=True)
+        return finalize({
+            "scope": "focus_commitment", "count": len(focus_commitments), "title": "把战略重点落到任务板",
+            "summary": f"已明确下一步，但尚未形成当前任务：{preview(names)}",
+            "names": names, "action": "落实下一步",
         })
 
     review = list(groups.get("review") or [])
@@ -4176,7 +4169,7 @@ class FocusCapacityDialog(QDialog):
         self.alignment_metric = self.metric_widget("组合判断", "待校准", "#315f9b"); summary_layout.addWidget(self.alignment_metric[0], 2)
         root.addWidget(self.summary)
 
-        hint = QLabel("建议只把真正需要管理注意力的项目设为重点。正在执行但尚未列入重点的项目会保留绿色执行信号，不会被系统自动改级。")
+        hint = QLabel("建议只把真正需要管理注意力的项目设为重点。设为重点后，可在同一处把已明确的下一步加入今日计划；已有任务或 Codex 正在运行时不会重复催促。")
         hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
@@ -4207,6 +4200,7 @@ class FocusCapacityDialog(QDialog):
         capacity = portfolio_focus_capacity()
         state = portfolio_focus_capacity_state(self.window.projects, capacity)
         strategic_count = len(state["strategic"]); execution_count = len(state["executing"])
+        commitment_due = portfolio_focus_commitment_queue(state["strategic"], self.window.today_tasks)
         self.capacity_button.setText(f"重点容量 {capacity}")
         self.focus_metric[1].setText(f"{strategic_count} / {capacity}")
         self.execution_metric[1].setText(str(execution_count))
@@ -4216,8 +4210,11 @@ class FocusCapacityDialog(QDialog):
         elif state["executionOutsideFocus"]:
             alignment = f"{len(state['executionOutsideFocus'])} 项执行未纳入重点"
             color, background = "#315f9b", "#edf4ff"
+        elif commitment_due:
+            alignment = f"{len(commitment_due)} 项重点下一步待落地"
+            color, background = "#b54708", "#fff8ed"
         elif strategic_count:
-            alignment = f"尚可增加 {state['remaining']} 项"
+            alignment = "重点已落地" + (f" · 可增加 {state['remaining']} 项" if state["remaining"] else "")
             color, background = "#087443", "#e8f7ef"
         else:
             alignment = "尚未选择重点"
@@ -4242,24 +4239,60 @@ class FocusCapacityDialog(QDialog):
     def project_row(self, project):
         is_focus = project_priority_key(project) == "focus"
         live, live_reason, _task_count, _running_count = project_live_work_state(project)
+        commitment = project_next_step_commitment_state(project, self.window.today_tasks)
         row = QFrame(); row.setObjectName("focusProjectRow")
+        row.setMinimumHeight(74)
         accent = "#7c3aed" if is_focus else "#10a361" if live else "#d5dee9"
         row.setStyleSheet(f"QFrame#focusProjectRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#focusProjectRow QLabel {{ background: transparent; border: none; }}")
-        layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
-        text = QVBoxLayout(); text.setSpacing(3)
+        layout = QHBoxLayout(row); layout.setContentsMargins(14, 8, 10, 8); layout.setSpacing(9)
+        text = QVBoxLayout(); text.setSpacing(2)
         name = ElidedLabel(project.get("name") or "未命名项目"); name.setToolTip(project.get("name") or "未命名项目"); name.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(name)
-        meta = ElidedLabel(f"{project.get('category') or '未分类'}  ·  {live_reason if live else '当前无实时执行'}")
-        meta.setToolTip(meta.text()); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
+        stage = PROJECT_STAGE.get(project_stage_key(project), "阶段未设置")
+        health = PROJECT_HEALTH.get(project_health_key(project), "健康度未设置")
+        meta = ElidedLabel(f"{project.get('category') or '未分类'}  ·  {stage}  ·  {health}")
+        meta.setToolTip(meta.text()); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta)
+        next_step = commitment.get("nextStep") or "尚未明确下一步"
+        next_line = ElidedLabel(f"下一步 · {next_step}"); next_line.setToolTip(next_step)
+        next_line.setStyleSheet("color: #40536d; font-size: 10px; font-weight: 550;"); text.addWidget(next_line); layout.addLayout(text, 1)
         if live:
             execution = QLabel("● 实际推进"); execution.setAlignment(Qt.AlignCenter); execution.setFixedSize(78, 26)
+            execution.setToolTip(live_reason)
             execution.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(execution)
-        focus = QLabel("战略重点" if is_focus else "常规项目"); focus.setAlignment(Qt.AlignCenter); focus.setFixedSize(70, 26)
-        focus.setStyleSheet(("color: #6d3fc0; background: #f1eaff;" if is_focus else "color: #66758a; background: #eef2f6;") + " border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(focus)
+        if is_focus:
+            commitment_styles = {
+                "scheduled": ("下一步已落地", "#087443", "#e7f7ef"),
+                "live_other": ("已有在制工作", "#315f9b", "#e7eef7"),
+                "ready": ("下一步待落地", "#9a3412", "#fff1dc"),
+                "missing": ("缺少下一步", "#b42318", "#fff0ee"),
+            }
+            label, color, background = commitment_styles.get(commitment["state"], ("待确认", "#66758a", "#eef2f6"))
+            commitment_badge = QLabel(label); commitment_badge.setAlignment(Qt.AlignCenter); commitment_badge.setFixedSize(88, 26)
+            commitment_badge.setStyleSheet(f"color: {color}; background: {background}; border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(commitment_badge)
+            if commitment["state"] in {"ready", "missing"}:
+                commit = QPushButton("加入今日计划" if commitment["state"] == "ready" else "补齐下一步"); commit.setFixedSize(96, 34)
+                commit.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c9d8f4; border-radius: 8px; font-size: 11px; font-weight: 680; } QPushButton:hover, QPushButton:focus { background: #ffffff; border-color: #6d93df; }")
+                if commitment["state"] == "ready":
+                    commit.setToolTip("把这个战略重点已经确认的下一步加入今日计划")
+                    commit.clicked.connect(lambda _checked=False, value=project: self.commit_project(value))
+                else:
+                    commit.setToolTip("打开项目面板，先明确一个可执行的下一步")
+                    commit.clicked.connect(lambda _checked=False, value=project: self.open_project_for_next_step(value))
+                layout.addWidget(commit)
         action = QPushButton("移出重点" if is_focus else "设为重点"); action.setFixedSize(92, 34)
         if not is_focus:
             action.setStyleSheet("QPushButton { color: #6d3fc0; background: #f7f2ff; border: 1px solid #d7c6f3; border-radius: 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #eee4ff; border-color: #ab87df; }")
         action.clicked.connect(lambda _checked=False, value=project, enabled=not is_focus: self.set_focus(value, enabled)); layout.addWidget(action)
         return row
+
+    def commit_project(self, project):
+        task = self.window.schedule_project_next_step(project)
+        if task is not None:
+            self.render_state()
+        return task
+
+    def open_project_for_next_step(self, project):
+        self.window.open_project_workspace(project)
+        self.render_state()
 
     def set_focus(self, project, enabled):
         if self.window.set_project_focus_priority(project, enabled):
@@ -5565,6 +5598,9 @@ class MainWindow(QMainWindow):
         today = QDate.currentDate().toString(Qt.ISODate)
         return portfolio_execution_alignment_queue(self.projects, self.today_tasks, today)
 
+    def focus_commitment_queue(self):
+        return portfolio_focus_commitment_queue(self.projects, self.today_tasks)
+
     def open_portfolio_priority_decision(self):
         scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
         if scope == "task_wip":
@@ -5573,6 +5609,8 @@ class MainWindow(QMainWindow):
             self.show_execution_alignment_queue()
         elif scope == "lifecycle":
             self.show_lifecycle_calibration()
+        elif scope == "focus_commitment":
+            self.show_focus_capacity()
         elif scope:
             self.open_project_scope(scope)
 
@@ -5590,6 +5628,7 @@ class MainWindow(QMainWindow):
         groups["review"] = self.portfolio_review_queue()
         prefixes = {"attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
+        focus_commitments = self.focus_commitment_queue()
         for scope, controls in self.portfolio_decision_cards.items():
             if scope == "focus_capacity":
                 strategic = capacity_state["strategic"]
@@ -5599,8 +5638,10 @@ class MainWindow(QMainWindow):
                     summary = f"超出 {capacity_state['overBy']} 项 · {len(executing)} 项实际推进"
                 elif capacity_state["executionOutsideFocus"]:
                     summary = f"{len(capacity_state['executionOutsideFocus'])} 项执行未纳入重点"
+                elif focus_commitments:
+                    summary = f"{len(focus_commitments)} 项重点下一步待落地"
                 elif strategic:
-                    summary = f"尚可增加 {capacity_state['remaining']} 项 · {len(executing)} 项实际推进"
+                    summary = "重点已落地" + (f" · 可增加 {capacity_state['remaining']} 项" if capacity_state["remaining"] else "")
                 else:
                     summary = f"尚未选择重点 · {len(executing)} 项实际推进"
                 strategic_names = [str(project.get("name") or "未命名项目") for project in strategic]
@@ -5609,6 +5650,9 @@ class MainWindow(QMainWindow):
                 tooltip_lines.extend(f"• {name}" for name in strategic_names[:8])
                 tooltip_lines.append(f"实际推进 {len(executing)} 项")
                 tooltip_lines.extend(f"• {name}" for name in executing_names[:8])
+                if focus_commitments:
+                    tooltip_lines.append(f"下一步待落地 {len(focus_commitments)} 项")
+                    tooltip_lines.extend(f"• {(item.get('project') or {}).get('name') or '未命名项目'}" for item in focus_commitments[:8])
                 tooltip = "\n".join(tooltip_lines)
                 controls["preview"].setText(summary); controls["preview"].setToolTip(tooltip); controls["frame"].setToolTip(tooltip)
                 controls["frame"].setAccessibleName(f"重点容量，{len(strategic)} / {capacity_state['capacity']}；{len(executing)} 项实际推进。{summary}")
@@ -5657,7 +5701,8 @@ class MainWindow(QMainWindow):
             lifecycle_items = self.lifecycle_calibration_queue()
             wip_state = self.task_wip_state(QDate.currentDate().toString(Qt.ISODate))
             decision = portfolio_priority_decision(
-                groups, capacity_state, alignments, lifecycle_items, wip_state=wip_state
+                groups, capacity_state, alignments, lifecycle_items,
+                wip_state=wip_state, focus_commitments=focus_commitments,
             )
             self.portfolio_priority_panel.setVisible(decision is not None)
             self._portfolio_priority_scope = (decision or {}).get("scope", "")
@@ -5668,6 +5713,7 @@ class MainWindow(QMainWindow):
                     "task_wip": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE8EF"),
                     "alignment": ("#1d4ed8", "#f5f8ff", "#c9d8ee", "#e7effc", "\uE8A7"),
                     "needs_next": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE72A"),
+                    "focus_commitment": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE9D2"),
                     "focus_capacity": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE8D4"),
                     "review": ("#315f9b", "#f6f9fd", "#cfdae8", "#e7eef7", "\uE81C"),
                     "lifecycle": ("#315f9b", "#f7f9fc", "#d2dce8", "#e7eef7", "\uE823"),

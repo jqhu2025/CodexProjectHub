@@ -481,6 +481,18 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(update["priority"], "focus")
         self.assertEqual(window.update_project_management.call_args.kwargs["source"], "focus")
 
+    def test_focus_commitment_action_reuses_the_project_next_step_scheduler(self):
+        project = {"id": "focus", "nextStep": "Run validation"}
+        task = {"id": "task"}
+        dialog = SimpleNamespace(
+            window=SimpleNamespace(schedule_project_next_step=Mock(return_value=task)),
+            render_state=Mock(),
+        )
+        result = APP.FocusCapacityDialog.commit_project(dialog, project)
+        self.assertEqual(result, task)
+        dialog.window.schedule_project_next_step.assert_called_once_with(project)
+        dialog.render_state.assert_called_once_with()
+
     def test_activity_evidence_uses_the_latest_real_task_codex_or_review_timestamp(self):
         project = {
             "id": "runtime", "savedId": "stable", "reviewedAt": "2026-08-06T09:00:00",
@@ -817,6 +829,12 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         groups["needs_next"] = []
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "focus_capacity")
         capacity["executionOutsideFocus"] = []
+        commitment = {"project": {"name": "Release candidate"}}
+        commitment_decision = APP.portfolio_priority_decision(
+            groups, capacity, [], [lifecycle], focus_commitments=[commitment]
+        )
+        self.assertEqual(commitment_decision["scope"], "focus_commitment")
+        self.assertIn("形成当前任务", commitment_decision["summary"])
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "review")
         groups["review"] = []
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "lifecycle")
@@ -840,6 +858,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window._portfolio_priority_scope = "review"
         APP.MainWindow.open_portfolio_priority_decision(window)
         window.open_project_scope.assert_called_once_with("review")
+
+        window._portfolio_priority_scope = "focus_commitment"
+        window.show_focus_capacity = Mock()
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_focus_capacity.assert_called_once_with()
 
     def test_project_insight_requires_an_existing_project_folder(self):
         with patch.object(APP, "find_summary_codex_binary", return_value="codex"):

@@ -22,6 +22,27 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual([project["id"] for project in state["executionOutsideFocus"]], ["live"])
         self.assertEqual([project["id"] for project in state["focusWithoutExecution"]], ["focus"])
 
+    def test_focus_commitment_only_queues_a_declared_action_without_other_live_work(self):
+        projects = [
+            {"id": "ready", "status": "active", "priority": "focus", "nextStep": "Run validation"},
+            {"id": "scheduled", "status": "active", "priority": "focus", "nextStep": "Package release"},
+            {"id": "other", "status": "active", "priority": "focus", "nextStep": "Write report"},
+            {"id": "codex", "status": "active", "priority": "focus", "nextStep": "Review output", "conversations": [{"state": "working"}]},
+            {"id": "missing", "status": "active", "priority": "focus", "nextStep": ""},
+            {"id": "regular", "status": "active", "priority": "normal", "nextStep": "Run benchmark"},
+        ]
+        tasks = [
+            {"id": "scheduled-task", "projectId": "scheduled", "status": "planned", "title": "Package release"},
+            {"id": "other-task", "projectId": "other", "status": "doing", "title": "Investigate failure"},
+        ]
+        self.assertEqual(portfolio.project_next_step_commitment_state(projects[0], tasks)["state"], "ready")
+        self.assertEqual(portfolio.project_next_step_commitment_state(projects[1], tasks)["state"], "scheduled")
+        self.assertEqual(portfolio.project_next_step_commitment_state(projects[2], tasks)["state"], "live_other")
+        self.assertEqual(portfolio.project_next_step_commitment_state(projects[3], tasks)["state"], "live_other")
+        self.assertEqual(portfolio.project_next_step_commitment_state(projects[4], tasks)["state"], "missing")
+        queue = portfolio.portfolio_focus_commitment_queue(projects, tasks)
+        self.assertEqual([item["project"]["id"] for item in queue], ["ready", "missing"])
+
     def test_activity_evidence_resolves_stable_project_ids(self):
         project = {
             "id": "runtime", "savedId": "stable", "reviewedAt": "2026-08-06T09:00:00",

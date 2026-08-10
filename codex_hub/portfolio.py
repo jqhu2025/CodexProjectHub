@@ -6,6 +6,7 @@ from .management import (
     PROJECT_HEALTH,
     PROJECT_PRIORITY,
     STATUS_TEXT,
+    normalized_action_text,
     ordered_board_tasks,
     project_execution_alignment,
     task_is_archived,
@@ -59,6 +60,73 @@ def project_reference_ids(project):
 def task_matches_project(task, project):
     project_id = str((task or {}).get("projectId") or "")
     return bool(project_id and project_id in project_reference_ids(project))
+
+
+def find_open_project_next_step_task(tasks, project, title):
+    """Return the single current work item matching a declared project action."""
+    expected = normalized_action_text(title)
+    if not expected:
+        return None
+    return next(
+        (
+            task for task in tasks or []
+            if task_matches_project(task, project)
+            and not task_is_archived(task)
+            and not task_is_superseded_daily_record(task)
+            and task.get("status", "planned") != "done"
+            and normalized_action_text(task.get("title")) == expected
+        ),
+        None,
+    )
+
+
+def project_next_step_commitment_state(project, tasks):
+    """Explain whether a declared project action has become current work."""
+    project = project or {}
+    if project.get("status", "active") != "active":
+        return {"state": "inactive", "nextStep": "", "task": None, "activeTasks": [], "runningConversations": 0}
+    next_step = str(project.get("nextStep") or "").strip()
+    active_tasks = [
+        task for task in tasks or []
+        if task_matches_project(task, project)
+        and not task_is_archived(task)
+        and not task_is_superseded_daily_record(task)
+        and task.get("status", "planned") != "done"
+    ]
+    running_conversations = sum(
+        activity_state(conversation) == "running"
+        for conversation in project.get("conversations") or []
+    )
+    if not next_step:
+        state = "missing"
+        matching_task = None
+    else:
+        matching_task = find_open_project_next_step_task(active_tasks, project, next_step)
+        if matching_task is not None:
+            state = "scheduled"
+        elif active_tasks or running_conversations:
+            state = "live_other"
+        else:
+            state = "ready"
+    return {
+        "state": state,
+        "nextStep": next_step,
+        "task": matching_task,
+        "activeTasks": active_tasks,
+        "runningConversations": running_conversations,
+    }
+
+
+def portfolio_focus_commitment_queue(projects, tasks):
+    """Keep strategic-focus projects whose next-action commitment is incomplete."""
+    return [
+        {"project": project, **state}
+        for project in projects or []
+        if project.get("status", "active") == "active"
+        and str(project.get("priority") or "normal") == "focus"
+        for state in (project_next_step_commitment_state(project, tasks),)
+        if state["state"] in {"missing", "ready"}
+    ]
 
 
 def task_project_identity(task, project=None):
