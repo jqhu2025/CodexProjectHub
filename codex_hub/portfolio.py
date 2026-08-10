@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from .management import PROJECT_HEALTH, PROJECT_PRIORITY, STATUS_TEXT, task_is_archived
+from .management import PROJECT_HEALTH, PROJECT_PRIORITY, STATUS_TEXT, ordered_board_tasks, task_is_archived
 from .runtime import activity_state
 
 
@@ -395,3 +395,43 @@ def task_wip_capacity_state(tasks, target_date, limit=DEFAULT_TASK_WIP_LIMIT, ru
         "remaining": max(0, limit - len(doing)),
         "overBy": max(0, len(doing) - limit),
     }
+
+
+def wip_deferral_recommendations(tasks, projects, target_date, over_by, protected_task_ids=None):
+    """Recommend reversible WIP reductions from explicit priority and board-order evidence."""
+    try:
+        needed = max(0, int(over_by))
+    except (TypeError, ValueError):
+        needed = 0
+    if not needed:
+        return []
+    protected = {str(value) for value in (protected_task_ids or set()) if value}
+    project_index = {
+        reference: project
+        for project in (projects or [])
+        for reference in project_reference_ids(project)
+    }
+    ordered = ordered_board_tasks(tasks, target_date, "doing")
+    priority_order = {"later": 0, "normal": 1, "focus": 2}
+    candidates = []
+    for position, task in enumerate(ordered):
+        if str(task.get("id") or "") in protected:
+            continue
+        project = project_index.get(str(task.get("projectId") or ""))
+        priority = str((project or {}).get("priority") or "normal")
+        if priority not in PROJECT_PRIORITY:
+            priority = "normal"
+        candidates.append((priority_order[priority], -position, task, project, priority))
+    candidates.sort(key=lambda item: (item[0], item[1], str(item[2].get("createdAt") or "")))
+    result = []
+    for _priority_rank, _position, task, project, priority in candidates[:needed]:
+        if priority == "later":
+            reason = "所属项目已设为“稍后处理”"
+        elif project is None:
+            reason = "未关联可识别项目，且看板顺序靠后"
+        elif priority == "focus":
+            reason = "看板顺序最低；仅在其他候选不足时建议"
+        else:
+            reason = "非战略重点，且看板顺序靠后"
+        result.append({"task": task, "project": project, "reason": reason})
+    return result

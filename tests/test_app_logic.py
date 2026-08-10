@@ -571,6 +571,17 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.MainWindow.defer_task_from_wip(window, task))
         move.assert_called_once_with("task-1", "planned", None, source="manual")
 
+    def test_wip_recommendation_still_uses_the_existing_reversible_action(self):
+        task = {"id": "task-1", "status": "doing"}
+        dialog = SimpleNamespace(recommendations=[{"task": task}], defer_task=Mock())
+        APP.TaskWipDialog.apply_recommendation(dialog)
+        dialog.defer_task.assert_called_once_with(task)
+
+        dialog.recommendations = []
+        dialog.defer_task.reset_mock()
+        APP.TaskWipDialog.apply_recommendation(dialog)
+        dialog.defer_task.assert_not_called()
+
     def test_non_active_project_never_leaks_into_current_focus(self):
         completed = {"status": "completed", "priority": "focus", "activeTaskCount": 1, "conversations": [{"state": "working"}]}
         self.assertFalse(APP.project_focus_state(completed)[0])

@@ -108,6 +108,7 @@ from codex_hub.portfolio import (
     task_project_link_events,
     task_project_link_issues,
     task_wip_capacity_state,
+    wip_deferral_recommendations,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 
@@ -3846,8 +3847,12 @@ class TaskWipDialog(QDialog):
         self.judgement_metric = self.metric_widget("执行判断", "待计算", "#087443"); summary_layout.addWidget(self.judgement_metric[0], 2)
         root.addWidget(self.summary)
 
-        hint = QLabel("如果需要收敛并行量，可将尚未由 Codex 执行的任务移回“计划”。正在运行的 Codex 任务会被保护，避免状态与真实执行不一致。")
-        hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
+        self.guidance = QFrame(); self.guidance.setObjectName("taskWipGuidance")
+        guidance_layout = QHBoxLayout(self.guidance); guidance_layout.setContentsMargins(11, 8, 10, 8); guidance_layout.setSpacing(9)
+        self.guidance_icon = QLabel(); self.guidance_icon.setFixedSize(26, 26); self.guidance_icon.setAlignment(Qt.AlignCenter); guidance_layout.addWidget(self.guidance_icon)
+        self.guidance_text = QLabel(); self.guidance_text.setWordWrap(True); self.guidance_text.setStyleSheet("color: #526071; font-size: 11px;"); guidance_layout.addWidget(self.guidance_text, 1)
+        self.recommend_button = QPushButton("采用建议"); self.recommend_button.setFixedHeight(32); self.recommend_button.setIcon(fluent_icon("\uE72A", color="#b54708", size=13)); self.recommend_button.setIconSize(QSize(13, 13)); self.recommend_button.clicked.connect(self.apply_recommendation); guidance_layout.addWidget(self.recommend_button)
+        root.addWidget(self.guidance)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
         self.rows_widget = QWidget(); self.rows_widget.setObjectName("taskWipRows"); self.rows_widget.setStyleSheet("QWidget#taskWipRows { background: #f7f9fc; }")
@@ -3886,15 +3891,56 @@ class TaskWipDialog(QDialog):
         self.judgement_metric[1].setText(judgement); self.judgement_metric[1].setStyleSheet(f"color: {color}; font-size: 16px; font-weight: 720;")
         self.summary.setStyleSheet(f"QFrame#taskWipSummary {{ background: {background}; border: 1px solid {border}; border-radius: 12px; }} QFrame#taskWipSummary QLabel {{ background: transparent; border: none; }}")
         protected_ids = {str(task.get("id") or "") for task in state["protected"]}
+        self.recommendations = wip_deferral_recommendations(
+            self.window.today_tasks,
+            self.window.projects,
+            self.target_date,
+            state["overBy"],
+            protected_ids,
+        )
+        primary_recommendation = self.recommendations[0] if self.recommendations else None
+        if state["overBy"] and primary_recommendation:
+            task = primary_recommendation["task"]
+            remaining = max(0, state["overBy"] - 1)
+            remaining_text = f"；采用后仍需再收敛 {remaining} 项" if remaining else "；采用后即可恢复容量"
+            self.guidance_text.setText(
+                f"建议先移回“{task.get('title') or '未命名任务'}”：{primary_recommendation['reason']}{remaining_text}。"
+            )
+            self.guidance_icon.setPixmap(fluent_icon("\uE8EF", color="#b54708", size=15).pixmap(QSize(15, 15)))
+            self.guidance_icon.setStyleSheet("background: #f8e7cd; border-radius: 7px;")
+            self.guidance.setStyleSheet("QFrame#taskWipGuidance { background: #fff8ed; border: 1px solid #efd7b4; border-radius: 9px; }")
+            self.recommend_button.setVisible(True)
+            self.recommend_button.setToolTip(f"移回计划：{task.get('title') or '未命名任务'}")
+            self.recommend_button.setStyleSheet("QPushButton { color: #9a3412; background: #ffffff; border: 1px solid #e7bd82; border-radius: 8px; padding: 4px 10px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #fff3df; border-color: #c98b36; }")
+        elif state["overBy"]:
+            self.guidance_text.setText("当前超载任务均由 Codex 运行保护，暂不建议移回计划；可等待运行结束，或主动调整 WIP 容量。")
+            self.guidance_icon.setPixmap(fluent_icon("\uE7BA", color="#b54708", size=15).pixmap(QSize(15, 15)))
+            self.guidance_icon.setStyleSheet("background: #f8e7cd; border-radius: 7px;")
+            self.guidance.setStyleSheet("QFrame#taskWipGuidance { background: #fff8ed; border: 1px solid #efd7b4; border-radius: 9px; }")
+            self.recommend_button.setVisible(False)
+        else:
+            self.guidance_text.setText("当前并行量在容量内。正在运行的 Codex 任务会继续受到保护，不会被建议移回计划。")
+            self.guidance_icon.setPixmap(fluent_icon("\uE73E", color="#087443", size=15).pixmap(QSize(15, 15)))
+            self.guidance_icon.setStyleSheet("background: #e7f7ef; border-radius: 7px;")
+            self.guidance.setStyleSheet("QFrame#taskWipGuidance { background: #f3f8f5; border: 1px solid #d7e8de; border-radius: 9px; }")
+            self.recommend_button.setVisible(False)
+        recommended_id = str((primary_recommendation or {}).get("task", {}).get("id") or "")
+        recommended_reason = str((primary_recommendation or {}).get("reason") or "")
         if not state["doing"]:
             empty = QLabel("当前没有进行中的任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; padding: 70px; font-size: 13px;"); self.rows_layout.addWidget(empty)
         for task in state["doing"]:
-            self.rows_layout.addWidget(self.task_row(task, str(task.get("id") or "") in protected_ids))
+            task_id = str(task.get("id") or "")
+            self.rows_layout.addWidget(self.task_row(
+                task,
+                task_id in protected_ids,
+                task_id == recommended_id,
+                recommended_reason if task_id == recommended_id else "",
+            ))
         self.rows_layout.addStretch()
 
-    def task_row(self, task, protected):
+    def task_row(self, task, protected, recommended=False, recommendation_reason=""):
         row = QFrame(); row.setObjectName("taskWipRow")
-        accent = "#10a361" if protected else "#2563eb"
+        accent = "#10a361" if protected else ("#d97706" if recommended else "#2563eb")
         row.setStyleSheet(f"QFrame#taskWipRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#taskWipRow QLabel {{ background: transparent; border: none; }}")
         layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
         text = QVBoxLayout(); text.setSpacing(3)
@@ -3902,8 +3948,13 @@ class TaskWipDialog(QDialog):
         project = self.window.project_by_id(task.get("projectId")) or {}
         meta_text = f"{task_project_identity(task, project)['name']}  ·  {task.get('conversationTitle') or '未关联 Codex 对话'}"
         meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta); layout.addLayout(text, 1)
-        state = QLabel("● Codex 运行中" if protected else "进行中"); state.setAlignment(Qt.AlignCenter); state.setFixedSize(96 if protected else 66, 26)
-        state.setStyleSheet(("color: #087443; background: #e7f7ef;" if protected else "color: #1d4ed8; background: #e8f0ff;") + " border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(state)
+        state_text = "● Codex 运行中" if protected else ("建议移回" if recommended else "进行中")
+        state = QLabel(state_text); state.setAlignment(Qt.AlignCenter); state.setFixedSize(96 if protected else (72 if recommended else 66), 26)
+        state_style = "color: #087443; background: #e7f7ef;" if protected else ("color: #9a3412; background: #fff1dc;" if recommended else "color: #1d4ed8; background: #e8f0ff;")
+        state.setStyleSheet(state_style + " border-radius: 8px; font-size: 10px; font-weight: 650;")
+        if recommendation_reason:
+            state.setToolTip(recommendation_reason)
+        layout.addWidget(state)
         if task.get("sessionId"):
             open_codex = QToolButton(); open_codex.setFixedSize(34, 34); open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_codex.setIconSize(QSize(14, 14)); open_codex.setToolTip("打开关联的 Codex 对话")
             open_codex.clicked.connect(lambda _checked=False, value=task: self.open_codex_task(value)); layout.addWidget(open_codex)
@@ -3911,6 +3962,8 @@ class TaskWipDialog(QDialog):
         defer.setToolTip("Codex 正在执行，不能移回计划" if protected else "保留任务，但将状态改回计划")
         if protected:
             defer.setStyleSheet("QPushButton:disabled { color: #708097; background: #eef2f6; border: 1px solid #d8e1eb; border-radius: 8px; font-size: 11px; font-weight: 650; }")
+        elif recommended:
+            defer.setStyleSheet("QPushButton { color: #9a3412; background: #fff8ed; border: 1px solid #e7bd82; border-radius: 8px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #fff1dc; border-color: #c98b36; }")
         defer.clicked.connect(lambda _checked=False, value=task: self.defer_task(value)); layout.addWidget(defer)
         return row
 
@@ -3923,6 +3976,11 @@ class TaskWipDialog(QDialog):
     def defer_task(self, task):
         if self.window.defer_task_from_wip(task):
             self.render_state()
+
+    def apply_recommendation(self):
+        recommendation = self.recommendations[0] if getattr(self, "recommendations", None) else None
+        if recommendation:
+            self.defer_task(recommendation["task"])
 
     def open_codex_task(self, task):
         conversation = self.window.conversation_by_id(task.get("sessionId"))

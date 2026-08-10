@@ -170,6 +170,32 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual([task["id"] for task in state["protected"]], ["run"])
         self.assertEqual(state["overBy"], 1)
 
+    def test_wip_recommendations_respect_project_priority_board_order_and_runtime_protection(self):
+        tasks = [
+            {"id": "focus", "projectId": "focus-project", "date": "2026-08-10", "status": "doing", "boardOrder": 0},
+            {"id": "later", "projectId": "later-project", "date": "2026-08-10", "status": "doing", "boardOrder": 1},
+            {"id": "normal", "projectId": "normal-project", "date": "2026-08-10", "status": "doing", "boardOrder": 2},
+            {"id": "protected", "projectId": "later-project", "date": "2026-08-10", "status": "doing", "boardOrder": 3},
+        ]
+        projects = [
+            {"id": "focus-project", "priority": "focus"},
+            {"id": "later-project", "priority": "later"},
+            {"id": "normal-project", "priority": "normal"},
+        ]
+        recommendations = portfolio.wip_deferral_recommendations(
+            tasks, projects, "2026-08-10", 2, {"protected"}
+        )
+        self.assertEqual([item["task"]["id"] for item in recommendations], ["later", "normal"])
+        self.assertIn("稍后处理", recommendations[0]["reason"])
+        self.assertIn("非战略重点", recommendations[1]["reason"])
+        self.assertEqual([task["status"] for task in tasks], ["doing"] * 4)
+
+        focus_fallback = portfolio.wip_deferral_recommendations(
+            tasks, projects, "2026-08-10", 3, {"protected"}
+        )
+        self.assertEqual([item["task"]["id"] for item in focus_fallback], ["later", "normal", "focus"])
+        self.assertIn("其他候选不足", focus_fallback[-1]["reason"])
+
     def test_capacity_settings_are_bounded(self):
         self.assertEqual(portfolio.normalized_portfolio_focus_capacity(0), 1)
         self.assertEqual(portfolio.normalized_portfolio_focus_capacity(20), 9)

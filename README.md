@@ -78,7 +78,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Use three task states: **Planned**, **In Progress**, and **Completed**.
 - Create a task directly in any board column with that state preselected.
 - Drag a task by its handle to prioritize it within a column or move it between Planned, In Progress, and Completed; the saved order survives refreshes and restarts, while the status selector remains an accessible fallback.
-- Use a configurable soft WIP limit for in-progress tasks. The board shows capacity directly in the column header, never blocks a legitimate manual or Codex transition, and opens a focused review that can move idle work back to Planned while protecting tasks whose Codex conversations are still running.
+- Use a configurable soft WIP limit for in-progress tasks. The board shows capacity directly in the column header, never blocks a legitimate manual or Codex transition, and opens a focused review that can move idle work back to Planned while protecting tasks whose Codex conversations are still running. When capacity is exceeded, the review recommends one reversible reduction at a time from explicit evidence—project priority first, deliberate board order second—while leaving the final action under human control.
 - Undo a recent manual status move from the status bar; reopening a completed project-next-action task restores the project handoff unless a newer next action already exists.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
