@@ -58,6 +58,24 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIn("风险已解除", dialog.feedback.text())
         dialog.close(); parent.close()
 
+    def test_focus_comparison_shows_objective_and_specific_execution_evidence(self):
+        parent = APP.QWidget(); parent.today_tasks = []
+        parent.projects = [{
+            "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
+            "stage": "validation", "health": "on_track", "objective": "Ship verified release",
+            "nextStep": "Validate candidate", "activeTaskCount": 2,
+            "conversations": [{"state": "working"}],
+        }]
+        with patch.object(APP, "portfolio_focus_capacity", return_value=3):
+            dialog = APP.FocusCapacityDialog(parent)
+
+        labels = [label.text() for label in dialog.findChildren(APP.QLabel)]
+        self.assertIn("目标 · Ship verified release", labels)
+        self.assertIn("任务 2 · Codex 1", labels)
+        row = dialog.findChild(APP.QFrame, "focusProjectRow")
+        self.assertIn("目标：Ship verified release", row.accessibleName())
+        dialog.close(); parent.close()
+
 
 class StorageRecoveryNoticeTests(unittest.TestCase):
     def test_recovered_files_get_a_calm_status_notice(self):

@@ -353,6 +353,28 @@ def portfolio_focus_capacity_state(projects, capacity=DEFAULT_PORTFOLIO_FOCUS_CA
     }
 
 
+def portfolio_focus_guidance(state):
+    """Explain the strategic selection decision without implying all live work must be promoted."""
+    state = state or {}
+    capacity = normalized_portfolio_focus_capacity(state.get("capacity"))
+    strategic_count = len(state.get("strategic") or [])
+    executing_count = len(state.get("executing") or [])
+    outside_count = len(state.get("executionOutsideFocus") or [])
+    remaining = max(0, int(state.get("remaining") or 0))
+    over_by = max(0, int(state.get("overBy") or 0))
+    if over_by:
+        return f"重点组合超出容量 {over_by} 项"
+    if outside_count and not strategic_count:
+        return f"{executing_count} 项执行候选 · 最多选 {capacity} 项"
+    if outside_count and remaining:
+        return f"{outside_count} 项执行候选 · 还可选 {remaining} 项"
+    if outside_count:
+        return f"容量已满 · {outside_count} 项执行在重点外"
+    if strategic_count:
+        return "重点已落地" + (f" · 可增加 {remaining} 项" if remaining else "")
+    return "尚未选择重点"
+
+
 def parsed_portfolio_evidence_time(value):
     text = str(value or "").strip()
     if not text:

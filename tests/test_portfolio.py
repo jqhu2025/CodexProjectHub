@@ -22,6 +22,26 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual([project["id"] for project in state["executionOutsideFocus"]], ["live"])
         self.assertEqual([project["id"] for project in state["focusWithoutExecution"]], ["focus"])
 
+    def test_focus_guidance_frames_live_work_as_candidates_with_a_capacity_limit(self):
+        projects = [
+            {"id": str(index), "status": "active", "priority": "normal", "activeTaskCount": 1}
+            for index in range(4)
+        ]
+        state = portfolio.portfolio_focus_capacity_state(projects, 3)
+        self.assertEqual(
+            portfolio.portfolio_focus_guidance(state),
+            "4 项执行候选 · 最多选 3 项",
+        )
+
+        projects[0]["priority"] = "focus"
+        state = portfolio.portfolio_focus_capacity_state(projects, 3)
+        self.assertEqual(portfolio.portfolio_focus_guidance(state), "3 项执行候选 · 还可选 2 项")
+
+        for project in projects[:3]:
+            project["priority"] = "focus"
+        state = portfolio.portfolio_focus_capacity_state(projects, 3)
+        self.assertEqual(portfolio.portfolio_focus_guidance(state), "容量已满 · 1 项执行在重点外")
+
     def test_focus_commitment_only_queues_a_declared_action_without_other_live_work(self):
         projects = [
             {"id": "ready", "status": "active", "priority": "focus", "nextStep": "Run validation"},

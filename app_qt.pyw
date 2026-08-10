@@ -104,6 +104,7 @@ from codex_hub.portfolio import (
     migrate_project_task_category_references,
     portfolio_focus_commitment_queue,
     portfolio_focus_capacity_state,
+    portfolio_focus_guidance,
     portfolio_lifecycle_calibration_queue,
     project_activity_evidence,
     project_review_evidence,
@@ -1358,7 +1359,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
         names = names_for(outside_focus)
         return finalize({
             "scope": "focus_capacity", "count": len(outside_focus), "title": "校准战略重点",
-            "summary": f"实际推进尚未纳入重点组合：{preview(names)}",
+            "summary": f"{portfolio_focus_guidance(capacity_state)}：{preview(names)}",
             "names": names, "action": "调整重点",
         })
 
@@ -4565,7 +4566,7 @@ class FocusCapacityDialog(QDialog):
         self.alignment_metric = self.metric_widget("组合判断", "待校准", "#315f9b"); summary_layout.addWidget(self.alignment_metric[0], 2)
         root.addWidget(self.summary)
 
-        hint = QLabel("建议只把真正需要管理注意力的项目设为重点。设为重点后，可在同一处把已明确的下一步加入今日计划；已有任务或 Codex 正在运行时不会重复催促。")
+        hint = QLabel("先比较项目目标、健康度、下一步和执行证据，再选择不超过容量的战略重点。重点不等于正在忙；未选项目仍可继续执行。")
         hint.setWordWrap(True); hint.setStyleSheet("color: #526071; background: #f3f6fa; border: 1px solid #e0e7ef; border-radius: 9px; padding: 8px 11px; font-size: 11px;"); root.addWidget(hint)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
@@ -4604,7 +4605,7 @@ class FocusCapacityDialog(QDialog):
             alignment = f"超出容量 {state['overBy']} 项"
             color, background = "#b54708", "#fff8ed"
         elif state["executionOutsideFocus"]:
-            alignment = f"{len(state['executionOutsideFocus'])} 项执行未纳入重点"
+            alignment = portfolio_focus_guidance(state)
             color, background = "#315f9b", "#edf4ff"
         elif commitment_due:
             alignment = f"{len(commitment_due)} 项重点下一步待落地"
@@ -4634,10 +4635,10 @@ class FocusCapacityDialog(QDialog):
 
     def project_row(self, project):
         is_focus = project_priority_key(project) == "focus"
-        live, live_reason, _task_count, _running_count = project_live_work_state(project)
+        live, live_reason, task_count, running_count = project_live_work_state(project)
         commitment = project_next_step_commitment_state(project, self.window.today_tasks)
         row = QFrame(); row.setObjectName("focusProjectRow")
-        row.setMinimumHeight(74)
+        row.setMinimumHeight(90)
         accent = "#7c3aed" if is_focus else "#10a361" if live else "#d5dee9"
         row.setStyleSheet(f"QFrame#focusProjectRow {{ background: #ffffff; border: 1px solid #dfe6ef; border-left: 4px solid {accent}; border-radius: 10px; }} QFrame#focusProjectRow QLabel {{ background: transparent; border: none; }}")
         layout = QHBoxLayout(row); layout.setContentsMargins(14, 8, 10, 8); layout.setSpacing(9)
@@ -4647,13 +4648,25 @@ class FocusCapacityDialog(QDialog):
         health = PROJECT_HEALTH.get(project_health_key(project), "健康度未设置")
         meta = ElidedLabel(f"{project.get('category') or '未分类'}  ·  {stage}  ·  {health}")
         meta.setToolTip(meta.text()); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta)
+        objective = str(project.get("objective") or "尚未明确项目目标")
+        objective_line = ElidedLabel(f"目标 · {objective}"); objective_line.setToolTip(objective)
+        objective_line.setStyleSheet("color: #40536d; font-size: 10px; font-weight: 550;"); text.addWidget(objective_line)
         next_step = commitment.get("nextStep") or "尚未明确下一步"
         next_line = ElidedLabel(f"下一步 · {next_step}"); next_line.setToolTip(next_step)
         next_line.setStyleSheet("color: #40536d; font-size: 10px; font-weight: 550;"); text.addWidget(next_line); layout.addLayout(text, 1)
         if live:
-            execution = QLabel("● 实际推进"); execution.setAlignment(Qt.AlignCenter); execution.setFixedSize(78, 26)
+            evidence_parts = []
+            if task_count:
+                evidence_parts.append(f"任务 {task_count}")
+            if running_count:
+                evidence_parts.append(f"Codex {running_count}")
+            execution = QLabel(" · ".join(evidence_parts) or "实际推进"); execution.setAlignment(Qt.AlignCenter); execution.setMinimumWidth(86); execution.setFixedHeight(26)
             execution.setToolTip(live_reason)
             execution.setStyleSheet("color: #087443; background: #e7f7ef; border-radius: 8px; font-size: 10px; font-weight: 650;"); layout.addWidget(execution)
+        row.setAccessibleName(
+            f"{project.get('name') or '未命名项目'}；目标：{objective}；下一步：{next_step}；"
+            f"{live_reason if live else '当前没有实际推进'}；{'战略重点' if is_focus else '尚未设为重点'}"
+        )
         if is_focus:
             commitment_styles = {
                 "scheduled": ("下一步已落地", "#087443", "#e7f7ef"),
@@ -6238,7 +6251,7 @@ class MainWindow(QMainWindow):
                 if capacity_state["overBy"]:
                     summary = f"超出 {capacity_state['overBy']} 项 · {len(executing)} 项实际推进"
                 elif capacity_state["executionOutsideFocus"]:
-                    summary = f"{len(capacity_state['executionOutsideFocus'])} 项执行未纳入重点"
+                    summary = portfolio_focus_guidance(capacity_state)
                 elif focus_commitments:
                     summary = f"{len(focus_commitments)} 项重点下一步待落地"
                 elif strategic:
