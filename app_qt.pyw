@@ -1222,6 +1222,37 @@ def project_confirmation_batch_summary(projects):
     return f"本轮剩余 {counts['total']} · " + " · ".join(parts)
 
 
+def lifecycle_calibration_batch_summary(items, tasks):
+    """Show how much of a quiet-project batch is eligible to pause right now."""
+    items = list(items or [])
+    if not items:
+        return "本轮已完成"
+    protected = sum(
+        bool(open_project_tasks(tasks, (item or {}).get("project") or {}))
+        for item in items
+    )
+    pausable = len(items) - protected
+    parts = [f"本轮剩余 {len(items)}"]
+    if pausable:
+        parts.append(f"可暂缓 {pausable}")
+    if protected:
+        parts.append(f"任务保护 {protected}")
+    return " · ".join(parts)
+
+
+def execution_alignment_batch_summary(alignments):
+    """Expose task-choice complexity before the user enters an alignment batch."""
+    alignments = list(alignments or [])
+    if not alignments:
+        return "本轮已完成"
+    candidate_count = sum(len((item or {}).get("tasks") or []) for item in alignments)
+    choice_count = sum(len((item or {}).get("tasks") or []) > 1 for item in alignments)
+    parts = [f"本轮剩余 {len(alignments)}", f"候选任务 {candidate_count}"]
+    if choice_count:
+        parts.append(f"需选择 {choice_count}")
+    return " · ".join(parts)
+
+
 def project_management_scope_matches(project, scope):
     """Filter projects by decisions the user can act on, not by decorative metrics."""
     if scope == "focus":
@@ -4431,8 +4462,8 @@ class LifecycleCalibrationDialog(QDialog):
         icon.setStyleSheet("background: #eaf2ff; border: 1px solid #cad9ef; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("校准真正的活跃项目组合"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel("逐项确认静默项目仍应推进还是暂缓；静默只触发复核，不代表风险")
-        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.subtitle = QLabel("逐项确认静默项目仍应推进还是暂缓；静默只触发复核，不代表风险")
+        self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
         self.threshold_button = QPushButton(); self.threshold_button.setFixedHeight(36)
         self.threshold_button.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.threshold_button.setIconSize(QSize(13, 13))
         self.threshold_button.setToolTip("调整多久没有执行证据后进入组合校准"); self.threshold_button.clicked.connect(self.change_threshold); heading.addWidget(self.threshold_button)
@@ -4473,6 +4504,16 @@ class LifecycleCalibrationDialog(QDialog):
     def render_current(self):
         self.clear_card()
         remaining = len(self.pending); total = self.processed_count + self.deferred_count + remaining
+        batch_summary = lifecycle_calibration_batch_summary(self.pending, self.window.today_tasks)
+        self.subtitle.setText(f"{batch_summary}；静默不等于风险" if remaining else batch_summary)
+        batch_explanation = (
+            f"{batch_summary}\n"
+            "可暂缓：当前没有未完成任务，可选择暂缓项目\n"
+            "任务保护：仍有未完成任务，暂缓操作保持禁用\n"
+            "静默只触发人工复核，不会自动标记风险或改变状态"
+        )
+        self.subtitle.setToolTip(batch_explanation)
+        self.subtitle.setAccessibleName(f"生命周期校准批次。{batch_summary}。静默不等于风险")
         self.threshold_button.setText(f"静默阈值 {portfolio_inactivity_days()} 天")
         self.counter.setText(f"{self.processed_count + self.deferred_count + 1} / {total}" if remaining else f"已处理 {self.processed_count}")
         for button in (self.open_button, self.defer_button, self.pause_button): button.setVisible(bool(remaining))
@@ -5097,8 +5138,8 @@ class ExecutionAlignmentDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("校准项目方向与真实执行"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel("逐项确认正在做的工作是否应成为项目下一步；系统不会自动覆盖你的决策")
-        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.subtitle = QLabel("逐项确认正在做的工作是否应成为项目下一步；系统不会自动覆盖你的决策")
+        self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
         root.addLayout(heading)
@@ -5136,6 +5177,16 @@ class ExecutionAlignmentDialog(QDialog):
 
     def render_current(self):
         self.clear_card(); remaining = len(self.pending); total = self.processed_count + self.skipped_count + remaining
+        batch_summary = execution_alignment_batch_summary(self.pending)
+        self.subtitle.setText(f"{batch_summary}；不会自动覆盖决策" if remaining else batch_summary)
+        batch_explanation = (
+            f"{batch_summary}\n"
+            "候选任务：与项目已声明下一步不同的进行中任务\n"
+            "需选择：存在多个候选任务，需要先选择要采用的方向\n"
+            "系统只展示差异，不会自动覆盖项目下一步"
+        )
+        self.subtitle.setToolTip(batch_explanation)
+        self.subtitle.setAccessibleName(f"执行方向校准批次。{batch_summary}。不会自动覆盖项目决策")
         self.counter.setText(f"{self.processed_count + self.skipped_count + 1} / {total}" if remaining else f"已处理 {self.processed_count}")
         for button in (self.open_button, self.defer_button, self.keep_button): button.setVisible(bool(remaining))
         self.adopt_button.setText("采用正在执行的任务" if remaining else "关闭")

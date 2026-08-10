@@ -136,6 +136,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         parent.open_project_workspace = Mock()
         parent.lifecycle_calibration_queue = Mock(return_value=[refreshed_item])
         dialog = APP.LifecycleCalibrationDialog(parent, [{"project": project, "state": {}}])
+        self.assertIn("可暂缓 1", dialog.subtitle.text())
+        self.assertIn("静默不等于风险", dialog.subtitle.accessibleName())
         dialog.render_current = Mock()
 
         dialog.open_current()
@@ -162,6 +164,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         parent.open_project_workspace = Mock()
         parent.execution_alignment_queue = Mock(return_value=[alignment])
         dialog = APP.ExecutionAlignmentDialog(parent, [alignment])
+        self.assertIn("候选任务 1", dialog.subtitle.text())
+        self.assertIn("不会自动覆盖项目决策", dialog.subtitle.accessibleName())
         dialog.render_current = Mock()
 
         dialog.open_current()
@@ -1451,6 +1455,27 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
+
+    def test_guided_calibration_summaries_expose_pause_safety_and_choice_complexity(self):
+        first = {"id": "first", "status": "active"}
+        second = {"id": "second", "status": "active"}
+        lifecycle_items = [{"project": first}, {"project": second}]
+        tasks = [{"id": "task", "projectId": "first", "status": "doing"}]
+        self.assertEqual(
+            APP.lifecycle_calibration_batch_summary(lifecycle_items, tasks),
+            "本轮剩余 2 · 可暂缓 1 · 任务保护 1",
+        )
+
+        alignments = [
+            {"project": first, "tasks": [{"id": "one"}, {"id": "two"}]},
+            {"project": second, "tasks": [{"id": "three"}]},
+        ]
+        self.assertEqual(
+            APP.execution_alignment_batch_summary(alignments),
+            "本轮剩余 2 · 候选任务 3 · 需选择 1",
+        )
+        self.assertEqual(APP.lifecycle_calibration_batch_summary([], []), "本轮已完成")
+        self.assertEqual(APP.execution_alignment_batch_summary([]), "本轮已完成")
 
     def test_focus_projects_sort_before_regular_projects(self):
         projects = [
