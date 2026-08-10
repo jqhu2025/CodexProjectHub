@@ -308,6 +308,16 @@ class ManagementModuleTests(unittest.TestCase):
             "at": "2026-08-10T09:00:00", "from": "2026-08-08", "to": "2026-08-10", "source": "planning_review",
         }])
 
+        undo = management.reschedule_task_date(
+            tasks, "move", "2026-08-08", "2026-08-10T09:01:00", "undo"
+        )
+
+        self.assertTrue(undo["changed"])
+        self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-08", "planned")], ["old-first", "move"])
+        self.assertEqual([task["id"] for task in management.ordered_board_tasks(tasks, "2026-08-10", "planned")], ["today-first"])
+        self.assertEqual(moved["scheduleHistory"][-1]["source"], "undo")
+        self.assertEqual(management.TASK_SCHEDULE_SOURCES["undo"], "撤销改期")
+
     def test_reschedule_rejects_noop_nonplanned_and_invalid_dates(self):
         planned = {"id": "planned", "date": "2026-08-08", "status": "planned"}
         doing = {"id": "doing", "date": "2026-08-08", "status": "doing"}

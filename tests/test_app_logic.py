@@ -9,10 +9,36 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 APP_PATH = Path(__file__).resolve().parents[1] / "app_qt.pyw"
 SPEC = importlib.util.spec_from_file_location("codex_project_hub_app", APP_PATH)
 APP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(APP)
+
+
+class ReviewDialogStructureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = APP.QApplication.instance() or APP.QApplication([])
+
+    def test_schedule_undo_controls_belong_only_to_planning_review(self):
+        parent = APP.QWidget()
+        parent.today_tasks = []
+        parent.projects = []
+        parent.task_wip_state = lambda _date: {
+            "limit": 3, "count": 0, "remaining": 3, "overBy": 0,
+            "doing": [], "protected": [],
+        }
+        parent.planning_backlog = lambda: []
+
+        wip = APP.TaskWipDialog(parent, "2026-08-10")
+        planning = APP.PlanningBacklogDialog(parent)
+
+        self.assertFalse(hasattr(wip, "undo_move"))
+        self.assertTrue(hasattr(planning, "undo_move"))
+        self.assertTrue(planning.undo_move.isHidden())
+        wip.close(); planning.close(); parent.close()
 
 
 class StorageRecoveryNoticeTests(unittest.TestCase):
@@ -1579,6 +1605,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
         window = SimpleNamespace(
             today_tasks=[task], board_date_field=date_field, view_signature="old",
             render_today_tasks=Mock(), render_portfolio_decisions=Mock(), statusBar=lambda: status_bar,
+            offer_task_schedule_undo=Mock(),
         )
 
         with patch.object(APP, "save_json") as save:
@@ -1591,6 +1618,9 @@ class TaskStatusHistoryTests(unittest.TestCase):
         save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
         self.assertEqual(date_field.setDate.call_args.args[0].toString(APP.Qt.ISODate), "2026-08-10")
         window.render_portfolio_decisions.assert_called_once_with()
+        window.offer_task_schedule_undo.assert_called_once_with(
+            task, "2026-08-08", "2026-08-10", task["scheduleHistory"][0]["at"]
+        )
 
     def test_manual_status_move_offers_an_undo_without_bypassing_the_normal_engine(self):
         task = {"id": "task-1", "status": "planned", "statusHistory": []}
@@ -1762,6 +1792,53 @@ class TaskStatusHistoryTests(unittest.TestCase):
         task["statusHistory"].append({"at": "2026-08-10T10:01:00", "from": "done", "to": "planned", "source": "selector"})
         APP.MainWindow.undo_last_task_transition(window)
         window.set_task_status.assert_not_called()
+
+    def test_schedule_undo_restores_the_original_date_and_records_the_reversal(self):
+        event = {
+            "at": "2026-08-10T09:00:00", "from": "2026-08-08", "to": "2026-08-10",
+            "source": "planning_review",
+        }
+        task = {
+            "id": "task-1", "title": "Validate", "date": "2026-08-10", "status": "planned",
+            "scheduleHistory": [event],
+        }
+        status_bar = Mock(); date_field = Mock()
+        window = SimpleNamespace(
+            pending_task_undo={"kind": "schedule", "taskId": "task-1", **event},
+            today_tasks=[task], clear_task_undo=Mock(), board_date_field=date_field,
+            render_today_tasks=Mock(), render_portfolio_decisions=Mock(),
+            statusBar=lambda: status_bar, view_signature="old",
+        )
+
+        with patch.object(APP, "save_json") as save:
+            APP.MainWindow.undo_last_task_transition(window)
+
+        self.assertEqual((task["date"], task["status"]), ("2026-08-08", "planned"))
+        self.assertEqual(task["scheduleHistory"][-1]["source"], "undo")
+        self.assertEqual((task["scheduleHistory"][-1]["from"], task["scheduleHistory"][-1]["to"]), ("2026-08-10", "2026-08-08"))
+        window.clear_task_undo.assert_called_once_with()
+        save.assert_called_once_with(APP.TASKS_FILE, window.today_tasks)
+        self.assertEqual(date_field.setDate.call_args.args[0].toString(APP.Qt.ISODate), "2026-08-08")
+        self.assertIn("已撤销改期", status_bar.showMessage.call_args.args[0])
+
+    def test_schedule_undo_rejects_a_task_changed_after_the_offer(self):
+        original = {"at": "2026-08-10T09:00:00", "from": "2026-08-08", "to": "2026-08-10", "source": "planning_review"}
+        task = {
+            "id": "task-1", "date": "2026-08-11", "status": "planned",
+            "scheduleHistory": [original, {"at": "2026-08-10T09:01:00", "from": "2026-08-10", "to": "2026-08-11", "source": "editor"}],
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(
+            pending_task_undo={"kind": "schedule", "taskId": "task-1", **original},
+            today_tasks=[task], clear_task_undo=Mock(), statusBar=lambda: status_bar,
+        )
+
+        with patch.object(APP, "save_json") as save:
+            APP.MainWindow.undo_last_task_transition(window)
+
+        self.assertEqual(task["date"], "2026-08-11")
+        save.assert_not_called()
+        self.assertIn("发生新的变化", status_bar.showMessage.call_args.args[0])
 
 
 class DailySummaryTests(unittest.TestCase):

@@ -29,6 +29,7 @@ TASK_SCHEDULE_SOURCES = {
     "editor": "任务编辑",
     "planning_review": "计划复核",
     "manual": "手动调整",
+    "undo": "撤销改期",
     "legacy": "历史记录",
 }
 PROJECT_PRIORITY = {"focus": "当前重点", "normal": "常规推进", "later": "稍后处理"}

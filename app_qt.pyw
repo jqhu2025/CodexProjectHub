@@ -4174,7 +4174,11 @@ class PlanningBacklogDialog(QDialog):
         self.rows_widget = QWidget(); self.rows_widget.setObjectName("planningBacklogRows"); self.rows_widget.setStyleSheet("QWidget#planningBacklogRows { background: #f7f9fc; }")
         self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
         scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
-        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        actions = QHBoxLayout()
+        self.undo_move = QPushButton("撤销上次改期"); self.undo_move.setFixedHeight(38); self.undo_move.setIcon(fluent_icon("\uE7A7", color="#315f9b", size=13)); self.undo_move.setIconSize(QSize(13, 13))
+        self.undo_move.setToolTip("仅在任务尚未发生其他变化时恢复原计划日期"); self.undo_move.clicked.connect(self.undo_last_move); self.undo_move.hide(); actions.addWidget(self.undo_move)
+        self.undo_move_timer = QTimer(self); self.undo_move_timer.setSingleShot(True); self.undo_move_timer.timeout.connect(self.undo_move.hide)
+        actions.addStretch(); close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
         self.render_tasks()
 
     def render_tasks(self):
@@ -4214,7 +4218,13 @@ class PlanningBacklogDialog(QDialog):
 
     def move_to_today(self, task):
         if self.window.reschedule_planned_task(task, self.today.toString(Qt.ISODate)):
+            self.undo_move.show(); self.undo_move_timer.start(8000)
             self.render_tasks()
+
+    def undo_last_move(self):
+        self.undo_move_timer.stop(); self.undo_move.hide()
+        self.window.undo_last_task_transition()
+        self.render_tasks()
 
     def edit_task(self, task):
         self.window.edit_today_task(task)
@@ -5691,8 +5701,8 @@ class MainWindow(QMainWindow):
         body.addWidget(side)
         self.pages = QStackedWidget(); self.home_page = self.build_home_page(); self.projects_page = self.build_projects_page(); self.pages.addWidget(self.home_page); self.pages.addWidget(self.projects_page); body.addWidget(self.pages, 1)
         status_bar = QStatusBar(); self.setStatusBar(status_bar)
-        self.undo_task_button = QPushButton("撤销状态"); self.undo_task_button.setFixedHeight(26); self.undo_task_button.setIcon(fluent_icon("\uE7A7", color="#1d4ed8", size=13)); self.undo_task_button.setIconSize(QSize(13, 13))
-        self.undo_task_button.setToolTip("撤销最近一次手动任务状态切换"); self.undo_task_button.setAccessibleName("撤销最近一次任务状态切换")
+        self.undo_task_button = QPushButton("撤销操作"); self.undo_task_button.setFixedHeight(26); self.undo_task_button.setIcon(fluent_icon("\uE7A7", color="#1d4ed8", size=13)); self.undo_task_button.setIconSize(QSize(13, 13))
+        self.undo_task_button.setToolTip("撤销最近一次可逆任务调整"); self.undo_task_button.setAccessibleName("撤销最近一次任务调整")
         self.undo_task_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #bfd1ef; border-radius: 7px; padding: 3px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #8eace0; }")
         self.undo_task_button.clicked.connect(self.undo_last_task_transition); self.undo_task_button.hide(); status_bar.addPermanentWidget(self.undo_task_button)
         self.undo_task_timer = QTimer(self); self.undo_task_timer.setSingleShot(True); self.undo_task_timer.timeout.connect(self.clear_task_undo)
@@ -6026,6 +6036,9 @@ class MainWindow(QMainWindow):
             self.board_date_field.setDate(target_qdate)
         self.view_signature = None
         self.render_today_tasks(); self.render_portfolio_decisions()
+        self.offer_task_schedule_undo(
+            current, movement.get("previousDate"), movement.get("targetDate"), occurred_at
+        )
         self.statusBar().showMessage(f"“{current.get('title') or '任务'}”已移到今天，并保留原计划日期", 3800)
         return True
 
@@ -7288,12 +7301,29 @@ class MainWindow(QMainWindow):
         if previous_status not in TASK_STATUS or status not in TASK_STATUS or previous_status == status:
             return
         self.pending_task_undo = {
+            "kind": "status",
             "taskId": task.get("id"),
             "from": previous_status,
             "to": status,
             "at": occurred_at,
         }
         self.undo_task_button.setText(f"撤销到{TASK_STATUS[previous_status]}")
+        self.undo_task_button.setToolTip("撤销最近一次手动任务状态切换")
+        self.undo_task_button.show()
+        self.undo_task_timer.start(8000)
+
+    def offer_task_schedule_undo(self, task, previous_date, target_date, occurred_at):
+        if not task or not previous_date or not target_date or previous_date == target_date:
+            return
+        self.pending_task_undo = {
+            "kind": "schedule",
+            "taskId": task.get("id"),
+            "from": previous_date,
+            "to": target_date,
+            "at": occurred_at,
+        }
+        self.undo_task_button.setText("撤销改期")
+        self.undo_task_button.setToolTip(f"恢复到原计划日期 {previous_date}")
         self.undo_task_button.show()
         self.undo_task_timer.start(8000)
 
@@ -7307,6 +7337,36 @@ class MainWindow(QMainWindow):
     def undo_last_task_transition(self):
         transition = dict(self.pending_task_undo or {})
         task = next((item for item in self.today_tasks if item.get("id") == transition.get("taskId")), None)
+        if transition.get("kind") == "schedule":
+            history = task.get("scheduleHistory") if isinstance((task or {}).get("scheduleHistory"), list) else []
+            latest = history[-1] if history else {}
+            still_current = (
+                task is not None
+                and task.get("status", "planned") == "planned"
+                and str(task.get("date") or "") == str(transition.get("to") or "")
+                and str(latest.get("at") or "") == str(transition.get("at") or "")
+                and str(latest.get("from") or "") == str(transition.get("from") or "")
+                and str(latest.get("to") or "") == str(transition.get("to") or "")
+            )
+            self.clear_task_undo()
+            if not still_current:
+                self.statusBar().showMessage("任务已经发生新的变化，无法撤销之前的改期", 3500)
+                return
+            now = datetime.now().isoformat(timespec="seconds")
+            movement = reschedule_task_date(
+                self.today_tasks, task.get("id"), transition.get("from"), now, "undo"
+            )
+            if not movement.get("changed"):
+                self.statusBar().showMessage("任务已经发生新的变化，无法恢复原计划日期", 3500)
+                return
+            save_json(TASKS_FILE, self.today_tasks)
+            previous_qdate = QDate.fromString(str(transition.get("from") or ""), Qt.ISODate)
+            if previous_qdate.isValid() and hasattr(self, "board_date_field"):
+                self.board_date_field.setDate(previous_qdate)
+            self.view_signature = None
+            self.render_today_tasks(); self.render_portfolio_decisions()
+            self.statusBar().showMessage(f"已撤销改期，任务恢复到 {transition.get('from')}", 3400)
+            return
         history = task.get("statusHistory") if isinstance((task or {}).get("statusHistory"), list) else []
         latest = history[-1] if history else {}
         still_current = (
