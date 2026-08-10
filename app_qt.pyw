@@ -1245,6 +1245,12 @@ def project_confirmation_priority_hint(projects):
     return ""
 
 
+def project_has_local_folder(project):
+    """Require an explicit existing folder; an empty path must not mean the process CWD."""
+    raw_path = str((project or {}).get("path") or "").strip()
+    return bool(raw_path) and Path(raw_path).is_dir()
+
+
 def project_confirmation_batch_summary(projects):
     """Summarize the remaining review batch without adding another dashboard."""
     counts = project_confirmation_counts(projects)
@@ -1261,6 +1267,21 @@ def project_confirmation_batch_summary(projects):
     if urgency:
         parts.append(urgency)
     return f"本轮剩余 {counts['total']} · " + " · ".join(parts)
+
+
+def next_step_decision_batch_summary(projects):
+    """Describe how the current next-step batch can be resolved."""
+    projects = list(projects or [])
+    if not projects:
+        return "本轮已完成"
+    codex_ready = sum(project_has_local_folder(project) for project in projects)
+    manual = len(projects) - codex_ready
+    parts = [f"本轮剩余 {len(projects)}"]
+    if codex_ready:
+        parts.append(f"Codex 可分析 {codex_ready}")
+    if manual:
+        parts.append(f"需手动补充 {manual}")
+    return " · ".join(parts)
 
 
 def lifecycle_calibration_batch_summary(items, tasks):
@@ -2981,7 +3002,7 @@ class ProjectGroup(QFrame):
         continue_action = project_menu.addAction(fluent_icon("\uE72A", color="#1d4ed8", size=14), "在 Codex 中继续"); continue_action.triggered.connect(lambda: window.continue_project(project))
         schedule_action = project_menu.addAction(fluent_icon("\uE787", color="#1d4ed8", size=14), "将下一步加入今日"); schedule_action.setEnabled(bool(str(project.get("nextStep") or "").strip())); schedule_action.triggered.connect(lambda: window.schedule_project_next_step(project))
         governance_action = project_menu.addAction(fluent_icon("\uE945", color="#1d4ed8", size=14), "Codex 补全缺项")
-        governance_action.setEnabled(bool(project_governance_gaps(project)) and Path(str(project.get("path") or "")).is_dir() and project.get("status", "active") != "completed")
+        governance_action.setEnabled(bool(project_governance_gaps(project)) and project_has_local_folder(project) and project.get("status", "active") != "completed")
         governance_action.triggered.connect(lambda: window.show_project_governance([project]))
         folder_action = project_menu.addAction(fluent_icon("\uE838", size=14), "打开文件夹"); folder_action.triggered.connect(lambda: window.open_folder(project))
         up_action = project_menu.addAction(fluent_icon("\uE74A", size=14), "向上移动"); up_action.triggered.connect(lambda: window.move_project(project, -1))
@@ -5009,13 +5030,15 @@ class PortfolioRiskDialog(QDialog):
 
 class PortfolioReviewDialog(QDialog):
     """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
-    def __init__(self, parent, projects, total_count=None):
+    def __init__(self, parent, projects, total_count=None, purpose="review"):
         super().__init__(parent)
         self.window = parent
+        self.purpose = purpose
         self.pending = list(projects or [])
         self.portfolio_total = max(len(self.pending), int(total_count or len(self.pending)))
         self.reviewed_count = 0
-        self.setWindowTitle("项目确认")
+        next_step_mode = purpose == "next_step"
+        self.setWindowTitle("明确项目下一步" if next_step_mode else "项目确认")
         self.setObjectName("portfolioReviewDialog")
         self.setMinimumSize(720, 560)
         self.resize(780, 620)
@@ -5029,8 +5052,8 @@ class PortfolioReviewDialog(QDialog):
         icon.setPixmap(fluent_icon("\uE73E", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
-        title = QLabel("逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        self.subtitle = QLabel("每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
+        title = QLabel("逐项明确可执行下一步" if next_step_mode else "逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        self.subtitle = QLabel("一次只决定一个项目，保存后自动进入下一项" if next_step_mode else "每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
         self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
@@ -5078,12 +5101,18 @@ class PortfolioReviewDialog(QDialog):
 
     def render_current(self):
         self.clear_card()
+        next_step_mode = getattr(self, "purpose", "review") == "next_step"
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
-        batch_summary = project_confirmation_batch_summary(self.pending)
-        priority_hint = project_confirmation_priority_hint(self.pending)
+        batch_summary = next_step_decision_batch_summary(self.pending) if next_step_mode else project_confirmation_batch_summary(self.pending)
+        priority_hint = "先形成一个可直接开始的动作" if next_step_mode and remaining else project_confirmation_priority_hint(self.pending)
         self.subtitle.setText(f"{batch_summary}；{priority_hint}" if remaining and priority_hint else batch_summary)
         batch_explanation = (
+            f"{batch_summary}\n"
+            "Codex 可分析：已关联有效本地目录，可读取资料并生成可审核建议\n"
+            "需手动补充：本地目录不可用，请在项目面板填写下一步\n"
+            "保存后自动进入本轮下一项；不会自动替你确认建议"
+            if next_step_mode else
             f"{batch_summary}\n"
             "补全：目标、阶段、健康度或下一步尚不完整\n"
             "建基线：资料完整，但尚未完成首次管理确认\n"
@@ -5092,10 +5121,11 @@ class PortfolioReviewDialog(QDialog):
         )
         self.subtitle.setToolTip(batch_explanation)
         self.subtitle.setAccessibleName(
-            f"项目确认批次。{batch_summary}。{priority_hint}" if priority_hint else f"项目确认批次。{batch_summary}"
+            f"{'下一步决策' if next_step_mode else '项目确认'}批次。{batch_summary}。{priority_hint}"
+            if priority_hint else f"{'下一步决策' if next_step_mode else '项目确认'}批次。{batch_summary}"
         )
         self.counter.setText(
-            f"{self.reviewed_count + 1} / {total} · 总待确认 {self.portfolio_total}"
+            f"{self.reviewed_count + 1} / {total} · {'总待决策' if next_step_mode else '总待确认'} {self.portfolio_total}"
             if remaining else f"本轮完成 {self.reviewed_count}"
         )
         self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1); self.recover_button.hide()
@@ -5104,16 +5134,20 @@ class PortfolioReviewDialog(QDialog):
             done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
             done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 15px;")
             self.card_layout.addStretch(); self.card_layout.addWidget(done_icon, 0, Qt.AlignCenter)
-            done = QLabel("本轮项目确认已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
+            done = QLabel("本轮下一步决策已完成" if next_step_mode else "本轮项目确认已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
             remaining_total = max(0, self.portfolio_total - self.reviewed_count)
             detail_text = (
-                f"本轮已确认 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待确认，可稍后继续"
+                f"本轮已处理 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待{'决策' if next_step_mode else '确认'}，可稍后继续"
                 if remaining_total else
-                f"已确认 {self.reviewed_count} 个项目；复核日期和周期已经写入决策记录"
+                (f"已为 {self.reviewed_count} 个项目明确可执行下一步" if next_step_mode else f"已确认 {self.reviewed_count} 个项目；复核日期和周期已经写入决策记录")
             )
             detail = QLabel(detail_text)
             detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
-            feedback = "主页待确认数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮管理确认已经全部处理。"
+            feedback = (
+                "主页待定数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮项目都已有明确下一步。"
+            ) if next_step_mode else (
+                "主页待确认数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮管理确认已经全部处理。"
+            )
             self.card_layout.addStretch(); self.feedback.setText(feedback)
             self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
             return
@@ -5121,12 +5155,20 @@ class PortfolioReviewDialog(QDialog):
         project = self.current_project()
         gaps = project_governance_gaps(project)
         gap_text = project_governance_gap_text(project)
-        has_project_folder = Path(str(project.get("path") or "")).is_dir()
+        has_project_folder = project_has_local_folder(project)
         legacy_attention = project_health_key(project) == "attention" and not str(project.get("reviewedAt") or "").strip()
         today = QDate.currentDate().toString(Qt.ISODate)
         review_evidence = project_review_evidence(project, self.window.today_tasks, today)
-        alignment_pending = review_evidence["alignmentState"] == "divergent"
-        if gaps:
+        alignment_pending = not next_step_mode and review_evidence["alignmentState"] == "divergent"
+        if next_step_mode:
+            self.confirm_button.setText("Codex 建议下一步" if has_project_folder else "打开项目补充")
+            self.confirm_button.setIcon(fluent_icon("\uE945" if has_project_folder else "\uE72A", color="#ffffff", size=14))
+            self.confirm_button.setToolTip(
+                "只读分析项目目录，生成可审核的下一步建议；确认保存后才会写入"
+                if has_project_folder else
+                "当前没有有效项目目录，请在项目面板中手动填写下一步"
+            )
+        elif gaps:
             self.confirm_button.setText("Codex 补全缺项" if has_project_folder else "打开项目补全")
             self.confirm_button.setIcon(fluent_icon("\uE945" if has_project_folder else "\uE72A", color="#ffffff", size=14))
             self.confirm_button.setToolTip(
@@ -5149,7 +5191,9 @@ class PortfolioReviewDialog(QDialog):
             self.confirm_button.setToolTip("确认当前目标、阶段、健康度和下一步，并启动复核周期")
         _review_due, review_age, review_cadence = project_review_status(project)
         review_phase = project_review_phase(project)
-        if gaps:
+        if next_step_mode:
+            review_reason = "当前没有可执行下一步"
+        elif gaps:
             review_reason = f"复核前先补全：{gap_text}"
         else:
             review_reason = (
@@ -5162,15 +5206,21 @@ class PortfolioReviewDialog(QDialog):
         priority = QLabel(PROJECT_PRIORITY.get(project_priority_key(project), "常规推进")); priority.setAlignment(Qt.AlignCenter)
         priority.setStyleSheet("color: #1d4ed8; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(priority)
         self.card_layout.addLayout(name_row)
-        reason_caption = "管理资料未就绪" if gaps else "首次管理基线" if review_phase == "baseline" else "周期复核到期"
+        reason_caption = "等待决策" if next_step_mode else "管理资料未就绪" if gaps else "首次管理基线" if review_phase == "baseline" else "周期复核到期"
         reason = QLabel(f"{reason_caption} · {review_reason}"); reason.setWordWrap(True)
         reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
 
         metrics = QHBoxLayout(); metrics.setSpacing(9)
         metric_values = (
-            ("当前阶段", PROJECT_STAGE.get(project.get("stage"), "尚未设置")),
-            ("健康度", PROJECT_HEALTH.get(project.get("health"), "尚未设置")),
-            ("复核节奏", "待资料完整后启动" if gaps else project_review_summary(project)),
+            (
+                ("所属分类", project.get("category") or "未分类"),
+                ("当前阶段", PROJECT_STAGE.get(project.get("stage"), "尚未设置")),
+                ("健康度", PROJECT_HEALTH.get(project.get("health"), "尚未设置")),
+            ) if next_step_mode else (
+                ("当前阶段", PROJECT_STAGE.get(project.get("stage"), "尚未设置")),
+                ("健康度", PROJECT_HEALTH.get(project.get("health"), "尚未设置")),
+                ("复核节奏", "待资料完整后启动" if gaps else project_review_summary(project)),
+            )
         )
         for caption, value in metric_values:
             metric = QFrame(); metric.setObjectName("reviewMetric"); metric.setStyleSheet("QFrame#reviewMetric { background: #f7f9fc; border: 1px solid #e0e7ef; border-radius: 9px; }")
@@ -5220,7 +5270,14 @@ class PortfolioReviewDialog(QDialog):
             text = QLabel(str(value or fallback)); text.setWordWrap(True)
             text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
 
-        if gaps:
+        if next_step_mode:
+            self.feedback.setText(
+                "Codex 会读取项目目录并给出可审核建议；只有你在建议窗口中确认后才会写入。"
+                if has_project_folder else
+                "此项目没有可用的本地目录，请打开项目面板手动填写一个可以直接开始的动作。"
+            )
+            self.feedback.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+        elif gaps:
             self.feedback.setText(
                 "Codex 将只读检查项目目录并给出缺项建议；你审核并应用后，系统才会建立复核基线。"
                 if has_project_folder else
@@ -5254,7 +5311,8 @@ class PortfolioReviewDialog(QDialog):
             return
         references = project_reference_ids(project)
         self.window.open_project_workspace(project)
-        queue_provider = getattr(self.window, "portfolio_review_queue", None)
+        provider_name = "next_step_decision_queue" if getattr(self, "purpose", "review") == "next_step" else "portfolio_review_queue"
+        queue_provider = getattr(self.window, provider_name, None)
         if callable(queue_provider) and references:
             refreshed = matching_guided_project_item(project, queue_provider())
             if refreshed is None:
@@ -5303,9 +5361,24 @@ class PortfolioReviewDialog(QDialog):
         project = self.current_project()
         if project is None:
             self.accept(); return
+        if getattr(self, "purpose", "review") == "next_step":
+            if project_has_local_folder(project):
+                self.window.show_project_governance([project])
+            else:
+                self.window.open_project_workspace(project)
+            references = project_reference_ids(project)
+            queue_provider = getattr(self.window, "next_step_decision_queue", None)
+            refreshed = matching_guided_project_item(project, queue_provider()) if callable(queue_provider) and references else project
+            if refreshed is None:
+                self.pending.pop(0)
+                self.reviewed_count += 1
+            else:
+                self.pending[0] = refreshed
+            self.render_current()
+            return
         if project_governance_gaps(project):
             self.accept()
-            if Path(str(project.get("path") or "")).is_dir():
+            if project_has_local_folder(project):
                 self.window.show_project_governance([project])
             else:
                 self.window.open_project_workspace(project)
@@ -6411,6 +6484,9 @@ class MainWindow(QMainWindow):
         if scope == "review":
             self.show_portfolio_review_queue()
             return
+        if scope == "needs_next":
+            self.show_next_step_decision_queue()
+            return
         if scope not in {"focus", "attention", "review", "needs_next"}:
             return
         self.category = "全部"
@@ -6451,6 +6527,21 @@ class MainWindow(QMainWindow):
             portfolio_decision_groups(self.projects).get("attention", []),
             key=project_risk_priority_key,
         )
+
+    def next_step_decision_queue(self):
+        return portfolio_decision_groups(self.projects).get("needs_next", [])
+
+    def show_next_step_decision_queue(self):
+        projects = self.next_step_decision_queue()
+        if not projects:
+            QMessageBox.information(self, "项目下一步已明确", "当前所有活跃项目都已有可执行下一步。")
+            return
+        PortfolioReviewDialog(
+            self,
+            projects[:PROJECT_REVIEW_BATCH_SIZE],
+            total_count=len(projects),
+            purpose="next_step",
+        ).exec_()
 
     def show_risk_response_queue(self):
         projects = self.risk_response_queue()
@@ -6689,6 +6780,7 @@ class MainWindow(QMainWindow):
             return
         groups = portfolio_decision_groups(self.projects)
         groups["review"] = self.portfolio_review_queue()
+        groups["needs_next"] = self.next_step_decision_queue()
         prefixes = {"attention": "风险处置", "review": "管理确认", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
         focus_commitments = self.focus_commitment_queue()
@@ -8445,7 +8537,7 @@ class MainWindow(QMainWindow):
             project for project in source
             if project.get("status", "active") != "completed"
             and project_governance_gaps(project)
-            and Path(str(project.get("path") or "")).is_dir()
+            and project_has_local_folder(project)
         ]
         return sorted(candidates, key=project_management_sort_key)
 
@@ -8457,7 +8549,7 @@ class MainWindow(QMainWindow):
                 project for project in source
                 if project.get("status", "active") != "completed"
                 and project_governance_gaps(project)
-                and not Path(str(project.get("path") or "")).is_dir()
+                and not project_has_local_folder(project)
             ]
             if missing_without_folder:
                 QMessageBox.information(self, "需要有效项目目录", "这些项目仍有管理缺项，但本地目录不可用。请先编辑项目并选择有效文件夹。")

@@ -1424,6 +1424,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         APP.MainWindow.open_project_scope(window, "review")
         window.show_portfolio_review_queue.assert_called_once_with()
 
+    def test_home_next_step_queue_uses_guided_decisions_instead_of_a_plain_filter(self):
+        window = SimpleNamespace(show_next_step_decision_queue=Mock())
+        APP.MainWindow.open_project_scope(window, "needs_next")
+        window.show_next_step_decision_queue.assert_called_once_with()
+
     def test_guided_review_limits_each_session_to_a_manageable_batch(self):
         projects = [{"id": f"project-{index}"} for index in range(8)]
         window = SimpleNamespace(portfolio_review_queue=Mock(return_value=projects))
@@ -1431,6 +1436,36 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             APP.MainWindow.show_portfolio_review_queue(window)
         dialog.assert_called_once_with(window, projects[:5], total_count=8)
         dialog.return_value.exec_.assert_called_once_with()
+
+    def test_guided_next_step_decisions_limit_each_session_to_a_manageable_batch(self):
+        projects = [{"id": f"project-{index}"} for index in range(8)]
+        window = SimpleNamespace(next_step_decision_queue=Mock(return_value=projects))
+        with patch.object(APP, "PortfolioReviewDialog") as dialog:
+            APP.MainWindow.show_next_step_decision_queue(window)
+        dialog.assert_called_once_with(window, projects[:5], total_count=8, purpose="next_step")
+        dialog.return_value.exec_.assert_called_once_with()
+
+    def test_next_step_decision_returns_to_the_same_batch_after_codex_governance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = {
+                "id": "project", "status": "active", "path": folder,
+                "objective": "Ship", "nextStep": "", "stage": "execution", "health": "on_track",
+            }
+            window = SimpleNamespace(
+                show_project_governance=Mock(),
+                open_project_workspace=Mock(),
+                next_step_decision_queue=Mock(return_value=[]),
+            )
+            dialog = SimpleNamespace(
+                purpose="next_step", current_project=lambda: project, window=window,
+                pending=[project], reviewed_count=0, render_current=Mock(),
+            )
+            APP.PortfolioReviewDialog.confirm_current(dialog)
+        window.show_project_governance.assert_called_once_with([project])
+        window.open_project_workspace.assert_not_called()
+        self.assertEqual(dialog.pending, [])
+        self.assertEqual(dialog.reviewed_count, 1)
+        dialog.render_current.assert_called_once_with()
 
     def test_incomplete_review_routes_to_codex_governance_before_confirmation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1600,6 +1635,15 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1 · 最久逾期 4 天",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
+
+    def test_next_step_batch_summary_distinguishes_codex_ready_and_manual_projects(self):
+        with tempfile.TemporaryDirectory() as folder:
+            summary = APP.next_step_decision_batch_summary([
+                {"path": folder},
+                {"path": ""},
+            ])
+        self.assertEqual(summary, "本轮剩余 2 · Codex 可分析 1 · 需手动补充 1")
+        self.assertEqual(APP.next_step_decision_batch_summary([]), "本轮已完成")
 
     def test_confirmation_urgency_never_mislabels_setup_work_as_overdue(self):
         baseline = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
