@@ -838,6 +838,24 @@ def project_review_drift(project):
     return changes
 
 
+def project_review_trigger(project):
+    """Return the only conditions that should interrupt normal project work.
+
+    A missing first baseline and an elapsed calendar cadence are bookkeeping,
+    not decisions.  They must not create a queue item on their own.  A project
+    needs review only when required control data is missing or a stored,
+    comparable decision has actually changed since its baseline.
+    """
+    project = project or {}
+    if project.get("status", "active") != "active":
+        return ""
+    if project_governance_gaps(project):
+        return "governance"
+    if not isinstance(project.get("reviewBaseline"), dict):
+        return ""
+    return "drift" if project_review_drift(project) else ""
+
+
 def project_change_establishes_review(project, source, has_changes=True):
     """Return True only when a complete project review can be claimed.
 
@@ -890,12 +908,10 @@ def merge_missing_project_insight(project, insight, allowed_fields=None):
 
 
 def project_review_status(project, now=None):
-    """Return (is_due, age_days, cadence_days) for a deliberate project review.
+    """Return legacy cadence metadata for reports and explicit review tools.
 
-    Every active project needs one deliberate baseline review before a cadence
-    can be truthful. Unreviewed projects enter a neutral review queue rather
-    than masquerading as current risk. Once reviewed, cadence is derived from
-    management priority and continues automatically.
+    Calendar age is deliberately not an actionable queue trigger.  Callers
+    deciding whether to interrupt the user must use ``project_review_trigger``.
     """
     project = project or {}
     priority = project.get("priority") if project.get("priority") in PROJECT_REVIEW_CADENCE_DAYS else "normal"

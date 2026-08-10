@@ -478,7 +478,7 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(applied, [])
         self.assertEqual(merged, project)
 
-    def test_every_active_project_requires_a_truthful_baseline_review(self):
+    def test_legacy_review_status_keeps_cadence_metadata_without_driving_the_queue(self):
         attention = {"status": "active", "priority": "normal", "health": "attention"}
         healthy = {"status": "active", "priority": "normal", "health": "on_track"}
         paused = {"status": "paused", "priority": "normal", "health": "on_track"}
@@ -488,6 +488,26 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.project_review_phase(attention), "baseline")
         self.assertEqual(management.project_review_phase(healthy), "baseline")
         self.assertEqual(management.project_review_phase(paused), "inactive")
+
+    def test_review_trigger_is_event_driven_instead_of_calendar_or_setup_driven(self):
+        complete = {
+            "status": "active", "objective": "Ship", "nextStep": "Test",
+            "stage": "execution", "health": "on_track", "blocker": "",
+        }
+        incomplete = {**complete, "objective": ""}
+        calendar_only = {**complete, "reviewedAt": "2000-01-01T00:00:00"}
+        stable = {
+            **complete,
+            "reviewedAt": "2026-08-01T09:00:00",
+            "reviewBaseline": management.project_review_snapshot(complete, "2026-08-01T09:00:00"),
+        }
+        changed = {**stable, "stage": "validation"}
+
+        self.assertEqual(management.project_review_trigger(complete), "")
+        self.assertEqual(management.project_review_trigger(incomplete), "governance")
+        self.assertEqual(management.project_review_trigger(calendar_only), "")
+        self.assertEqual(management.project_review_trigger(stable), "")
+        self.assertEqual(management.project_review_trigger(changed), "drift")
 
     def test_review_cadence_tracks_management_priority(self):
         now = datetime(2026, 8, 10, 12, 0, 0)

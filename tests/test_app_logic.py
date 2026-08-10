@@ -296,14 +296,19 @@ class ReviewDialogStructureTests(unittest.TestCase):
             "id": "project-1", "name": "Release", "status": "active", "priority": "normal",
             "stage": "validation", "health": "on_track", "objective": "Ship release",
             "nextStep": "Validate candidate", "reviewedAt": "2026-01-01T09:00:00",
+            "reviewBaseline": {
+                "at": "2026-01-01T09:00:00", "objective": "Ship release",
+                "successCriteria": "", "stage": "validation", "health": "on_track",
+                "nextStep": "Prepare candidate", "blocker": "",
+            },
             "conversations": [],
         }
         parent = APP.QWidget(); parent.today_tasks = []; parent.projects = [project]
         parent.open_project_workspace = Mock()
         parent.portfolio_review_queue = Mock(return_value=[project])
         dialog = APP.PortfolioReviewDialog(parent, [project])
-        self.assertIn("到期复核 1", dialog.subtitle.text())
-        self.assertIn("最久逾期优先", dialog.subtitle.accessibleName())
+        self.assertIn("变化 1", dialog.subtitle.text())
+        self.assertIn("真实变化优先", dialog.subtitle.accessibleName())
         dialog.render_current = Mock()
 
         dialog.open_current()
@@ -1141,7 +1146,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             APP.project_portfolio_overview_text(metrics),
             "6 个项目  ·  战略重点 2/3  ·  实际推进 2  ·  风险/阻塞 1  ·  管理待办 3",
         )
-        self.assertEqual(APP.project_decision_queue_summary(metrics["decisionCounts"]), "风险处置 1 · 生命周期 1 · 管理确认 1")
+        self.assertEqual(APP.project_decision_queue_summary(metrics["decisionCounts"]), "风险处置 1 · 生命周期 1 · 项目变化 1")
         self.assertNotIn("另有决策", APP.project_portfolio_overview_text(metrics))
 
     def test_portfolio_decision_distribution_opens_the_exact_existing_workflow(self):
@@ -1697,7 +1702,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(decision["secondary"], "执行校准 1 · 待定下一步 1 · 重点校准 1 · 另 2 类")
         self.assertEqual(
             decision["secondaryFull"],
-            "执行校准 1 · 待定下一步 1 · 重点校准 1 · 管理确认 1 · 生命周期 1",
+            "执行校准 1 · 待定下一步 1 · 重点校准 1 · 项目变化 1 · 生命周期 1",
         )
         self.assertIn("处置方向", decision["outcome"])
 
@@ -1713,11 +1718,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual((wip_decision["scope"], wip_decision["count"]), ("task_wip", 1))
         self.assertIn("Codex 运行保护", wip_decision["summary"])
         self.assertEqual(wip_decision["outcome"], "进行中任务恢复至 3 项以内")
-        self.assertIn("管理确认 1", wip_decision["secondaryFull"])
+        self.assertIn("项目变化 1", wip_decision["secondaryFull"])
 
         alignment_decision = APP.portfolio_priority_decision(groups, capacity, [alignment], [lifecycle])
         self.assertEqual(alignment_decision["scope"], "alignment")
-        self.assertEqual(alignment_decision["secondary"], "待定下一步 1 · 重点校准 1 · 管理确认 1 · 另 1 类")
+        self.assertEqual(alignment_decision["secondary"], "待定下一步 1 · 重点校准 1 · 项目变化 1 · 另 1 类")
         backlog = [{"title": "Recheck experiment", "date": "2026-08-07"}]
         completion = [{"title": "Publish validation result", "date": "2026-08-08"}]
         completion_decision = APP.portfolio_priority_decision(
@@ -1731,7 +1736,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         )
         self.assertEqual(backlog_decision["scope"], "plan_backlog")
         self.assertIn("2026-08-07", backlog_decision["summary"])
-        self.assertEqual(backlog_decision["secondary"], "待定下一步 1 · 重点校准 1 · 管理确认 1 · 另 1 类")
+        self.assertEqual(backlog_decision["secondary"], "待定下一步 1 · 重点校准 1 · 项目变化 1 · 另 1 类")
         self.assertEqual(APP.portfolio_priority_decision(groups, capacity, [], [lifecycle])["scope"], "needs_next")
 
         groups["needs_next"] = []
@@ -1803,27 +1808,35 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             candidates = APP.MainWindow.project_governance_candidates(window)
         self.assertEqual([project["id"] for project in candidates], ["eligible"])
 
-    def test_control_state_prioritizes_blockers_missing_decisions_and_baseline_review(self):
+    def test_control_state_prioritizes_blockers_missing_decisions_and_real_changes(self):
         blocked = {"status": "active", "health": "on_track", "blocker": "Waiting for calibration", "objective": "Ship", "nextStep": "Test"}
         missing_next = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": ""}
         healthy = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
         incomplete = {**healthy, "objective": "", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
+        changed = {
+            **healthy,
+            "reviewedAt": datetime.now().isoformat(timespec="seconds"),
+            "reviewBaseline": {
+                "objective": "Ship", "successCriteria": "", "stage": "planning",
+                "health": "on_track", "nextStep": "Test", "blocker": "",
+            },
+        }
         self.assertEqual(APP.project_control_state(blocked)[0], "blocked")
         self.assertIn("calibration", APP.project_control_state(blocked)[4])
         self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
         self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
-        self.assertEqual(APP.project_control_state(healthy)[0], "review")
-        self.assertEqual(APP.project_control_state(healthy)[1], "待建基线")
-        self.assertIn("首次复核基线", APP.project_control_state(healthy)[4])
+        self.assertEqual(APP.project_control_state(healthy)[:2], ("on_track", "正常"))
+        self.assertEqual(APP.project_control_state(changed)[:2], ("review", "有变化"))
+        self.assertIn("当前阶段", APP.project_control_state(changed)[4])
         self.assertEqual(APP.project_control_state(incomplete)[:2], ("review", "待补全"))
         self.assertIn("项目目标", APP.project_control_state(incomplete)[4])
 
-    def test_legacy_attention_becomes_review_instead_of_current_risk(self):
+    def test_legacy_attention_does_not_create_a_confirmation_chore(self):
         legacy_attention = {"status": "active", "stage": "execution", "health": "attention", "objective": "Ship", "nextStep": "Review"}
         fresh_attention = {**legacy_attention, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
         overdue_attention = {**legacy_attention, "reviewedAt": "2000-01-01T00:00:00"}
-        self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待建基线"))
-        self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
+        self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("on_track", "正常"))
+        self.assertFalse(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertEqual(APP.project_control_state(fresh_attention)[:2], ("attention", "需关注"))
         self.assertEqual(APP.project_control_state(overdue_attention)[:2], ("attention", "需关注"))
         self.assertFalse(APP.project_management_scope_matches(overdue_attention, "review"))
@@ -2063,55 +2076,76 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         legacy_attention = {"status": "active", "stage": "execution", "health": "attention", "objective": "Ship", "nextStep": "Confirm"}
         healthy = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
         due_review = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test", "reviewedAt": "2000-01-01T00:00:00"}
+        changed = {
+            **healthy,
+            "reviewedAt": "2026-08-01T09:00:00",
+            "reviewBaseline": {
+                "objective": "Ship", "successCriteria": "", "stage": "planning",
+                "health": "on_track", "nextStep": "Test", "blocker": "",
+            },
+        }
         self.assertTrue(APP.project_management_scope_matches(blocked, "blocked"))
         self.assertTrue(APP.project_management_scope_matches(blocked, "attention"))
         self.assertTrue(APP.project_management_scope_matches(attention, "attention"))
         self.assertFalse(APP.project_management_scope_matches(legacy_attention, "attention"))
-        self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
+        self.assertFalse(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertFalse(APP.project_management_scope_matches(healthy, "attention"))
-        self.assertTrue(APP.project_management_scope_matches(healthy, "review"))
-        self.assertTrue(APP.project_management_scope_matches(due_review, "review"))
+        self.assertFalse(APP.project_management_scope_matches(healthy, "review"))
+        self.assertFalse(APP.project_management_scope_matches(due_review, "review"))
+        self.assertTrue(APP.project_management_scope_matches(changed, "review"))
 
-    def test_project_confirmation_counts_keep_baseline_and_due_review_distinct(self):
+    def test_project_confirmation_counts_only_missing_information_and_real_changes(self):
         baseline = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
         incomplete = {**baseline, "objective": ""}
         now = datetime.now()
         overdue = {**baseline, "reviewedAt": (now - timedelta(days=11)).isoformat(timespec="seconds")}
         current = {**baseline, "reviewedAt": now.isoformat(timespec="seconds")}
-        counts = APP.project_confirmation_counts([baseline, incomplete, overdue, current])
-        self.assertEqual(counts, {"governance": 1, "baseline": 1, "overdue": 1, "total": 3})
+        changed = {
+            **current,
+            "reviewBaseline": {
+                "objective": "Ship", "successCriteria": "", "stage": "planning",
+                "health": "on_track", "nextStep": "Test", "blocker": "",
+            },
+        }
+        counts = APP.project_confirmation_counts([baseline, incomplete, overdue, current, changed])
+        self.assertEqual(counts, {"governance": 1, "changes": 1, "total": 2})
         self.assertEqual(
-            APP.project_confirmation_batch_summary([baseline, incomplete, overdue, current]),
-            "本轮剩余 3 · 补全 1 · 建基线 1 · 到期复核 1 · 最久逾期 4 天",
+            APP.project_confirmation_batch_summary([baseline, incomplete, overdue, current, changed]),
+            "本轮剩余 2 · 补全 1 · 变化 1",
         )
         self.assertEqual(APP.project_confirmation_batch_summary([]), "本轮已完成")
 
-    def test_confirmation_workload_counts_only_real_one_by_one_decisions_as_manual(self):
+    def test_confirmation_workload_excludes_setup_and_calendar_only_reviews(self):
         healthy = {
             "status": "active", "stage": "execution", "health": "on_track",
             "objective": "Ship", "nextStep": "Test", "conversations": [],
         }
-        attention = {**healthy, "name": "Needs judgement", "health": "attention"}
-        aligned = {**healthy, "name": "Safe baseline"}
+        incomplete = {**healthy, "name": "Missing objective", "objective": ""}
+        changed = {
+            **healthy, "name": "Changed stage", "reviewedAt": datetime.now().isoformat(timespec="seconds"),
+            "reviewBaseline": {
+                "objective": "Ship", "successCriteria": "", "stage": "planning",
+                "health": "on_track", "nextStep": "Test", "blocker": "",
+            },
+        }
         current = {
             **healthy, "name": "Already current",
             "reviewedAt": datetime.now().isoformat(timespec="seconds"),
         }
         workload = APP.project_confirmation_workload(
-            [attention, aligned, current], [], APP.QDate.currentDate().toString(APP.Qt.ISODate)
+            [incomplete, healthy, changed, current], [], APP.QDate.currentDate().toString(APP.Qt.ISODate)
         )
         self.assertEqual(workload["total"], 2)
-        self.assertEqual(workload["manual"], [attention])
-        self.assertEqual(workload["manualCount"], 1)
-        self.assertEqual(workload["batch"], [aligned])
-        self.assertEqual(workload["batchCount"], 1)
+        self.assertEqual(workload["manual"], [incomplete, changed])
+        self.assertEqual(workload["manualCount"], 2)
+        self.assertEqual(workload["batch"], [])
+        self.assertEqual(workload["batchCount"], 0)
 
     def test_confirmation_caption_explains_a_homogeneous_queue_instead_of_hiding_it(self):
-        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 9, "overdue": 0, "total": 9}), "首次基线")
-        self.assertEqual(APP.project_confirmation_caption({"governance": 3, "baseline": 0, "overdue": 0, "total": 3}), "资料补全")
-        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 0, "overdue": 2, "total": 2}), "到期复核")
-        self.assertEqual(APP.project_confirmation_caption({"governance": 1, "baseline": 1, "overdue": 0, "total": 2}), "管理确认")
-        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "baseline": 0, "overdue": 0, "total": 0}), "管理确认")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "changes": 9, "total": 9}), "变化确认")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 3, "changes": 0, "total": 3}), "资料补全")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 1, "changes": 1, "total": 2}), "项目处理")
+        self.assertEqual(APP.project_confirmation_caption({"governance": 0, "changes": 0, "total": 0}), "项目处理")
 
     def test_next_step_batch_summary_distinguishes_codex_ready_and_manual_projects(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2130,19 +2164,22 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertNotIn("逾期", APP.project_confirmation_batch_summary([baseline, incomplete, invalid_date]))
         self.assertNotIn("None", APP.project_review_summary(invalid_date))
 
-    def test_review_queue_orders_missing_data_then_real_debt_then_initial_baseline(self):
-        now = datetime.now()
+    def test_review_queue_orders_missing_data_then_larger_real_change_sets(self):
         baseline = {"id": "baseline", "name": "Baseline", "status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
         incomplete = {**baseline, "id": "incomplete", "name": "Incomplete", "objective": ""}
-        older = {**baseline, "id": "older", "name": "Older", "reviewedAt": (now - timedelta(days=15)).isoformat(timespec="seconds")}
-        newer = {**baseline, "id": "newer", "name": "Newer", "reviewedAt": (now - timedelta(days=9)).isoformat(timespec="seconds")}
+        saved = {
+            "objective": "Ship", "successCriteria": "", "stage": "planning",
+            "health": "on_track", "nextStep": "Prepare", "blocker": "",
+        }
+        larger = {**baseline, "id": "larger", "name": "Larger", "reviewedAt": "2026-08-01T09:00:00", "reviewBaseline": saved}
+        smaller = {**baseline, "id": "smaller", "name": "Smaller", "stage": "planning", "reviewedAt": "2026-08-01T09:00:00", "reviewBaseline": saved}
         window = SimpleNamespace(
-            projects=[baseline, newer, older, incomplete],
+            projects=[baseline, smaller, larger, incomplete],
             execution_alignment_queue=Mock(return_value=[]),
             lifecycle_calibration_queue=Mock(return_value=[]),
         )
         queue = APP.MainWindow.portfolio_review_queue(window)
-        self.assertEqual([project["id"] for project in queue], ["incomplete", "older", "newer", "baseline"])
+        self.assertEqual([project["id"] for project in queue], ["incomplete", "larger", "smaller"])
 
     def test_guided_calibration_summaries_expose_pause_safety_and_choice_complexity(self):
         first = {"id": "first", "status": "active"}

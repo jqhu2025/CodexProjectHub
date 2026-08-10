@@ -11,8 +11,7 @@ from .management import (
     ordered_board_tasks,
     project_execution_alignment,
     project_governance_gaps,
-    project_review_overdue_days,
-    project_review_phase,
+    project_review_drift,
     task_is_archived,
     task_is_superseded_daily_record,
 )
@@ -230,19 +229,17 @@ def project_workbench_command(project, tasks, target_date, primary=None, now=Non
     elif route == "review":
         gaps = project_governance_gaps(project)
         if gaps:
-            title = "先补全项目决策，再建立复核基线"
+            title = "补全项目的必要信息"
             reason = "缺少：" + "、".join(PROJECT_DECISION_FIELDS.get(field, field) for field in gaps)
-        elif project_review_phase(project) == "baseline":
-            title = "确认当前项目基线"
-            reason = "目标、阶段、健康度和下一步尚未完成首次人工确认。"
         else:
-            overdue = project_review_overdue_days(project, now)
-            title = "完成本周期项目复核"
-            reason = "项目复核今日到期。" if overdue == 0 else f"项目复核已逾期 {overdue or 0} 天。"
+            changes = project_review_drift(project)
+            labels = "、".join(change.get("label") or change.get("field") or "项目决策" for change in changes[:3])
+            title = "确认真实发生的项目变化"
+            reason = f"{labels}与上次记录不同。" if labels else "项目关键决策发生变化。"
         command = {
-            "key": "review", "kind": "首要管理决策", "tone": "primary",
+            "key": "review", "kind": "项目变化", "tone": "primary",
             "title": title, "reason": reason,
-            "action": "confirm_review", "actionLabel": "确认现状",
+            "action": "confirm_review", "actionLabel": "查看变化",
         }
     elif evidence["doingCount"] or evidence["runningConversationCount"]:
         parts = []

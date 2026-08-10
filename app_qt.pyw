@@ -66,6 +66,7 @@ from codex_hub.management import (
     project_review_status,
     project_review_phase,
     project_review_drift,
+    project_review_trigger,
     project_review_overdue_days,
     project_management_validation_error,
     project_blocker_age_seconds,
@@ -1045,44 +1046,31 @@ def project_control_state(project):
             estimate = "（从最近确认起）" if project.get("blockedAtEstimated") else ""
             reason += f" · 已持续 {duration}{estimate}"
         return "blocked", "阻塞", "#b42318", "#fff0ee", reason
-    review_due, review_age, review_cadence = project_review_status(project)
-    if health == "attention" and (not review_due or review_age is not None):
-        return "attention", "需关注", "#b54708", "#fff4e5", "已确认关注；请处理风险并按复核节奏更新"
+    if health == "attention" and bool(str(project.get("reviewedAt") or "").strip()):
+        return "attention", "需关注", "#b54708", "#fff4e5", "已确认关注；请处理风险，并在状态变化后更新"
     if not str(project.get("nextStep") or "").strip():
         reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
         return "on_track", "正常", "#087443", "#e7f7ef", reason
     gap_text = project_governance_gap_text(project)
     if gap_text:
         return "review", "待补全", "#315f9b", "#edf4ff", f"复核前先补全：{gap_text}"
-    if review_due:
-        if project_review_phase(project) == "baseline":
-            return "review", "待建基线", "#315f9b", "#edf4ff", "尚未建立首次复核基线"
-        overdue_days = project_review_overdue_days(project)
-        reason = (
-            f"今天到达 {review_cadence} 天复核周期"
-            if overdue_days == 0 else
-            f"已逾期 {overdue_days} 天 · 上次复核距今 {review_age} 天 · {review_cadence} 天周期"
-        )
-        return "review", "待复核", "#315f9b", "#edf4ff", reason
+    if project_review_trigger(project) == "drift":
+        drift = project_review_drift(project)
+        labels = "、".join(change.get("label") or change.get("field") or "项目决策" for change in drift[:3])
+        suffix = f"等 {len(drift)} 项" if len(drift) > 3 else ""
+        return "review", "有变化", "#315f9b", "#edf4ff", f"{labels}{suffix}与上次记录不同"
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
 
 
 def project_review_summary(project):
-    due, age_days, cadence = project_review_status(project)
     reviewed_at = str((project or {}).get("reviewedAt") or "").strip()
     drift_count = len(project_review_drift(project))
-    drift_text = f" · {drift_count} 项变化待确认" if drift_count else ""
-    if reviewed_at and age_days is not None:
-        overdue_days = project_review_overdue_days(project)
-        state = (
-            ("今日到期" if overdue_days == 0 else f"已逾期 {overdue_days} 天")
-            if due else
-            f"{max(0, cadence - (age_days or 0))} 天后复核"
-        )
-        return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}{drift_text}"
-    if due:
-        return f"尚未完成首次复核 · 确认后每 {cadence} 天自动提醒"
-    return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
+    if reviewed_at:
+        when = format_project_decision_time(reviewed_at, compact=True)
+        if drift_count:
+            return f"上次记录 {when} · {drift_count} 项关键变化待确认"
+        return f"上次记录 {when} · 关键决策无变化"
+    return "尚无变更基线 · 下次保存项目时自动建立"
 
 
 def project_review_drift_presentation(project):
@@ -1093,8 +1081,8 @@ def project_review_drift_presentation(project):
         legacy = bool(str((project or {}).get("reviewedAt") or "").strip())
         return {
             "state": "baseline", "count": 0, "changes": [],
-            "title": "本次确认后开始记录差异" if legacy else "首次确认将建立差异基线",
-            "detail": "历史复核没有可比较快照" if legacy else "之后每次复核会直接列出目标、验收标准、阶段、健康度、下一步和阻塞的变化",
+            "title": "尚无可比较的变更记录",
+            "detail": "不需要单独确认；下次完整保存项目时会自动建立比较基线" if not legacy else "历史记录没有快照；下次完整保存项目时会自动建立",
         }
     if not changes:
         return {
@@ -1162,32 +1150,28 @@ def project_command_row_presentation(project, command=None):
 
 
 def project_confirmation_counts(projects):
-    """Classify confirmation work without conflating setup and cadence review."""
-    counts = {"governance": 0, "baseline": 0, "overdue": 0, "total": 0}
+    """Count only missing essentials and comparable decision changes."""
+    counts = {"governance": 0, "changes": 0, "total": 0}
     for project in projects or []:
         if not project_management_scope_matches(project, "review"):
             continue
         counts["total"] += 1
         if project_governance_gaps(project):
             counts["governance"] += 1
-        elif project_review_phase(project) == "baseline":
-            counts["baseline"] += 1
         else:
-            counts["overdue"] += 1
+            counts["changes"] += 1
     return counts
 
 
 def project_confirmation_caption(counts):
-    """Name a homogeneous review queue by the actual decision it contains."""
+    """Name the event-driven queue by the actual work it contains."""
     counts = counts or {}
     total = int(counts.get("total") or 0)
     if total and int(counts.get("governance") or 0) == total:
         return "资料补全"
-    if total and int(counts.get("baseline") or 0) == total:
-        return "首次基线"
-    if total and int(counts.get("overdue") or 0) == total:
-        return "到期复核"
-    return "管理确认"
+    if total and int(counts.get("changes") or 0) == total:
+        return "变化确认"
+    return "项目处理"
 
 
 def project_baseline_batch_eligibility(project, today_tasks=None, today=None):
@@ -1223,63 +1207,40 @@ def project_baseline_batch_candidates(projects, today_tasks=None, today=None):
 
 
 def project_confirmation_workload(projects, today_tasks=None, today=None):
-    """Separate one-click baseline setup from decisions that need a person.
-
-    A healthy, complete and execution-aligned first baseline can be established
-    as one guarded batch.  It should not inflate the dashboard number labelled
-    as work that the manager must decide project by project.
-    """
+    """Return only projects with a real event-driven review trigger."""
     queued = [
         project
         for project in projects or []
         if project_management_scope_matches(project, "review")
     ]
-    batch = project_baseline_batch_candidates(queued, today_tasks, today)
-    batch_ids = {id(project) for project in batch}
-    manual = [project for project in queued if id(project) not in batch_ids]
     return {
         "total": len(queued),
-        "manual": manual,
-        "manualCount": len(manual),
-        "batch": batch,
-        "batchCount": len(batch),
+        "manual": queued,
+        "manualCount": len(queued),
+        "batch": [],
+        "batchCount": 0,
     }
 
 
 def project_review_urgency_summary(projects, now=None):
-    """Describe only measured cadence debt; setup work is intentionally neutral."""
-    overdue_days = [
-        days
-        for project in projects or []
-        if project_management_scope_matches(project, "review")
-        for days in [project_review_overdue_days(project, now)]
-        if days is not None
-    ]
-    if not overdue_days:
-        return ""
-    longest = max(overdue_days)
-    return "今日到期" if longest == 0 else f"最久逾期 {longest} 天"
+    """Calendar age is not urgency when no project decision changed."""
+    return ""
 
 
 def project_confirmation_priority_hint(projects):
     counts = project_confirmation_counts(projects)
     if counts["governance"]:
         return "缺项优先处理"
-    if counts["overdue"]:
-        return "最久逾期优先"
-    if counts["baseline"]:
-        return "逐项建立基线"
+    if counts["changes"]:
+        return "真实变化优先"
     return ""
 
 
 def project_confirmation_sort_key(project):
-    """Order setup gaps, real cadence debt, then first-time baselines."""
+    """Order missing essentials before larger comparable changes."""
     if project_governance_gaps(project):
         return 0, 0, project_management_sort_key(project)
-    overdue_days = project_review_overdue_days(project)
-    if overdue_days is not None:
-        return 1, -overdue_days, project_management_sort_key(project)
-    return 2, 0, project_management_sort_key(project)
+    return 1, -len(project_review_drift(project)), project_management_sort_key(project)
 
 
 def project_has_local_folder(project):
@@ -1299,15 +1260,10 @@ def project_confirmation_batch_summary(projects, include_routed=False):
     parts = []
     if counts["governance"]:
         parts.append(f"补全 {counts['governance']}")
-    if counts["baseline"]:
-        parts.append(f"建基线 {counts['baseline']}")
-    if counts["overdue"]:
-        parts.append(f"到期复核 {counts['overdue']}")
+    if counts["changes"]:
+        parts.append(f"变化 {counts['changes']}")
     if routed:
         parts.append(f"状态确认 {routed}")
-    urgency = project_review_urgency_summary(projects)
-    if urgency:
-        parts.append(urgency)
     return f"本轮剩余 {total} · " + " · ".join(parts)
 
 
@@ -1389,7 +1345,7 @@ PROJECT_DECISION_QUEUE_PRESENTATION = (
     ("lifecycle", "生命周期", "\uE823", "#526071", "#eef2f6", "确认静默项目继续、暂缓或退出"),
     ("needs_next", "待定下一步", "\uE945", "#6d3fc0", "#f3edff", "为项目明确一个可执行下一步"),
     ("focus_commitment", "重点落地", "\uE735", "#7c3aed", "#f1eaff", "把战略重点的下一步落到任务板"),
-    ("review", "管理确认", "\uE73E", "#315f9b", "#edf3ff", "补全项目资料、建立基线或完成周期复核"),
+    ("review", "项目变化", "\uE73E", "#315f9b", "#edf3ff", "补全必要资料或确认真实发生的关键变化"),
 )
 
 
@@ -1570,7 +1526,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             ("needs_next", "待定下一步", len(groups.get("needs_next") or [])),
             ("focus_capacity", "重点校准", focus_capacity_count),
             ("focus_commitment", "重点落地", len(focus_commitments)),
-            ("review", "管理确认", len(groups.get("review") or [])),
+            ("review", "项目变化", len(groups.get("review") or [])),
             ("lifecycle", "生命周期", len(lifecycle_items)),
         ]
         secondary_items = [
@@ -5216,10 +5172,8 @@ class PortfolioReviewDialog(QDialog):
         self.pending = list(projects or [])
         self.portfolio_total = max(len(self.pending), int(total_count or len(self.pending)))
         self.reviewed_count = 0
-        self.last_batch_result = None
-        self.batch_candidates = []
         next_step_mode = purpose == "next_step"
-        self.setWindowTitle("明确项目下一步" if next_step_mode else "项目确认")
+        self.setWindowTitle("明确项目下一步" if next_step_mode else "处理项目变化")
         self.setObjectName("portfolioReviewDialog")
         self.setMinimumSize(720, 560)
         self.resize(780, 620)
@@ -5233,8 +5187,8 @@ class PortfolioReviewDialog(QDialog):
         icon.setPixmap(fluent_icon("\uE73E", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
-        title = QLabel("逐项明确可执行下一步" if next_step_mode else "逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        self.subtitle = QLabel("一次只决定一个项目，保存后自动进入下一项" if next_step_mode else "每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
+        title = QLabel("逐项明确可执行下一步" if next_step_mode else "处理必要信息与真实变化"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        self.subtitle = QLabel("一次只决定一个项目，保存后自动进入下一项" if next_step_mode else "只有缺少必要信息或关键决策发生变化时才会出现在这里")
         self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
@@ -5248,10 +5202,6 @@ class PortfolioReviewDialog(QDialog):
         self.feedback = QLabel(); self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); root.addWidget(self.feedback)
         actions = QHBoxLayout(); actions.setSpacing(8)
         close = QPushButton("关闭"); close.clicked.connect(self.reject); actions.addWidget(close)
-        self.undo_batch_button = QPushButton("撤销本次批量确认")
-        self.undo_batch_button.setIcon(fluent_icon("\uE7A7", color="#526071", size=13)); self.undo_batch_button.setIconSize(QSize(13, 13))
-        self.undo_batch_button.setToolTip("仅撤销刚刚批量建立的管理基线；不会修改项目资料")
-        self.undo_batch_button.clicked.connect(self.undo_last_batch); self.undo_batch_button.hide(); actions.addWidget(self.undo_batch_button)
         actions.addStretch()
         self.open_button = QPushButton("打开项目面板"); self.open_button.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); self.open_button.setIconSize(QSize(14, 14))
         self.open_button.setToolTip("查看完整项目资料；关闭项目面板后返回本轮确认")
@@ -5262,11 +5212,7 @@ class PortfolioReviewDialog(QDialog):
         self.recover_button.setToolTip("将历史需关注状态校准为正常，并建立本次复核基线"); self.recover_button.setAccessibleName("确认项目已经恢复正常")
         self.recover_button.setStyleSheet("QPushButton { color: #087443; background: #eef9f3; border: 1px solid #b9dfca; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #e2f4ea; border-color: #78bd98; }")
         self.recover_button.clicked.connect(self.recover_current); self.recover_button.hide(); actions.addWidget(self.recover_button)
-        self.batch_button = QPushButton("批量建立基线")
-        self.batch_button.setIcon(fluent_icon("\uE8B7", color="#1d4ed8", size=14)); self.batch_button.setIconSize(QSize(14, 14))
-        self.batch_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
-        self.batch_button.clicked.connect(self.confirm_baseline_batch); self.batch_button.hide(); actions.addWidget(self.batch_button)
-        self.confirm_button = QPushButton("确认现状"); self.confirm_button.setObjectName("primary"); self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.confirm_button.setIconSize(QSize(14, 14)); self.confirm_button.clicked.connect(self.confirm_current); actions.addWidget(self.confirm_button)
+        self.confirm_button = QPushButton("确认变化"); self.confirm_button.setObjectName("primary"); self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14)); self.confirm_button.setIconSize(QSize(14, 14)); self.confirm_button.clicked.connect(self.confirm_current); actions.addWidget(self.confirm_button)
         root.addLayout(actions)
         self.render_current()
 
@@ -5306,9 +5252,8 @@ class PortfolioReviewDialog(QDialog):
             if next_step_mode else
             f"{batch_summary}\n"
             "补全：目标、阶段、健康度或下一步尚不完整\n"
-            "建基线：资料完整，但尚未完成首次管理确认\n"
-            "到期复核：已有复核基线，并且已经到达项目复核周期\n"
-            "今日到期 / 最久逾期：只依据已建立基线后的真实周期计算"
+            "变化：当前关键决策与上次保存的记录不同\n"
+            "没有真实变化的项目不会出现在这里"
         )
         self.subtitle.setToolTip(batch_explanation)
         self.subtitle.setAccessibleName(
@@ -5320,27 +5265,7 @@ class PortfolioReviewDialog(QDialog):
             if remaining else f"本轮完成 {self.reviewed_count}"
         )
         self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1); self.recover_button.hide()
-        self.undo_batch_button.setVisible(bool(self.last_batch_result))
-        self.batch_candidates = []
-        self.batch_button.hide()
-        if remaining and not next_step_mode:
-            self.batch_candidates = project_baseline_batch_candidates(
-                self.pending,
-                self.window.today_tasks,
-                QDate.currentDate().toString(Qt.ISODate),
-            )
-            if len(self.batch_candidates) >= 2:
-                self.batch_button.setText(f"批量建基线 {len(self.batch_candidates)}")
-                excluded = remaining - len(self.batch_candidates)
-                detail = "全部满足批量条件" if not excluded else f"另有 {excluded} 项需要逐项处理"
-                self.batch_button.setToolTip(f"一次确认 {len(self.batch_candidates)} 个资料完整、健康正常且执行方向一致的项目；{detail}")
-                batch_hint = f"{len(self.batch_candidates)} 项可批量建立"
-                if excluded:
-                    batch_hint += f"，{excluded} 项需逐项判断"
-                self.subtitle.setText(f"{batch_summary}；{batch_hint}")
-                self.subtitle.setAccessibleName(f"项目确认批次。{batch_summary}。{batch_hint}")
-                self.batch_button.show()
-        self.confirm_button.setText("确认现状" if remaining else "关闭")
+        self.confirm_button.setText("确认变化" if remaining and not next_step_mode else "确认现状" if remaining else "关闭")
         if not remaining:
             done_icon = QLabel(); done_icon.setFixedSize(54, 54); done_icon.setAlignment(Qt.AlignCenter)
             done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 15px;")
@@ -5350,14 +5275,14 @@ class PortfolioReviewDialog(QDialog):
             detail_text = (
                 f"本轮已处理 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待{'决策' if next_step_mode else '确认'}，可稍后继续"
                 if remaining_total else
-                (f"已为 {self.reviewed_count} 个项目明确可执行下一步" if next_step_mode else f"已确认 {self.reviewed_count} 个项目；复核日期和周期已经写入决策记录")
+                (f"已为 {self.reviewed_count} 个项目明确可执行下一步" if next_step_mode else f"已处理 {self.reviewed_count} 个项目的必要信息或真实变化")
             )
             detail = QLabel(detail_text)
             detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
             feedback = (
                 "主页待定数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮项目都已有明确下一步。"
             ) if next_step_mode else (
-                "主页待确认数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮管理确认已经全部处理。"
+                "项目变化数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮项目变化已经全部处理。"
             )
             self.card_layout.addStretch(); self.feedback.setText(feedback)
             self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
@@ -5397,27 +5322,23 @@ class PortfolioReviewDialog(QDialog):
             self.confirm_button.setToolTip("确认风险仍然存在，并把需关注状态写入本次复核记录")
             self.recover_button.show()
         else:
-            self.confirm_button.setText("确认现状")
+            self.confirm_button.setText("确认变化")
             self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
-            self.confirm_button.setToolTip("确认当前目标、验收标准、阶段、健康度、下一步和阻塞，并保存为新的差异基线")
-        _review_due, review_age, review_cadence = project_review_status(project)
-        review_phase = project_review_phase(project)
+            self.confirm_button.setToolTip("核对真实变化，并把当前关键决策保存为新的比较记录")
         if next_step_mode:
             review_reason = "当前没有可执行下一步"
         elif gaps:
-            review_reason = f"复核前先补全：{gap_text}"
+            review_reason = f"缺少：{gap_text}"
         else:
-            review_reason = (
-                f"距离上次复核已 {review_age} 天，已到 {review_cadence} 天复核周期"
-                if review_age is not None else
-                "尚未建立首次复核基线"
-            )
+            drift = project_review_drift(project)
+            labels = "、".join(change.get("label") or change.get("field") or "项目决策" for change in drift[:3])
+            review_reason = f"{labels}与上次记录不同" if labels else "项目关键决策发生变化"
         name_row = QHBoxLayout(); name_row.setSpacing(9)
         name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
         priority = QLabel(PROJECT_PRIORITY.get(project_priority_key(project), "常规推进")); priority.setAlignment(Qt.AlignCenter)
         priority.setStyleSheet("color: #1d4ed8; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(priority)
         self.card_layout.addLayout(name_row)
-        reason_caption = "等待决策" if next_step_mode else "管理资料未就绪" if gaps else "首次管理基线" if review_phase == "baseline" else "周期复核到期"
+        reason_caption = "等待决策" if next_step_mode else "必要信息待补全" if gaps else "关键变化待确认"
         reason = QLabel(f"{reason_caption} · {review_reason}"); reason.setWordWrap(True)
         reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
 
@@ -5430,7 +5351,7 @@ class PortfolioReviewDialog(QDialog):
             ) if next_step_mode else (
                 ("当前阶段", PROJECT_STAGE.get(project.get("stage"), "尚未设置")),
                 ("健康度", PROJECT_HEALTH.get(project.get("health"), "尚未设置")),
-                ("复核节奏", "待资料完整后启动" if gaps else project_review_summary(project)),
+                ("变更记录", "待必要信息完整后建立" if gaps else project_review_summary(project)),
             )
         )
         for caption, value in metric_values:
@@ -5519,9 +5440,9 @@ class PortfolioReviewDialog(QDialog):
             self.feedback.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         elif gaps:
             self.feedback.setText(
-                "Codex 将只读检查项目目录并给出缺项建议；你审核并应用后，系统才会建立复核基线。"
+                "Codex 将只读检查项目目录并给出缺项建议；你审核并应用后才会写入。"
                 if has_project_folder else
-                "当前未关联有效项目文件夹，请打开项目面板手动补齐；资料不完整时不会写入复核基线。"
+                "当前未关联有效项目文件夹，请打开项目面板手动补齐必要信息。"
             )
             self.feedback.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         elif alignment_pending:
@@ -5531,12 +5452,7 @@ class PortfolioReviewDialog(QDialog):
             self.feedback.setText("这是一次健康度校准：风险仍在请选择“仍需关注”；风险已解除请选择“已恢复正常”。两种选择都会保留决策记录并建立复核基线。")
             self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         else:
-            baseline = not str(project.get("reviewedAt") or "").strip()
-            self.feedback.setText(
-                "这是首次复核：确认后将建立管理基线，并按项目优先级启动自动复核周期。"
-                if baseline else
-                "确认后会把当前关键决策保存为新的差异基线，并按项目优先级重新计算下一次复核日期。"
-            )
+            self.feedback.setText("这里只有真实变化需要确认；确认后会更新比较记录，没有变化时不会产生周期性待办。")
             self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
 
     def skip_current(self):
@@ -5979,10 +5895,10 @@ class ProjectWorkbenchDialog(QDialog):
         self.review_meta.setStyleSheet(f"color: {'#9a5b00' if initial_drift['state'] == 'changed' else '#66758a'}; font-size: 10px; font-weight: {'650' if initial_drift['state'] == 'changed' else '500'};"); management_head.addWidget(self.review_meta)
         self.management_toggle = QPushButton("编辑项目资料"); self.management_toggle.setFixedHeight(32); self.management_toggle.setCheckable(True)
         self.management_toggle.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.management_toggle.setIconSize(QSize(13, 13)); self.management_toggle.clicked.connect(self.toggle_management_details); management_head.addWidget(self.management_toggle)
-        review_button = QPushButton("确认现状"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
-        review_button.setToolTip("确认当前目标、验收标准、阶段、健康度和下一步仍然有效，并建立自动复核周期")
+        review_button = QPushButton("确认变化"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
+        review_button.setToolTip("核对与上次记录不同的关键决策；没有变化时不会显示")
         review_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
-        review_button.clicked.connect(self.confirm_current_state); management_head.addWidget(review_button); management_layout.addLayout(management_head)
+        review_button.clicked.connect(self.confirm_current_state); review_button.setVisible(project_review_trigger(project) == "drift"); management_head.addWidget(review_button); management_layout.addLayout(management_head)
         self.management_body = QWidget(); management_body_layout = QVBoxLayout(self.management_body); management_body_layout.setContentsMargins(0, 2, 0, 0); management_body_layout.setSpacing(10)
         meta = QHBoxLayout(); meta.setSpacing(10)
         self.priority_field = QComboBox(); self.status_field = QComboBox(); self.category_field = QComboBox(); self.stage_field = QComboBox(); self.health_field = QComboBox()
@@ -6794,7 +6710,7 @@ class MainWindow(QMainWindow):
         self.status_filter.currentIndexChanged.connect(self.render); tools.addWidget(self.status_filter)
         self.scope_filter = QComboBox(); self.scope_filter.setFixedSize(148, 42); self.scope_filter.setAccessibleName("项目管理筛选")
         self.scope_filter.setToolTip("战略重点是人工决策；实际推进来自进行中任务和运行中的 Codex 对话")
-        for label, value in (("全部项目", "all"), ("战略重点", "strategic_focus"), ("实际推进", "executing"), ("管理确认", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
+        for label, value in (("全部项目", "all"), ("战略重点", "strategic_focus"), ("实际推进", "executing"), ("项目变化", "review"), ("风险与阻塞", "attention"), ("阻塞项目", "blocked"), ("需要下一步", "needs_next"), ("暂缓与想法", "paused")):
             self.scope_filter.addItem(label, value)
         self.scope_filter.currentIndexChanged.connect(self.render); self.scope_filter.hide()
         self.project_result_count = QLabel("0 个项目"); self.project_result_count.setFixedWidth(76); self.project_result_count.setAlignment(Qt.AlignCenter)
@@ -6984,7 +6900,7 @@ class MainWindow(QMainWindow):
     def show_portfolio_review_queue(self):
         projects = self.portfolio_review_queue()
         if not projects:
-            QMessageBox.information(self, "暂无待确认项目", "当前没有需要补全、建立基线或到期复核的项目。")
+            QMessageBox.information(self, "暂无项目变化", "当前没有缺少必要信息或关键决策发生变化的项目。")
             return
         PortfolioReviewDialog(
             self,
@@ -7223,7 +7139,7 @@ class MainWindow(QMainWindow):
         groups["attention"] = routing["queues"].get("attention", [])
         groups["review"] = sorted(routing["queues"].get("review", []), key=project_confirmation_sort_key)
         groups["needs_next"] = routing["queues"].get("needs_next", [])
-        prefixes = {"attention": "风险处置", "review": "管理确认", "needs_next": "等待决策"}
+        prefixes = {"attention": "风险处置", "review": "项目变化", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
         focus_commitments = routing["queues"].get("focus_commitment", [])
         for scope, controls in self.portfolio_decision_cards.items():
@@ -7281,7 +7197,7 @@ class MainWindow(QMainWindow):
             routed_to = routing.get("routedTo", {}).get(scope, {})
             route_labels = {
                 "attention": "风险与阻塞", "alignment": "执行校准", "lifecycle": "生命周期",
-                "needs_next": "待定下一步", "focus_commitment": "重点落地", "review": "管理确认",
+                "needs_next": "待定下一步", "focus_commitment": "重点落地", "review": "项目变化",
             }
             routed_summary = "、".join(
                 f"{route_labels.get(owner, owner)} {count}"
@@ -8038,8 +7954,7 @@ class MainWindow(QMainWindow):
         save_json(PROJECTS_FILE, self.saved_projects)
         self.view_signature = None
         self.refresh(silent=True, scan=False)
-        cadence = project_review_status(project)[2]
-        self.statusBar().showMessage(f"已确认当前项目状态；{cadence} 天后自动进入待复核", 4200)
+        self.statusBar().showMessage("项目变化已确认；后续没有真实变化时不会重复提醒", 4200)
         return entry or True
 
     def record_project_review_batch(self, projects, occurred_at=None):
