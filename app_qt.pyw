@@ -48,6 +48,7 @@ from codex_hub.management import (
     clear_project_completion_outcome,
     clear_task_completion_outcome,
     compact_project_decision_value,
+    current_task_record,
     display_project_decision_value,
     format_project_decision_summary,
     format_project_decision_time,
@@ -2933,6 +2934,7 @@ class TodayTaskCard(QFrame):
     def __init__(self, task, window):
         super().__init__()
         self.task_id = str((task or {}).get("id") or "")
+        historical_snapshot = task_is_superseded_daily_record(task)
         self.setObjectName("todayTaskCard")
         project = window.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
         conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or "未关联 Codex"
@@ -2943,13 +2945,19 @@ class TodayTaskCard(QFrame):
         root = QVBoxLayout(self); root.setContentsMargins(12, 10, 10, 9); root.setSpacing(7)
         headline = QHBoxLayout(); headline.setSpacing(8)
         title = QLabel(task.get("title") or "未命名任务"); title.setWordWrap(True); title.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); headline.addWidget(title, 1)
-        headline.addWidget(TaskDragHandle(task), 0, Qt.AlignTop)
+        if historical_snapshot:
+            snapshot = QLabel("历史快照")
+            snapshot.setToolTip(f"该日状态已延续至 {task.get('carriedToDate') or '后续日期'}，请在最新记录中继续管理")
+            snapshot.setStyleSheet("color: #526071; background: #eef2f6; border: none; border-radius: 7px; padding: 3px 7px; font-size: 10px; font-weight: 650;")
+            headline.addWidget(snapshot, 0, Qt.AlignTop)
+        else:
+            headline.addWidget(TaskDragHandle(task), 0, Qt.AlignTop)
         root.addLayout(headline)
         meta_row = QHBoxLayout(); meta_row.setSpacing(7)
         meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
         if conversation_state == "running":
             live = QLabel("● Codex 运行中"); live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 3px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
-        elif not task.get("sessionId") and task.get("origin") != "project_next_step":
+        elif not historical_snapshot and not task.get("sessionId") and task.get("origin") != "project_next_step":
             manual = QLabel("手动状态"); manual.setToolTip("未关联具体 Codex 对话，因此不会自动切换任务状态")
             manual.setStyleSheet("color: #8a5a00; background: #fff4d8; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
             meta_row.addWidget(manual)
@@ -2957,7 +2965,12 @@ class TodayTaskCard(QFrame):
             source_step = QLabel("项目下一步"); source_step.setToolTip("从项目面板的一项明确下一步加入；完成后项目会等待新的下一步")
             source_step.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
             meta_row.addWidget(source_step)
-        if task.get("carriedFromTaskId"):
+        if historical_snapshot:
+            carried = QLabel(f"已延续至 {task.get('carriedToDate') or '后续日期'}")
+            carried.setToolTip("这是当日状态快照，不再作为当前工作项编辑")
+            carried.setStyleSheet("color: #526071; background: #eef2f6; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
+            meta_row.addWidget(carried)
+        elif task.get("carriedFromTaskId"):
             carried = QLabel("延续任务"); carried.setToolTip(f"由 {task.get('carriedFromDate', '前一天')} 的进行中任务自动延续")
             carried.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 500;")
             meta_row.addWidget(carried)
@@ -2973,12 +2986,25 @@ class TodayTaskCard(QFrame):
             outcome_text = ElidedLabel(f"成果 · {completion_outcome.replace(chr(10), ' ')}"); outcome_text.setToolTip(completion_outcome); outcome_text.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 600;"); outcome_layout.addWidget(outcome_text, 1)
             root.addWidget(outcome_row)
         actions = QHBoxLayout(); actions.setSpacing(6)
-        status = QComboBox(); status.setFixedSize(86, 30); status.setToolTip("调整任务状态")
-        for value, label in TASK_STATUS.items(): status.addItem(label, value)
-        status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
-        status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
-        status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData(), source="selector")); actions.addWidget(status); actions.addStretch()
-        if task.get("status") == "done" and not completion_outcome:
+        if historical_snapshot:
+            status = QLabel(f"当日 · {TASK_STATUS.get(task.get('status', 'planned'), '计划')}")
+            status.setAlignment(Qt.AlignCenter); status.setFixedSize(92, 30)
+            status.setStyleSheet(f"color: {accent}; background: {tint}; border: 1px solid {accent}; border-radius: 8px; font-size: 11px; font-weight: 650;")
+            actions.addWidget(status)
+        else:
+            status = QComboBox(); status.setFixedSize(86, 30); status.setToolTip("调整任务状态")
+            for value, label in TASK_STATUS.items(): status.addItem(label, value)
+            status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
+            status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
+            status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData(), source="selector")); actions.addWidget(status)
+        actions.addStretch()
+        if historical_snapshot:
+            current = QPushButton("查看当前")
+            current.setFixedSize(88, 30); current.setIcon(fluent_icon("\uE72A", color="#315f9b", size=13)); current.setIconSize(QSize(13, 13))
+            current.setToolTip("跳转到这项工作的最新每日记录")
+            current.setStyleSheet("QPushButton { color: #315f9b; background: #edf4ff; border: 1px solid #cfdaeb; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #e2ebfa; }")
+            current.clicked.connect(lambda: window.open_current_task_record(task)); actions.addWidget(current)
+        if task.get("status") == "done" and not completion_outcome and not historical_snapshot:
             record_outcome = QPushButton("记录成果"); record_outcome.setFixedSize(88, 30)
             record_outcome.setIcon(fluent_icon("\uE73E", color="#16803c", size=13)); record_outcome.setIconSize(QSize(13, 13)); record_outcome.setToolTip("补充实际完成结果，供项目交接与每日总结使用")
             record_outcome.setStyleSheet("QPushButton { color: #126b3b; background: #eaf7ef; border: 1px solid #b9dfc8; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dff2e7; border-color: #88cda4; }")
@@ -3000,9 +3026,13 @@ class TodayTaskCard(QFrame):
         audit_action = menu.addAction(fluent_icon("\uE81C", color="#315f9b", size=14), "查看任务记录")
         audit_action.triggered.connect(lambda: window.show_task_audit(task))
         menu.addSeparator()
-        edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
-        edit_action.triggered.connect(lambda: window.edit_today_task(task))
-        if task.get("status") == "done":
+        if historical_snapshot:
+            current_action = menu.addAction(fluent_icon("\uE72A", color="#315f9b", size=14), "查看当前任务")
+            current_action.triggered.connect(lambda: window.open_current_task_record(task))
+        else:
+            edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
+            edit_action.triggered.connect(lambda: window.edit_today_task(task))
+        if task.get("status") == "done" and not historical_snapshot:
             outcome_action = menu.addAction(fluent_icon("\uE73E", color="#16803c", size=14), "编辑完成成果" if completion_outcome else "记录完成成果")
             outcome_action.triggered.connect(lambda: window.edit_task_outcome(task))
         delete_action = menu.addAction(fluent_icon("\uE74D", color="#526071", size=14), "移到任务回收站")
@@ -5973,6 +6003,9 @@ class MainWindow(QMainWindow):
         return True
 
     def edit_today_task(self, task=None, default_status=None, default_project_id=None):
+        if task_is_superseded_daily_record(task):
+            self.open_current_task_record(task)
+            return
         default_date = self.board_date_field.date().toString(Qt.ISODate) if hasattr(self, "board_date_field") else QDate.currentDate().toString(Qt.ISODate)
         dialog = TaskEditor(self, self.projects, task, default_date, default_status, default_project_id)
         if dialog.exec_() != QDialog.Accepted:
@@ -6033,6 +6066,18 @@ class MainWindow(QMainWindow):
         if not task_status_transition_allowed(task, status):
             return False
         return MainWindow.move_task_on_board(self, task_id, status, None, source, allow_undo)
+
+    def open_current_task_record(self, task):
+        current = current_task_record(self.today_tasks, task)
+        if current is None or current is task:
+            self.statusBar().showMessage("这已经是任务的最新记录", 2500)
+            return False
+        task_date = QDate.fromString(str(current.get("date") or ""), Qt.ISODate)
+        if task_date.isValid() and hasattr(self, "board_date_field"):
+            self.board_date_field.setDate(task_date)
+        self.render_today_tasks()
+        self.statusBar().showMessage(f"已跳转到“{current.get('title', '任务')}”的最新记录", 3200)
+        return True
 
     def move_task_on_board(self, task_id, status, target_index=None, source="drag", allow_undo=True):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)

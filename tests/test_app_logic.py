@@ -475,6 +475,35 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertFalse(APP.task_status_transition_allowed(task, "planned"))
         self.assertFalse(APP.task_status_transition_allowed(task, "blocked"))
         self.assertFalse(APP.task_status_transition_allowed(None, "doing"))
+        self.assertFalse(APP.task_status_transition_allowed(
+            {"status": "doing", "carriedToTaskId": "next-day"}, "done"
+        ))
+        frozen = {"id": "previous-day", "status": "doing", "date": "2026-08-09", "carriedToTaskId": "next-day"}
+        self.assertFalse(APP.reorder_task_board([frozen], "previous-day", "done")["changed"])
+
+    def test_historical_task_navigation_opens_latest_rollover_record(self):
+        previous = {"id": "previous", "title": "Validation", "date": "2026-08-09", "carriedToTaskId": "current"}
+        current = {"id": "current", "title": "Validation", "date": "2026-08-10", "carriedFromTaskId": "previous"}
+        date_field = Mock()
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[previous, current], board_date_field=date_field,
+            render_today_tasks=Mock(), statusBar=lambda: status_bar,
+        )
+
+        self.assertTrue(APP.MainWindow.open_current_task_record(window, previous))
+        selected_date = date_field.setDate.call_args.args[0]
+        self.assertEqual(selected_date.toString(APP.Qt.ISODate), "2026-08-10")
+        window.render_today_tasks.assert_called_once_with()
+        self.assertIn("最新记录", status_bar.showMessage.call_args.args[0])
+
+    def test_editing_a_historical_snapshot_redirects_to_current_record(self):
+        historical = {"id": "previous", "carriedToTaskId": "current"}
+        window = SimpleNamespace(open_current_task_record=Mock())
+
+        APP.MainWindow.edit_today_task(window, historical)
+
+        window.open_current_task_record.assert_called_once_with(historical)
 
     def test_portfolio_decision_groups_surface_actions_without_forcing_exclusivity(self):
         active_attention = {

@@ -110,6 +110,30 @@ def task_is_superseded_daily_record(task):
     return bool(str((task or {}).get("carriedToTaskId") or "").strip())
 
 
+def current_task_record(tasks, task):
+    """Follow a rollover chain to its newest available daily record.
+
+    Corrupt or cyclic links stop at the last trustworthy record instead of
+    looping or guessing. The stored chain is never mutated.
+    """
+    if not isinstance(task, dict):
+        return None
+    records = {
+        str(item.get("id") or ""): item
+        for item in (tasks or [])
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    current = task
+    visited = {str(task.get("id") or "")}
+    while task_is_superseded_daily_record(current):
+        successor_id = str(current.get("carriedToTaskId") or "")
+        if not successor_id or successor_id in visited or successor_id not in records:
+            break
+        visited.add(successor_id)
+        current = records[successor_id]
+    return current
+
+
 def active_task_records(tasks):
     return [task for task in (tasks or []) if isinstance(task, dict) and not task_is_archived(task)]
 
@@ -372,7 +396,7 @@ def reorder_task_board(tasks, task_id, target_status, target_index=None):
     if target_status not in TASK_STATUS:
         return {"changed": False}
     task = next((item for item in (tasks or []) if str(item.get("id") or "") == str(task_id or "")), None)
-    if task is None or task_is_archived(task):
+    if task is None or task_is_archived(task) or task_is_superseded_daily_record(task):
         return {"changed": False}
     task_date = str(task.get("date") or "")
     previous_status = task.get("status", "planned")
@@ -1059,4 +1083,9 @@ def project_management_validation_error(data):
 
 
 def task_status_transition_allowed(task, target_status):
-    return bool(task and target_status in TASK_STATUS and task.get("status", "planned") != target_status)
+    return bool(
+        task
+        and not task_is_superseded_daily_record(task)
+        and target_status in TASK_STATUS
+        and task.get("status", "planned") != target_status
+    )
