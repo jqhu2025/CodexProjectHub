@@ -45,6 +45,75 @@ class PortfolioModuleTests(unittest.TestCase):
         self.assertEqual(routing["routedTo"]["needs_next"], {"attention": 1})
         self.assertEqual(routing["routedTo"]["review"], {"attention": 1})
 
+    def test_primary_project_decision_resolves_the_single_owner_across_aliases(self):
+        runtime = {"id": "runtime", "savedId": "stable", "name": "Release"}
+        routing = {"queues": {
+            "attention": [{"id": "other"}],
+            "alignment": [{"project": {"id": "bridge", "savedId": "stable"}, "tasks": []}],
+            "review": [runtime],
+        }}
+
+        primary = portfolio.primary_project_decision(runtime, routing)
+
+        self.assertEqual(primary["queue"], "alignment")
+        self.assertEqual(primary["item"]["project"]["savedId"], "stable")
+
+    def test_workbench_command_keeps_one_primary_decision_and_preserves_execution_evidence(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "status": "active",
+            "health": "blocked", "blocker": "Reference data unavailable",
+            "objective": "Validate release", "nextStep": "Run validation",
+        }
+        tasks = [{
+            "id": "task", "projectId": "stable", "date": "2026-08-10",
+            "status": "doing", "title": "Investigate fallback",
+        }]
+
+        command = portfolio.project_workbench_command(
+            project, tasks, "2026-08-10", {"queue": "attention", "item": project},
+            datetime(2026, 8, 10, 12, 0, 0),
+        )
+
+        self.assertEqual((command["key"], command["action"]), ("attention", "resolve_blocker"))
+        self.assertEqual(command["evidence"]["doingCount"], 1)
+        self.assertIn("Reference data unavailable", command["reason"])
+        self.assertIn("1 进行", command["evidenceText"])
+
+    def test_workbench_command_distinguishes_live_execution_from_a_ready_next_step(self):
+        project = {
+            "id": "stable", "status": "active", "health": "on_track",
+            "objective": "Ship", "nextStep": "Package release", "conversations": [],
+        }
+        ready = portfolio.project_workbench_command(
+            project, [], "2026-08-10", now=datetime(2026, 8, 10, 12, 0, 0)
+        )
+        self.assertEqual((ready["key"], ready["action"]), ("ready", "schedule_next_step"))
+
+        live_tasks = [{
+            "projectId": "stable", "date": "2026-08-10", "status": "doing",
+            "title": "Package release", "updatedAt": "2026-08-10T11:00:00",
+        }]
+        live = portfolio.project_workbench_command(
+            project, live_tasks, "2026-08-10", now=datetime(2026, 8, 10, 12, 0, 0)
+        )
+        self.assertEqual((live["key"], live["action"]), ("execute", "continue_codex"))
+        self.assertIn("最近活动：今天", live["evidenceText"])
+
+    def test_workbench_review_command_explains_governance_before_confirmation(self):
+        project = {
+            "id": "stable", "status": "active", "health": "on_track",
+            "stage": "", "objective": "", "nextStep": "Validate",
+        }
+
+        command = portfolio.project_workbench_command(
+            project, [], "2026-08-10", {"queue": "review", "item": project},
+            datetime(2026, 8, 10, 12, 0, 0),
+        )
+
+        self.assertEqual(command["key"], "review")
+        self.assertEqual(command["action"], "confirm_review")
+        self.assertIn("项目目标", command["reason"])
+
     def test_focus_capacity_separates_strategy_from_live_execution(self):
         projects = [
             {"id": "focus", "status": "active", "priority": "focus", "conversations": []},

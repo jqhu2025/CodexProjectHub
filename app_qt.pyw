@@ -113,6 +113,8 @@ from codex_hub.portfolio import (
     project_lifecycle_calibration_state,
     project_live_work_state,
     project_next_step_commitment_state,
+    primary_project_decision,
+    project_workbench_command,
     project_reference_ids,
     assign_task_project,
     reconcile_task_project_links_from_conversations,
@@ -5748,17 +5750,33 @@ class ProjectWorkbenchDialog(QDialog):
         continue_button.setIcon(fluent_icon("\uE72A", color="#ffffff", size=15)); continue_button.setIconSize(QSize(15, 15)); continue_button.clicked.connect(self.continue_in_codex); heading.addWidget(continue_button)
         root.addLayout(heading)
 
+        self.command_card = QFrame(); self.command_card.setObjectName("projectCommandCard"); self.command_card.setMinimumHeight(112)
+        command_layout = QHBoxLayout(self.command_card); command_layout.setContentsMargins(16, 13, 14, 13); command_layout.setSpacing(12)
+        self.command_icon = QLabel(); self.command_icon.setFixedSize(42, 42); self.command_icon.setAlignment(Qt.AlignCenter); command_layout.addWidget(self.command_icon)
+        command_body = QVBoxLayout(); command_body.setSpacing(2)
+        self.command_kind = QLabel(); self.command_kind.setStyleSheet("font-size: 10px; font-weight: 720; letter-spacing: 0.4px;"); command_body.addWidget(self.command_kind)
+        self.command_title = ElidedLabel(); self.command_title.setStyleSheet("color: #172033; font-size: 17px; font-weight: 740;"); command_body.addWidget(self.command_title)
+        self.command_reason = ElidedLabel(); self.command_reason.setStyleSheet("color: #526071; font-size: 11px;"); command_body.addWidget(self.command_reason)
+        self.command_context = ElidedLabel(); self.command_context.setStyleSheet("color: #3e526d; font-size: 10px; font-weight: 600;"); command_body.addWidget(self.command_context)
+        self.command_evidence = ElidedLabel(); self.command_evidence.setStyleSheet("color: #748094; font-size: 10px;"); command_body.addWidget(self.command_evidence)
+        command_layout.addLayout(command_body, 1)
+        self.command_action = QPushButton(); self.command_action.setFixedSize(122, 38); self.command_action.clicked.connect(self.run_primary_command); command_layout.addWidget(self.command_action, 0, Qt.AlignVCenter)
+        root.addWidget(self.command_card)
+
         management = QFrame(); management.setObjectName("managementCard")
         management.setStyleSheet("QFrame#managementCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
-        management_layout = QVBoxLayout(management); management_layout.setContentsMargins(18, 15, 18, 17); management_layout.setSpacing(10)
+        management_layout = QVBoxLayout(management); management_layout.setContentsMargins(18, 12, 18, 13); management_layout.setSpacing(10)
         management_head = QHBoxLayout(); management_head.setSpacing(9)
-        management_title = QLabel("项目决策"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
+        management_title = QLabel("项目资料与决策"); management_title.setProperty("sectionTitle", True); management_head.addWidget(management_title)
         management_head.addStretch()
         self.review_meta = QLabel(project_review_summary(project)); self.review_meta.setStyleSheet("color: #66758a; font-size: 10px;"); management_head.addWidget(self.review_meta)
+        self.management_toggle = QPushButton("编辑项目资料"); self.management_toggle.setFixedHeight(32); self.management_toggle.setCheckable(True)
+        self.management_toggle.setIcon(fluent_icon("\uE70F", color="#315f9b", size=13)); self.management_toggle.setIconSize(QSize(13, 13)); self.management_toggle.clicked.connect(self.toggle_management_details); management_head.addWidget(self.management_toggle)
         review_button = QPushButton("确认现状"); review_button.setFixedHeight(32); review_button.setIcon(fluent_icon("\uE73E", color="#1d4ed8", size=13)); review_button.setIconSize(QSize(13, 13))
         review_button.setToolTip("确认当前目标、阶段、健康度和下一步仍然有效，并建立自动复核周期")
         review_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
         review_button.clicked.connect(self.confirm_current_state); management_head.addWidget(review_button); management_layout.addLayout(management_head)
+        self.management_body = QWidget(); management_body_layout = QVBoxLayout(self.management_body); management_body_layout.setContentsMargins(0, 2, 0, 0); management_body_layout.setSpacing(10)
         meta = QHBoxLayout(); meta.setSpacing(10)
         self.priority_field = QComboBox(); self.status_field = QComboBox(); self.category_field = QComboBox(); self.stage_field = QComboBox(); self.health_field = QComboBox()
         for key, label in PROJECT_PRIORITY.items(): self.priority_field.addItem(label, key)
@@ -5774,18 +5792,20 @@ class ProjectWorkbenchDialog(QDialog):
         for label_text, field in (("管理优先级", self.priority_field), ("项目状态", self.status_field), ("项目分类", self.category_field), ("当前阶段", self.stage_field), ("项目健康度", self.health_field)):
             column = QVBoxLayout(); column.setSpacing(5); label = QLabel(label_text); label.setProperty("fieldLabel", True); column.addWidget(label)
             field.setFixedHeight(38); field.setAccessibleName(label_text); column.addWidget(field); meta.addLayout(column, 1)
-        management_layout.addLayout(meta)
-        objective_label = QLabel("项目目标"); objective_label.setProperty("fieldLabel", True); management_layout.addWidget(objective_label)
+        management_body_layout.addLayout(meta)
+        objective_label = QLabel("项目目标"); objective_label.setProperty("fieldLabel", True); management_body_layout.addWidget(objective_label)
         self.objective_field = QTextEdit(); self.objective_field.setFixedHeight(66); self.objective_field.setPlainText(str(project.get("objective") or ""))
-        self.objective_field.setPlaceholderText("这个项目最终要交付或解决什么？"); management_layout.addWidget(self.objective_field)
+        self.objective_field.setPlaceholderText("这个项目最终要交付或解决什么？"); management_body_layout.addWidget(self.objective_field)
         next_row = QHBoxLayout(); next_row.setSpacing(9)
         next_box = QVBoxLayout(); next_box.setSpacing(5); next_label = QLabel("明确下一步"); next_label.setProperty("fieldLabel", True); next_box.addWidget(next_label)
         self.next_step_field = QLineEdit(str(project.get("nextStep") or "")); self.next_step_field.setFixedHeight(40); self.next_step_field.setPlaceholderText("一个可以直接开始的具体动作"); next_box.addWidget(self.next_step_field); next_row.addLayout(next_box, 1)
+        self.next_step_field.setCursorPosition(0)
         blocker_box = QVBoxLayout(); blocker_box.setSpacing(5); blocker_label = QLabel("当前阻塞"); blocker_label.setProperty("fieldLabel", True); blocker_box.addWidget(blocker_label)
         self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
+        self.blocker_field.setCursorPosition(0)
         self.schedule_button = QPushButton("加入今日"); self.schedule_button.setFixedHeight(40); self.schedule_button.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); self.schedule_button.setIconSize(QSize(14, 14)); self.schedule_button.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); self.schedule_button.clicked.connect(self.schedule_next_step); next_row.addWidget(self.schedule_button, 0, Qt.AlignBottom)
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(lambda: self.save_changes()); next_row.addWidget(save, 0, Qt.AlignBottom)
-        management_layout.addLayout(next_row)
+        management_body_layout.addLayout(next_row)
         self.blocker_strip = QFrame(); self.blocker_strip.setObjectName("projectBlockerStrip")
         self.blocker_strip.setStyleSheet("QFrame#projectBlockerStrip { background: #fff4f1; border: 1px solid #efc7c0; border-radius: 9px; } QFrame#projectBlockerStrip QLabel { border: none; background: transparent; }")
         blocker_strip_layout = QHBoxLayout(self.blocker_strip); blocker_strip_layout.setContentsMargins(11, 7, 8, 7); blocker_strip_layout.setSpacing(8)
@@ -5795,7 +5815,7 @@ class ProjectWorkbenchDialog(QDialog):
         resolve_blocker.setToolTip("清除当前阻塞并恢复正常健康度；操作会进入项目决策记录")
         resolve_blocker.setStyleSheet("QPushButton { color: #17623b; background: #ffffff; border: 1px solid #b9d9c6; border-radius: 7px; padding: 3px 8px; font-size: 10px; font-weight: 650; } QPushButton:hover { background: #f3fbf6; border-color: #7fbe98; }")
         resolve_blocker.clicked.connect(self.resolve_blocker); blocker_strip_layout.addWidget(resolve_blocker)
-        management_layout.addWidget(self.blocker_strip); self.render_blocker_strip()
+        management_body_layout.addWidget(self.blocker_strip); self.render_blocker_strip()
         self.outcome_strip = QFrame(); self.outcome_strip.setObjectName("projectOutcomeStrip")
         outcome_layout = QHBoxLayout(self.outcome_strip); outcome_layout.setContentsMargins(11, 7, 8, 7); outcome_layout.setSpacing(8)
         self.outcome_icon = QLabel(); self.outcome_icon.setFixedSize(18, 18); outcome_layout.addWidget(self.outcome_icon)
@@ -5804,7 +5824,9 @@ class ProjectWorkbenchDialog(QDialog):
         self.outcome_edit = QPushButton("编辑成果"); self.outcome_edit.setFixedHeight(28); self.outcome_edit.setIcon(fluent_icon("\uE70F", color="#17623b", size=12)); self.outcome_edit.setIconSize(QSize(12, 12))
         self.outcome_edit.setStyleSheet("QPushButton { color: #17623b; background: #ffffff; border: 1px solid #b9d9c6; border-radius: 7px; padding: 3px 8px; font-size: 10px; font-weight: 650; } QPushButton:hover { background: #f7fbf8; border-color: #7fbe98; }")
         self.outcome_edit.clicked.connect(self.edit_project_closeout); outcome_layout.addWidget(self.outcome_edit)
-        management_layout.addWidget(self.outcome_strip); self.render_project_outcome()
+        management_body_layout.addWidget(self.outcome_strip); self.render_project_outcome()
+        management_layout.addWidget(self.management_body)
+        self.management_body.setVisible(False)
         root.addWidget(management)
 
         self.decision_history_frame = ClickableFrame(); self.decision_history_frame.setObjectName("decisionHistoryStrip"); self.decision_history_frame.setFixedHeight(52)
@@ -5820,7 +5842,7 @@ class ProjectWorkbenchDialog(QDialog):
         decision_chevron = QLabel(); decision_chevron.setFixedSize(18, 18); decision_chevron.setAlignment(Qt.AlignCenter); decision_chevron.setAttribute(Qt.WA_TransparentForMouseEvents); decision_chevron.setPixmap(fluent_icon("\uE76C", color="#7a8798", size=13).pixmap(QSize(13, 13))); decision_layout.addWidget(decision_chevron)
         self.decision_history_frame.clicked.connect(self.show_decision_history); root.addWidget(self.decision_history_frame)
 
-        lower = QHBoxLayout(); lower.setSpacing(12)
+        self.activity_panel = QWidget(); lower = QHBoxLayout(self.activity_panel); lower.setContentsMargins(0, 0, 0, 0); lower.setSpacing(12)
         tasks_card = QFrame(); tasks_card.setObjectName("projectTasksCard"); tasks_card.setStyleSheet("QFrame#projectTasksCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
         tasks_layout = QVBoxLayout(tasks_card); tasks_layout.setContentsMargins(16, 14, 16, 14); tasks_layout.setSpacing(8)
         task_head = QHBoxLayout(); task_title = QLabel("今日任务"); task_title.setProperty("sectionTitle", True); task_head.addWidget(task_title); task_head.addStretch()
@@ -5837,7 +5859,7 @@ class ProjectWorkbenchDialog(QDialog):
             empty = QLabel("尚未关联 Codex 对话\n点击“在 Codex 中继续”可复制完整项目上下文")
             empty.setWordWrap(True); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; background: #f7f9fc; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 28px 12px; font-size: 11px;"); conversations_layout.addWidget(empty)
         conversations_layout.addStretch(); lower.addWidget(conversations_card, 1)
-        root.addLayout(lower, 1)
+        root.addWidget(self.activity_panel, 1)
 
         actions = QHBoxLayout(); actions.setSpacing(8)
         folder = QPushButton("打开项目文件夹"); folder.setIcon(fluent_icon("\uE838", size=14)); folder.setIconSize(QSize(14, 14)); folder.clicked.connect(lambda: parent.open_folder(project)); actions.addWidget(folder)
@@ -5847,6 +5869,107 @@ class ProjectWorkbenchDialog(QDialog):
         self.update_completion_controls()
         self.render_tasks()
         self.render_decision_history()
+        self.refresh_command_state()
+
+    def toggle_management_details(self, checked=False):
+        self.set_management_expanded(bool(checked))
+
+    def set_management_expanded(self, expanded, focus=None):
+        expanded = bool(expanded)
+        self.management_toggle.blockSignals(True)
+        self.management_toggle.setChecked(expanded)
+        self.management_toggle.setText("返回项目概览" if expanded else "编辑项目资料")
+        self.management_toggle.setIcon(
+            fluent_icon("\uE72B" if expanded else "\uE70F", color="#315f9b", size=13)
+        )
+        self.management_toggle.blockSignals(False)
+        self.management_body.setVisible(expanded)
+        self.activity_panel.setVisible(not expanded)
+        if expanded and focus is not None:
+            QTimer.singleShot(0, focus.setFocus)
+
+    def refresh_command_state(self):
+        routing = self.window.project_decision_routing()
+        primary = primary_project_decision(self.project, routing)
+        today = QDate.currentDate().toString(Qt.ISODate)
+        command = project_workbench_command(self.project, self.window.today_tasks, today, primary)
+        self._primary_decision = primary
+        self._primary_command = command
+        palettes = {
+            "danger": ("#b42318", "#fff7f5", "#efc9c2", "#fee9e5", "\uE7BA"),
+            "warning": ("#a15c00", "#fffaf0", "#ead8ad", "#f8ebcf", "\uE7BA"),
+            "primary": ("#1d4ed8", "#f6f9ff", "#cbdaf1", "#e5edfc", "\uE8A7"),
+            "focus": ("#6d3fc0", "#faf7ff", "#ddcff3", "#eee7fb", "\uE945"),
+            "success": ("#087443", "#f4fbf7", "#c5e3d1", "#e2f3ea", "\uE73E"),
+            "neutral": ("#526071", "#f8fafc", "#d9e1eb", "#e9eef4", "\uE823"),
+        }
+        color, background, border, icon_background, glyph = palettes.get(command.get("tone"), palettes["neutral"])
+        self.command_card.setStyleSheet(
+            f"QFrame#projectCommandCard {{ background: {background}; border: 1px solid {border}; border-left: 4px solid {color}; border-radius: 12px; }}"
+            "QFrame#projectCommandCard QLabel { background: transparent; border: none; }"
+        )
+        self.command_icon.setPixmap(fluent_icon(glyph, color=color, size=20).pixmap(QSize(20, 20)))
+        self.command_icon.setStyleSheet(f"background: {icon_background}; border: none; border-radius: 11px;")
+        self.command_kind.setText(str(command.get("kind") or "项目状态"))
+        self.command_kind.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 720; letter-spacing: 0.4px;")
+        self.command_title.setText(str(command.get("title") or "当前项目"))
+        self.command_reason.setText(str(command.get("reason") or "")); self.command_reason.setToolTip(self.command_reason.text())
+        objective = str(command.get("objective") or "目标未明确")
+        next_step = str(command.get("nextStep") or "下一步未明确")
+        context = f"目标 · {objective}    |    下一步 · {next_step}"
+        self.command_context.setText(context); self.command_context.setToolTip(context)
+        evidence = str(command.get("evidenceText") or "")
+        self.command_evidence.setText(evidence); self.command_evidence.setToolTip(evidence)
+        action = str(command.get("action") or "")
+        action_icons = {
+            "resolve_blocker": "\uE7BA", "edit_decision": "\uE70F", "calibrate_alignment": "\uE8A7",
+            "calibrate_lifecycle": "\uE823", "define_next_step": "\uE72A", "schedule_next_step": "\uE787",
+            "confirm_review": "\uE73E", "continue_codex": "\uE72A",
+        }
+        self.command_action.setVisible(bool(action))
+        self.command_action.setText(str(command.get("actionLabel") or "处理"))
+        self.command_action.setIcon(fluent_icon(action_icons.get(action, "\uE72A"), color=color, size=14)); self.command_action.setIconSize(QSize(14, 14))
+        self.command_action.setStyleSheet(
+            f"QPushButton {{ color: {color}; background: #ffffff; border: 1px solid {border}; border-radius: 9px; font-size: 12px; font-weight: 700; }}"
+            f"QPushButton:hover, QPushButton:focus {{ background: {icon_background}; border-color: {color}; }}"
+        )
+        accessible = f"{command.get('kind')}：{command.get('title')}。{command.get('reason')}。{evidence}"
+        self.command_card.setAccessibleName(accessible)
+
+    def refresh_after_primary_decision(self):
+        self.apply_management_values(self.project)
+        self.refresh_header_states()
+        self.render_blocker_strip()
+        self.render_project_outcome()
+        self.render_decision_history()
+        self.render_tasks()
+        self.refresh_command_state()
+
+    def run_primary_command(self):
+        action = str((getattr(self, "_primary_command", None) or {}).get("action") or "")
+        primary = getattr(self, "_primary_decision", None) or {}
+        if action == "resolve_blocker":
+            self.resolve_blocker()
+        elif action == "edit_decision":
+            self.set_management_expanded(True, self.blocker_field)
+        elif action == "define_next_step":
+            self.set_management_expanded(True, self.next_step_field)
+        elif action == "schedule_next_step":
+            self.schedule_next_step()
+        elif action == "confirm_review":
+            self.confirm_current_state()
+        elif action == "calibrate_alignment":
+            item = primary.get("item")
+            if isinstance(item, dict):
+                ExecutionAlignmentDialog(self.window, [item]).exec_()
+                self.refresh_after_primary_decision()
+        elif action == "calibrate_lifecycle":
+            item = primary.get("item")
+            if isinstance(item, dict):
+                LifecycleCalibrationDialog(self.window, [item]).exec_()
+                self.refresh_after_primary_decision()
+        elif action == "continue_codex":
+            self.continue_in_codex()
 
     def render_tasks(self):
         while self.project_tasks.count():
@@ -5988,6 +6111,7 @@ class ProjectWorkbenchDialog(QDialog):
         dialog.exec_()
         if dialog.rolled_back:
             self.apply_management_values(self.project)
+            self.refresh_header_states()
             self.render_blocker_strip()
             self.render_project_outcome()
             self.render_decision_history()
@@ -6006,6 +6130,8 @@ class ProjectWorkbenchDialog(QDialog):
         self.objective_field.setPlainText(str(data.get("objective") or ""))
         self.next_step_field.setText(str(data.get("nextStep") or ""))
         self.blocker_field.setText(str(data.get("blocker") or ""))
+        self.next_step_field.setCursorPosition(0)
+        self.blocker_field.setCursorPosition(0)
 
     def refresh_header_states(self):
         _key, text, color, background, reason = project_control_state(self.project)
@@ -6016,6 +6142,8 @@ class ProjectWorkbenchDialog(QDialog):
         self.project_state_badge.setStyleSheet(f"color: {state_color}; background: {state_background}; border-radius: 9px; font-size: 11px; font-weight: 650;")
         self.control_badge.setVisible(text != state_text)
         self.review_meta.setText(project_review_summary(self.project))
+        if hasattr(self, "command_card"):
+            self.refresh_command_state()
 
     def confirm_current_state(self):
         before = dict(self.project)
@@ -6074,17 +6202,20 @@ class ProjectWorkbenchDialog(QDialog):
         if not self.save_changes(notify=False):
             return
         self.window.new_project_task(self.project)
+        self.render_tasks()
+        self.refresh_command_state()
 
     def schedule_next_step(self):
         if not self.save_changes(notify=False):
             return
-        if self.window.schedule_project_next_step(self.project):
-            self.render_tasks()
+        self.window.schedule_project_next_step(self.project)
         self.render_tasks()
+        self.refresh_command_state()
 
     def edit_task(self, task):
         self.window.edit_today_task(task)
         self.render_tasks()
+        self.refresh_command_state()
 
     def continue_in_codex(self):
         if not self.save_changes(notify=False):

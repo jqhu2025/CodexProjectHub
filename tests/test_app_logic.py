@@ -76,6 +76,36 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(dialog.value(), "Input delivered and verification passed.")
         dialog.close(); parent.close()
 
+    def test_project_workbench_defaults_to_command_view_and_expands_details_on_demand(self):
+        today = APP.QDate.currentDate().toString(APP.Qt.ISODate)
+        parent = APP.QWidget(); parent.categories = ["全部", "Research"]
+        parent.today_tasks = [{
+            "id": "task-1", "projectId": "stable", "date": today,
+            "status": "doing", "title": "Validate candidate",
+        }]
+        parent.project_decision_routing = lambda: {"queues": {}}
+        parent.project_decisions_for = lambda _project: []
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release", "category": "Research",
+            "status": "active", "priority": "normal", "stage": "validation", "health": "on_track",
+            "objective": "Ship a validated release", "nextStep": "Validate candidate", "blocker": "",
+            "conversations": [],
+        }
+
+        dialog = APP.ProjectWorkbenchDialog(parent, project)
+
+        self.assertTrue(dialog.management_body.isHidden())
+        self.assertFalse(dialog.activity_panel.isHidden())
+        self.assertEqual(dialog.command_kind.text(), "当前执行")
+        self.assertIn("在制工作", dialog.command_title.text())
+        self.assertEqual(dialog.command_action.text(), "继续执行")
+        self.assertEqual(dialog.next_step_field.cursorPosition(), 0)
+        dialog.set_management_expanded(True)
+        self.assertFalse(dialog.management_body.isHidden())
+        self.assertTrue(dialog.activity_panel.isHidden())
+        self.assertEqual(dialog.management_toggle.text(), "返回项目概览")
+        dialog.close(); parent.close()
+
     def test_risk_dialog_returns_to_the_refreshed_ranked_queue(self):
         parent = APP.QWidget()
         old = {

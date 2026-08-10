@@ -3,12 +3,16 @@
 from datetime import datetime
 
 from .management import (
+    PROJECT_DECISION_FIELDS,
     PROJECT_HEALTH,
     PROJECT_PRIORITY,
     STATUS_TEXT,
     normalized_action_text,
     ordered_board_tasks,
     project_execution_alignment,
+    project_governance_gaps,
+    project_review_overdue_days,
+    project_review_phase,
     task_is_archived,
     task_is_superseded_daily_record,
 )
@@ -117,6 +121,181 @@ def route_project_decision_queues(ordered_queues):
         routed[queue_name] = sum(diverted.values())
         routed_to[queue_name] = diverted
     return {"queues": queues, "routed": routed, "routedTo": routed_to}
+
+
+def primary_project_decision(project, routing):
+    """Return the one routed management decision that owns a project, if any."""
+    project = project or {}
+    target_references = project_reference_ids(project)
+    target_fallback = None if target_references else _project_decision_route_key(project)
+    for queue_name, items in ((routing or {}).get("queues") or {}).items():
+        for item in items or []:
+            candidate = (
+                item.get("project")
+                if isinstance(item, dict) and isinstance(item.get("project"), dict)
+                else item
+            )
+            if not isinstance(candidate, dict):
+                continue
+            candidate_references = project_reference_ids(candidate)
+            matches = bool(target_references & candidate_references)
+            if not target_references and not candidate_references:
+                matches = target_fallback == _project_decision_route_key(candidate)
+            if matches:
+                return {"queue": str(queue_name or ""), "item": item}
+    return None
+
+
+def project_workbench_command(project, tasks, target_date, primary=None, now=None):
+    """Resolve one project-level command and the evidence that justifies it.
+
+    This intentionally consumes the already-routed portfolio decision.  A workbench
+    therefore cannot ask the user to resolve a risk, calibrate direction, and review
+    the same project at the same time.
+    """
+    project = project or {}
+    evidence = project_review_evidence(project, tasks, target_date, now)
+    primary = primary or {}
+    route = str(primary.get("queue") or "")
+    item = primary.get("item") or {}
+    status = str(project.get("status") or "active")
+    next_step = str(project.get("nextStep") or "").strip()
+    blocker = str(project.get("blocker") or "").strip()
+    health = _project_health_key(project)
+
+    if status == "completed":
+        command = {
+            "key": "completed", "kind": "项目结论", "tone": "success",
+            "title": "项目已完成，保留成果与决策证据",
+            "reason": str(project.get("completionSummary") or "当前没有待处理的项目管理动作。"),
+            "action": "", "actionLabel": "",
+        }
+    elif status in {"paused", "idea"}:
+        state_label = STATUS_TEXT.get(status, "非活动")
+        command = {
+            "key": "inactive", "kind": "生命周期", "tone": "neutral",
+            "title": f"项目当前为{state_label}",
+            "reason": "资料和历史仍保留；需要继续时先重新确认目标、状态与下一步。",
+            "action": "edit_decision", "actionLabel": "重新评估",
+        }
+    elif route == "attention":
+        blocked = health == "blocked" or bool(blocker)
+        command = {
+            "key": "attention", "kind": "首要管理决策", "tone": "danger" if blocked else "warning",
+            "title": "先解除当前阻塞" if blocked else "先校准风险与应对",
+            "reason": blocker or "项目健康度已标记为需关注；请明确风险、责任动作与恢复条件。",
+            "action": "resolve_blocker" if blocked else "edit_decision",
+            "actionLabel": "处理阻塞" if blocked else "更新风险",
+        }
+    elif route == "alignment":
+        live_titles = [
+            str(task.get("title") or "未命名任务").strip()
+            for task in (item.get("tasks") or [])
+        ] if isinstance(item, dict) else []
+        live_text = "、".join(live_titles[:2]) or "今日在制任务"
+        declared = str((item or {}).get("declaredNextStep") or next_step).strip()
+        command = {
+            "key": "alignment", "kind": "首要管理决策", "tone": "primary",
+            "title": "先确认实际执行方向",
+            "reason": f"项目下一步“{declared}”与正在执行的“{live_text}”不一致。",
+            "action": "calibrate_alignment", "actionLabel": "校准方向",
+        }
+    elif route == "lifecycle":
+        lifecycle_state = (item or {}).get("state") if isinstance(item, dict) else {}
+        command = {
+            "key": "lifecycle", "kind": "首要管理决策", "tone": "neutral",
+            "title": "确认项目继续推进还是暂缓",
+            "reason": str((lifecycle_state or {}).get("reason") or "项目近期缺少新的执行或复核证据。"),
+            "action": "calibrate_lifecycle", "actionLabel": "校准生命周期",
+        }
+    elif route == "needs_next":
+        completed_step = str(project.get("lastCompletedNextStep") or "").strip()
+        reason = (
+            f"上一项“{completed_step}”已完成；现在需要明确新的可执行动作。"
+            if completed_step else
+            "当前没有可以直接开始的下一步，项目无法形成清晰的执行承诺。"
+        )
+        command = {
+            "key": "needs_next", "kind": "首要管理决策", "tone": "primary",
+            "title": "明确一个可以直接开始的下一步", "reason": reason,
+            "action": "define_next_step", "actionLabel": "明确下一步",
+        }
+    elif route == "focus_commitment":
+        command = {
+            "key": "focus_commitment", "kind": "首要管理决策", "tone": "focus",
+            "title": "把战略重点落地为今日承诺",
+            "reason": f"下一步“{next_step}”已经明确，但尚未进入当前任务。",
+            "action": "schedule_next_step", "actionLabel": "加入今日",
+        }
+    elif route == "review":
+        gaps = project_governance_gaps(project)
+        if gaps:
+            title = "先补全项目决策，再建立复核基线"
+            reason = "缺少：" + "、".join(PROJECT_DECISION_FIELDS.get(field, field) for field in gaps)
+        elif project_review_phase(project) == "baseline":
+            title = "确认当前项目基线"
+            reason = "目标、阶段、健康度和下一步尚未完成首次人工确认。"
+        else:
+            overdue = project_review_overdue_days(project, now)
+            title = "完成本周期项目复核"
+            reason = "项目复核今日到期。" if overdue == 0 else f"项目复核已逾期 {overdue or 0} 天。"
+        command = {
+            "key": "review", "kind": "首要管理决策", "tone": "primary",
+            "title": title, "reason": reason,
+            "action": "confirm_review", "actionLabel": "确认现状",
+        }
+    elif evidence["doingCount"] or evidence["runningConversationCount"]:
+        parts = []
+        if evidence["doingCount"]:
+            parts.append(f"{evidence['doingCount']} 项任务进行中")
+        if evidence["runningConversationCount"]:
+            parts.append(f"{evidence['runningConversationCount']} 个 Codex 对话运行中")
+        command = {
+            "key": "execute", "kind": "当前执行", "tone": "success",
+            "title": "保持当前执行，优先完成在制工作",
+            "reason": " · ".join(parts),
+            "action": "continue_codex", "actionLabel": "继续执行",
+        }
+    elif next_step:
+        command = {
+            "key": "ready", "kind": "当前执行", "tone": "primary",
+            "title": "把已明确的下一步转成今日承诺",
+            "reason": f"下一步“{next_step}”尚未进入当前任务。",
+            "action": "schedule_next_step", "actionLabel": "加入今日",
+        }
+    else:
+        command = {
+            "key": "idle", "kind": "项目状态", "tone": "neutral",
+            "title": "当前没有可执行动作",
+            "reason": "请补充项目目标与一个可以直接开始的下一步。",
+            "action": "define_next_step", "actionLabel": "完善项目",
+        }
+
+    task_parts = []
+    if evidence["taskCount"]:
+        task_parts.append(
+            f"今日 {evidence['taskCount']} 项 · {evidence['plannedCount']} 计划 / "
+            f"{evidence['doingCount']} 进行 / {evidence['doneCount']} 完成"
+        )
+    else:
+        task_parts.append("今日无关联任务")
+    if evidence["runningConversationCount"]:
+        task_parts.append(f"Codex {evidence['runningConversationCount']} 个运行中")
+    age_days = (evidence.get("activity") or {}).get("ageDays")
+    source = str((evidence.get("activity") or {}).get("source") or "")
+    if age_days is None:
+        task_parts.append("尚无执行证据")
+    elif age_days == 0:
+        task_parts.append(f"最近活动：今天{(' · ' + source) if source else ''}")
+    elif age_days == 1:
+        task_parts.append(f"最近活动：昨天{(' · ' + source) if source else ''}")
+    else:
+        task_parts.append(f"最近活动：{age_days} 天前{(' · ' + source) if source else ''}")
+    command["evidence"] = evidence
+    command["evidenceText"] = "  ·  ".join(task_parts)
+    command["nextStep"] = next_step
+    command["objective"] = str(project.get("objective") or "").strip()
+    return command
 
 
 def task_matches_project(task, project):
