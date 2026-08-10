@@ -1525,6 +1525,22 @@ def project_portfolio_overview_text(metrics):
     return "  ·  ".join(parts)
 
 
+def workspace_view_signature(projects, tasks, time_bucket=None):
+    """Fingerprint every visible workspace fact while keeping periodic refresh cheap."""
+    bucket = str(time_bucket or datetime.now().strftime("%Y-%m-%dT%H"))
+    dump_options = {
+        "ensure_ascii": False,
+        "sort_keys": True,
+        "separators": (",", ":"),
+        "default": str,
+    }
+    return (
+        json.dumps(list(projects or []), **dump_options),
+        json.dumps(list(tasks or []), **dump_options),
+        bucket,
+    )
+
+
 def project_management_sort_key(project):
     control_order = {"blocked": 0, "attention": 1, "review": 2, "on_track": 3, "paused": 4, "completed": 5}
     signals = project_strategy_execution_signals(project)
@@ -7454,6 +7470,7 @@ class MainWindow(QMainWindow):
                 )
 
     def refresh(self, silent=False, scan=True):
+        task_board_dirty = False
         categories = load_categories()
         if categories != self.categories:
             self.categories = categories
@@ -7471,7 +7488,7 @@ class MainWindow(QMainWindow):
             save_json(TASKS_FILE, tasks)
         if tasks != self.today_tasks:
             self.today_tasks = tasks
-            self.render_today_tasks()
+            task_board_dirty = True
         stored_summaries = load_json(DAILY_SUMMARIES_FILE, [])
         if isinstance(stored_summaries, list) and stored_summaries != self.daily_summaries:
             self.daily_summaries = stored_summaries
@@ -7485,7 +7502,7 @@ class MainWindow(QMainWindow):
         category_updates = reconcile_task_project_categories(self.today_tasks, self.managed_project_catalog())
         if snapshot_updates or category_updates:
             save_json(TASKS_FILE, self.today_tasks)
-            self.render_today_tasks()
+            task_board_dirty = True
         events = self.live_sessions
         conversations = conversations_by_project(events)
         for project in self.projects:
@@ -7499,7 +7516,7 @@ class MainWindow(QMainWindow):
         )
         if automatic_link_repairs:
             save_json(TASKS_FILE, self.today_tasks)
-            self.render_today_tasks()
+            task_board_dirty = True
         self.running_count = sum(codex_state(session)[0] == "running" for project in self.projects for session in project["conversations"])
         if hasattr(self, "pulse_state_label"):
             if self.running_count:
@@ -7508,29 +7525,17 @@ class MainWindow(QMainWindow):
             else:
                 self.pulse_state_label.setText("待机 · 正在监听 Codex")
                 self.pulse_state_label.setStyleSheet("color: #526071; font-size: 13px; font-weight: 650;")
-        self.auto_start_tasks_from_codex()
-        self.sync_project_workload()
+        if self.auto_start_tasks_from_codex(render_board=False):
+            task_board_dirty = True
+        self.sync_project_workload(render_portfolio=False)
         self.start_daily_summary()
-        signature = tuple(
-            (
-                project.get("id"), project.get("name"), project.get("path"), project.get("category"),
-                project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
-                project.get("objective"), project.get("successCriteria"), project.get("nextStep"), project.get("blocker"), project.get("blockedAt"), project.get("blockerUpdatedAt"),
-                project.get("blockedAtEstimated"), project_blocker_duration_label(project) if project.get("blocker") else "",
-                project.get("lastResolvedBlocker"), project.get("lastBlockerResolvedAt"), project.get("lastBlockerResolution"), project.get("nextStepReviewNeeded"), project.get("reviewedAt"),
-                json.dumps(project.get("reviewBaseline") or {}, ensure_ascii=False, sort_keys=True),
-                project.get("executionAlignmentSignature"), project.get("executionAlignmentReviewedAt"),
-                project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
-                tuple(
-                    (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
-                    for session in project.get("conversations", [])
-                ),
-            )
-            for project in self.projects
-        )
+        signature = workspace_view_signature(self.projects, self.today_tasks)
         if signature != self.view_signature:
             self.view_signature = signature
             self.render_nav(); self.render()
+            self.render_portfolio_decisions()
+            task_board_dirty = True
+        if task_board_dirty:
             self.render_today_tasks()
         if not self.scan_ready:
             self.sync.setText("●  正在同步")
@@ -7568,8 +7573,12 @@ class MainWindow(QMainWindow):
 
     def on_sessions_scanned(self, sessions):
         first_sync = not self.scan_ready
-        self.live_sessions = sessions
+        sessions = list(sessions or [])
+        sessions_changed = sessions != self.live_sessions
         self.scan_ready = True
+        if not first_sync and not sessions_changed:
+            return
+        self.live_sessions = sessions
         self.refresh(silent=True, scan=False)
         if first_sync and hasattr(self, "home_scroll") and not self.home_scroll_reset_done:
             self.home_scroll_reset_done = True
@@ -8134,7 +8143,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("已将正在执行的任务设为项目下一步，并写入决策记录", 3800)
         return True
 
-    def sync_project_workload(self):
+    def sync_project_workload(self, render_portfolio=True):
         """Attach today's task counts so portfolio focus reflects work that is actually moving."""
         today = QDate.currentDate().toString(Qt.ISODate)
         for project in self.projects:
@@ -8155,7 +8164,8 @@ class MainWindow(QMainWindow):
             field = field_by_status.get(task.get("status", "planned"))
             if project is not None and field:
                 project[field] = int(project.get(field) or 0) + 1
-        self.render_portfolio_decisions()
+        if render_portfolio:
+            self.render_portfolio_decisions()
 
     def conversation_by_id(self, session_id):
         if not session_id:
@@ -8166,7 +8176,7 @@ class MainWindow(QMainWindow):
                     return conversation
         return None
 
-    def auto_start_tasks_from_codex(self):
+    def auto_start_tasks_from_codex(self, render_board=True):
         today = QDate.currentDate().toString(Qt.ISODate)
         running_sessions = {
             str(conversation.get("sessionId"))
@@ -8195,7 +8205,8 @@ class MainWindow(QMainWindow):
         if not changed:
             return 0
         save_json(TASKS_FILE, self.today_tasks)
-        self.render_today_tasks()
+        if render_board:
+            self.render_today_tasks()
         self.statusBar().showMessage(f"检测到 Codex 已开始处理，{len(changed)} 个任务已自动移至“进行中”", 4500)
         return len(changed)
 

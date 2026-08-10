@@ -268,6 +268,8 @@ python -m unittest discover -s tests -v
 
 Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Global project, task, and conversation search ranking lives in the Qt-independent `codex_hub/navigation.py` module. Portfolio focus, next-action commitment, lifecycle activity evidence, stable task-to-project matching, and task WIP capacity live in the separate Qt-independent `codex_hub/portfolio.py` module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`. Atomic JSON persistence and rolling recovery copies live in the Qt-independent `codex_hub/storage.py` module.
 
+The 15-second local synchronization loop is incremental. An unchanged Codex session scan no longer triggers a second workspace refresh; unchanged project and task signatures repaint no pages; and real changes coalesce navigation, portfolio, project-map, and task-board updates into one render pass. The signature also carries an hourly time bucket so duration- and review-sensitive management signals still advance without unnecessary continuous repainting.
+
 The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 
 ## License

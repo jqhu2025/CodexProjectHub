@@ -506,6 +506,25 @@ class ConversationMappingTests(unittest.TestCase):
         self.assertEqual(result["sidebar-thread"], "project-a")
         self.assertEqual(result["new-thread"], "project-a")
 
+    def test_unchanged_session_scan_does_not_trigger_a_second_workspace_refresh(self):
+        session = {"sessionId": "thread-1", "projectId": "project-a", "state": "linked", "at": "2026-08-10T10:00:00"}
+        window = SimpleNamespace(
+            scan_ready=True, live_sessions=[session], refresh=Mock(),
+            home_scroll_reset_done=False,
+        )
+
+        APP.MainWindow.on_sessions_scanned(window, [dict(session)])
+        window.refresh.assert_not_called()
+
+        changed = {**session, "state": "running"}
+        APP.MainWindow.on_sessions_scanned(window, [changed])
+        window.refresh.assert_called_once_with(silent=True, scan=False)
+        self.assertEqual(window.live_sessions, [changed])
+
+        first = SimpleNamespace(scan_ready=False, live_sessions=[], refresh=Mock(), home_scroll_reset_done=False)
+        APP.MainWindow.on_sessions_scanned(first, [])
+        first.refresh.assert_called_once_with(silent=True, scan=False)
+
 
 class ProjectIdentityTests(unittest.TestCase):
     def test_codex_source_name_wins_until_an_explicit_local_override_exists(self):
@@ -641,6 +660,42 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_workspace_signature_tracks_real_project_and_task_changes_not_dict_order(self):
+        projects = [{"id": "project", "name": "Release", "conversations": [{"state": "linked"}]}]
+        tasks = [{"id": "task", "title": "Validate", "status": "planned"}]
+        baseline = APP.workspace_view_signature(projects, tasks, "2026-08-10T10")
+        reordered = APP.workspace_view_signature(
+            [{"name": "Release", "conversations": [{"state": "linked"}], "id": "project"}],
+            [{"status": "planned", "title": "Validate", "id": "task"}],
+            "2026-08-10T10",
+        )
+        self.assertEqual(baseline, reordered)
+        self.assertNotEqual(
+            baseline,
+            APP.workspace_view_signature(projects, [{**tasks[0], "title": "Validate candidate"}], "2026-08-10T10"),
+        )
+        self.assertNotEqual(
+            baseline,
+            APP.workspace_view_signature([{**projects[0], "health": "attention"}], tasks, "2026-08-10T10"),
+        )
+
+    def test_workload_sync_can_update_catalog_without_repainting_home_immediately(self):
+        project = {"id": "project", "status": "active"}
+        task = {
+            "id": "task", "projectId": "project", "date": APP.QDate.currentDate().toString(APP.Qt.ISODate),
+            "status": "doing",
+        }
+        window = SimpleNamespace(
+            projects=[project], today_tasks=[task],
+            project_by_id=lambda project_id: project if project_id == "project" else None,
+            render_portfolio_decisions=Mock(),
+        )
+
+        APP.MainWindow.sync_project_workload(window, render_portfolio=False)
+
+        self.assertEqual(project["activeTaskCount"], 1)
+        window.render_portfolio_decisions.assert_not_called()
+
     def test_category_migration_updates_catalog_tasks_layout_and_audit_together(self):
         visible = {
             "id": "runtime-1", "savedId": "stable-1", "name": "Alpha",
