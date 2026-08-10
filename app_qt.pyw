@@ -928,6 +928,59 @@ def task_matches_project(task, project):
     return bool(project_id and project_id in project_reference_ids(project))
 
 
+def normalized_action_text(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def find_open_project_next_step_task(tasks, project, title, target_date):
+    expected = normalized_action_text(title)
+    return next(
+        (
+            task for task in tasks
+            if task_matches_project(task, project)
+            and str(task.get("date") or "") == str(target_date or "")
+            and task.get("status", "planned") != "done"
+            and normalized_action_text(task.get("title")) == expected
+        ),
+        None,
+    )
+
+
+def build_project_next_step_task(project, target_date, now, conversation=None, task_id=None):
+    title = str((project or {}).get("nextStep") or "").strip()
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    conversation = conversation or {}
+    return {
+        "id": task_id or str(uuid.uuid4()),
+        "title": title,
+        "category": (project or {}).get("category") or "未分类",
+        "projectId": stable_project_id,
+        "sessionId": conversation.get("sessionId"),
+        "conversationTitle": conversation_name(conversation) if conversation.get("sessionId") else "",
+        "status": "planned",
+        "date": target_date,
+        "notes": "",
+        "origin": "project_next_step",
+        "projectNextStep": title,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def project_next_step_completion_update(project, task, completed_at):
+    if (task or {}).get("origin") != "project_next_step":
+        return None
+    completed_step = str((task or {}).get("projectNextStep") or (task or {}).get("title") or "").strip()
+    if normalized_action_text((project or {}).get("nextStep")) != normalized_action_text(completed_step):
+        return None
+    return {
+        "lastCompletedNextStep": completed_step,
+        "lastCompletedNextStepAt": completed_at,
+        "nextStep": "",
+        "nextStepReviewNeeded": True,
+    }
+
+
 def project_focus_state(project):
     """Resolve the live portfolio focus from deliberate priority and actual work."""
     if project_priority_key(project) == "focus":
@@ -970,7 +1023,8 @@ def project_control_state(project):
     if health == "attention":
         return "attention", "需关注", "#b54708", "#fff4e5", "需要复核当前进展"
     if not str(project.get("nextStep") or "").strip():
-        return "on_track", "正常", "#087443", "#e7f7ef", "尚未设置下一步"
+        reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
+        return "on_track", "正常", "#087443", "#e7f7ef", reason
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
 
 
@@ -1904,6 +1958,7 @@ class ProjectGroup(QFrame):
         more.setStyleSheet("QToolButton { border: none; border-radius: 7px; background: transparent; } QToolButton:hover, QToolButton:focus { background: #edf3fb; } QToolButton::menu-indicator { image: none; }")
         project_menu = QMenu(more)
         continue_action = project_menu.addAction(fluent_icon("\uE72A", color="#1d4ed8", size=14), "在 Codex 中继续"); continue_action.triggered.connect(lambda: window.continue_project(project))
+        schedule_action = project_menu.addAction(fluent_icon("\uE787", color="#1d4ed8", size=14), "将下一步加入今日"); schedule_action.setEnabled(bool(str(project.get("nextStep") or "").strip())); schedule_action.triggered.connect(lambda: window.schedule_project_next_step(project))
         folder_action = project_menu.addAction(fluent_icon("\uE838", size=14), "打开文件夹"); folder_action.triggered.connect(lambda: window.open_folder(project))
         up_action = project_menu.addAction(fluent_icon("\uE74A", size=14), "向上移动"); up_action.triggered.connect(lambda: window.move_project(project, -1))
         down_action = project_menu.addAction(fluent_icon("\uE74B", size=14), "向下移动"); down_action.triggered.connect(lambda: window.move_project(project, 1))
@@ -2108,10 +2163,14 @@ class TodayTaskCard(QFrame):
         meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
         if conversation_state == "running":
             live = QLabel("● Codex 运行中"); live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 3px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
-        elif not task.get("sessionId"):
+        elif not task.get("sessionId") and task.get("origin") != "project_next_step":
             manual = QLabel("手动状态"); manual.setToolTip("未关联具体 Codex 对话，因此不会自动切换任务状态")
             manual.setStyleSheet("color: #8a5a00; background: #fff4d8; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
             meta_row.addWidget(manual)
+        if task.get("origin") == "project_next_step":
+            source_step = QLabel("项目下一步"); source_step.setToolTip("从项目面板的一项明确下一步加入；完成后项目会等待新的下一步")
+            source_step.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
+            meta_row.addWidget(source_step)
         if task.get("carriedFromTaskId"):
             carried = QLabel("延续任务"); carried.setToolTip(f"由 {task.get('carriedFromDate', '前一天')} 的进行中任务自动延续")
             carried.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 500;")
@@ -2369,6 +2428,7 @@ class ProjectWorkbenchDialog(QDialog):
         self.next_step_field = QLineEdit(str(project.get("nextStep") or "")); self.next_step_field.setFixedHeight(40); self.next_step_field.setPlaceholderText("一个可以直接开始的具体动作"); next_box.addWidget(self.next_step_field); next_row.addLayout(next_box, 1)
         blocker_box = QVBoxLayout(); blocker_box.setSpacing(5); blocker_label = QLabel("当前阻塞"); blocker_label.setProperty("fieldLabel", True); blocker_box.addWidget(blocker_label)
         self.blocker_field = QLineEdit(str(project.get("blocker") or "")); self.blocker_field.setFixedHeight(40); self.blocker_field.setPlaceholderText("没有阻塞可留空"); blocker_box.addWidget(self.blocker_field); next_row.addLayout(blocker_box, 1)
+        schedule = QPushButton("加入今日"); schedule.setFixedHeight(40); schedule.setIcon(fluent_icon("\uE787", color="#1d4ed8", size=14)); schedule.setIconSize(QSize(14, 14)); schedule.setToolTip("把当前项目下一步直接加入今日任务，并保留项目关联"); schedule.clicked.connect(self.schedule_next_step); next_row.addWidget(schedule, 0, Qt.AlignBottom)
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(self.save_changes); next_row.addWidget(save, 0, Qt.AlignBottom)
         management_layout.addLayout(next_row); root.addWidget(management)
 
@@ -2434,6 +2494,11 @@ class ProjectWorkbenchDialog(QDialog):
     def new_task(self):
         self.save_changes(notify=False)
         self.window.new_project_task(self.project)
+
+    def schedule_next_step(self):
+        self.save_changes(notify=False)
+        if self.window.schedule_project_next_step(self.project):
+            self.render_tasks()
         self.render_tasks()
 
     def edit_task(self, task):
@@ -2762,7 +2827,7 @@ class MainWindow(QMainWindow):
             (
                 project.get("id"), project.get("name"), project.get("path"), project.get("category"),
                 project.get("status"), project_priority_key(project), project_stage_key(project), project_health_key(project),
-                project.get("objective"), project.get("nextStep"), project.get("blocker"),
+                project.get("objective"), project.get("nextStep"), project.get("blocker"), project.get("nextStepReviewNeeded"),
                 project.get("plannedTaskCount"), project.get("activeTaskCount"), project.get("completedTaskCount"),
                 tuple(
                     (session.get("sessionId"), session.get("conversationLabel"), session.get("state"), session.get("at"), session.get("summary"))
@@ -3159,7 +3224,8 @@ class MainWindow(QMainWindow):
             kind = QLabel(action_names.get(status, "任务更新")); kind.setFixedWidth(76); kind.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 650;"); row_layout.addWidget(kind)
             project = self.project_by_id(task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
             description = ElidedLabel(f"{task.get('title') or '未命名任务'}  ·  {project_name}"); description.setStyleSheet("color: #34445c; font-size: 12px;"); row_layout.addWidget(description, 1)
-            source = QLabel("Codex" if task.get("sessionId") else "手动"); source.setStyleSheet("color: #748094; font-size: 11px;"); row_layout.addWidget(source)
+            source_text = "项目" if task.get("origin") == "project_next_step" else ("Codex" if task.get("sessionId") else "手动")
+            source = QLabel(source_text); source.setStyleSheet("color: #748094; font-size: 11px;"); row_layout.addWidget(source)
             try:
                 updated = datetime.fromisoformat(task.get("updatedAt") or task.get("createdAt") or "").strftime("%H:%M")
             except ValueError:
@@ -3187,24 +3253,43 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "任务名称为空", "请输入一个清晰的任务名称。")
             return
         now = datetime.now().isoformat(timespec="seconds")
+        previous_status = task.get("status", "planned") if task is not None else None
         if task is None:
             task = {"id": str(uuid.uuid4()), "createdAt": now}
             self.today_tasks.append(task)
         task.update(data); task["updatedAt"] = now
+        completed_handoff = previous_status != "done" and task.get("status") == "done" and self.complete_project_next_step(task, now)
         save_json(TASKS_FILE, self.today_tasks)
         task_date = QDate.fromString(task.get("date", ""), Qt.ISODate)
         if task_date.isValid(): self.board_date_field.setDate(task_date)
-        self.render_today_tasks()
-        if dialog.codex_requested:
-            self.plan_task_in_codex(task)
+        if completed_handoff:
+            self.view_signature = None
+            self.refresh(silent=True, scan=False)
+            self.statusBar().showMessage("任务已完成；项目已回到“需要下一步”，请明确后续动作", 4500)
         else:
+            self.sync_project_workload(); self.view_signature = None
+            self.render_today_tasks(); self.render()
+        if dialog.codex_requested and not completed_handoff:
+            self.plan_task_in_codex(task)
+        elif not completed_handoff:
             self.statusBar().showMessage("今日任务已保存", 2500)
 
     def set_task_status(self, task_id, status):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)
         if not task or status not in TASK_STATUS:
             return
-        task["status"] = status; task["updatedAt"] = datetime.now().isoformat(timespec="seconds"); save_json(TASKS_FILE, self.today_tasks); self.render_today_tasks()
+        previous_status = task.get("status", "planned")
+        now = datetime.now().isoformat(timespec="seconds")
+        task["status"] = status; task["updatedAt"] = now
+        completed_handoff = previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
+        save_json(TASKS_FILE, self.today_tasks)
+        if completed_handoff:
+            self.view_signature = None
+            self.refresh(silent=True, scan=False)
+            self.statusBar().showMessage("任务已完成；项目已回到“需要下一步”，请明确后续动作", 4500)
+        else:
+            self.sync_project_workload(); self.view_signature = None
+            self.render_today_tasks(); self.render()
 
     def delete_today_task(self, task):
         if QMessageBox.question(self, "删除任务", f"确定删除“{task.get('title', '未命名任务')}”吗？") != QMessageBox.Yes:
@@ -3371,13 +3456,15 @@ class MainWindow(QMainWindow):
             "nextStep": str(data.get("nextStep") or "").strip(),
             "blocker": str(data.get("blocker") or "").strip(),
         })
+        if target.get("nextStep"):
+            target["nextStepReviewNeeded"] = False
         new_category = target.get("category", previous_category)
         if new_category != previous_category:
             orders = self.project_layout.setdefault("categoryOrders", {})
             orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
             if project.get("id") not in orders.setdefault(new_category, []):
                 orders[new_category].append(project.get("id"))
-        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker"):
+        for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded"):
             project[key] = target.get(key)
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
@@ -3391,6 +3478,43 @@ class MainWindow(QMainWindow):
 
     def new_project_task(self, project):
         self.edit_today_task(None, "planned", project.get("id"))
+
+    def schedule_project_next_step(self, project):
+        title = str(project.get("nextStep") or "").strip()
+        if not title:
+            QMessageBox.information(self, "尚未明确下一步", "请先在项目面板中填写一个可以直接执行的下一步。")
+            return None
+        today = QDate.currentDate().toString(Qt.ISODate)
+        existing = find_open_project_next_step_task(self.today_tasks, project, title, today)
+        if existing:
+            self.statusBar().showMessage("这个项目下一步已经在今日任务中，无需重复添加", 3500)
+            return existing
+        conversations = project.get("conversations") or []
+        conversation = next((item for item in conversations if codex_state(item)[0] == "running"), None)
+        conversation = conversation or (conversations[0] if conversations else None)
+        now = datetime.now().isoformat(timespec="seconds")
+        task = build_project_next_step_task(project, today, now, conversation)
+        self.today_tasks.append(task)
+        save_json(TASKS_FILE, self.today_tasks)
+        self.sync_project_workload()
+        self.view_signature = None
+        self.render_today_tasks(); self.render()
+        self.statusBar().showMessage("项目下一步已加入今日任务；完成后会提示明确后续动作", 4000)
+        return task
+
+    def complete_project_next_step(self, task, now=None):
+        project = self.project_by_id(task.get("projectId"))
+        if project is None:
+            return False
+        completed_at = now or datetime.now().isoformat(timespec="seconds")
+        update = project_next_step_completion_update(project, task, completed_at)
+        if update is None:
+            return False
+        target = self.saved_record_for_project(project)
+        target.update(update)
+        project.update(update)
+        save_json(PROJECTS_FILE, self.saved_projects)
+        return True
 
     def change_project_category(self, project, category):
         if category not in self.categories[1:] or category == project.get("category"):
@@ -3581,6 +3705,8 @@ class MainWindow(QMainWindow):
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
             target.update(data)
+            if target.get("nextStep"):
+                target["nextStepReviewNeeded"] = False
             if data.get("category") != previous_category:
                 orders = self.project_layout.setdefault("categoryOrders", {})
                 orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
@@ -3590,6 +3716,8 @@ class MainWindow(QMainWindow):
             if target is None:
                 target = {"id": str(uuid.uuid4())}; self.saved_projects.append(target)
             target.update(data)
+            if target.get("nextStep"):
+                target["nextStepReviewNeeded"] = False
             codex_projects = codex_sidebar_projects(self.saved_projects)
             codex_match = next((item for item in codex_projects if normalized_path(item.get("path")) == normalized_path(data.get("path"))), None)
             target["manualProject"] = codex_match is None

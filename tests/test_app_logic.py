@@ -50,6 +50,42 @@ class ProjectDisplayStateTests(unittest.TestCase):
 
 
 class ProjectManagementInteractionTests(unittest.TestCase):
+    def test_project_next_step_becomes_a_stably_linked_daily_task(self):
+        project = {
+            "id": "current-id", "savedId": "stable-id", "category": "Research",
+            "nextStep": "Run validation set",
+        }
+        task = APP.build_project_next_step_task(
+            project, "2026-08-10", "2026-08-10T09:00:00", task_id="task-1"
+        )
+        self.assertEqual(task["projectId"], "stable-id")
+        self.assertEqual(task["title"], "Run validation set")
+        self.assertEqual(task["origin"], "project_next_step")
+        self.assertEqual(task["status"], "planned")
+
+    def test_project_next_step_duplicate_detection_ignores_spacing_and_case(self):
+        project = {"id": "current-id", "savedId": "stable-id"}
+        tasks = [{
+            "projectId": "stable-id", "title": " Run   Validation Set ",
+            "date": "2026-08-10", "status": "doing",
+        }]
+        duplicate = APP.find_open_project_next_step_task(tasks, project, "run validation set", "2026-08-10")
+        self.assertIs(duplicate, tasks[0])
+
+    def test_completed_project_next_step_returns_project_to_next_decision(self):
+        project = {"nextStep": "Run validation set"}
+        task = {"origin": "project_next_step", "title": "Run validation set"}
+        update = APP.project_next_step_completion_update(project, task, "2026-08-10T10:00:00")
+        self.assertEqual(update["nextStep"], "")
+        self.assertTrue(update["nextStepReviewNeeded"])
+        project.update(update)
+        self.assertIn("请明确后续动作", APP.project_control_state(project)[4])
+
+    def test_completed_task_does_not_clear_a_newer_project_next_step(self):
+        project = {"nextStep": "Review final report"}
+        task = {"origin": "project_next_step", "projectNextStep": "Run validation set"}
+        self.assertIsNone(APP.project_next_step_completion_update(project, task, "2026-08-10T10:00:00"))
+
     def test_project_reference_ids_keep_tasks_linked_after_codex_id_changes(self):
         project = {"id": "current-id", "savedId": "stable-id", "codexProjectId": "codex-id"}
         self.assertTrue(APP.task_matches_project({"projectId": "stable-id"}, project))
