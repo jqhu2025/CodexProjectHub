@@ -76,6 +76,33 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertEqual(dialog.value(), "Input delivered and verification passed.")
         dialog.close(); parent.close()
 
+    def test_risk_dialog_returns_to_the_refreshed_ranked_queue(self):
+        parent = APP.QWidget()
+        old = {
+            "id": "old", "name": "Old blocker", "status": "active", "health": "blocked",
+            "blocker": "External dependency", "blockedAt": "2026-08-01T09:00:00",
+            "nextStep": "Confirm replacement", "category": "Release",
+        }
+        attention = {
+            "id": "attention", "name": "Watch quality", "status": "active", "health": "attention",
+            "reviewedAt": "2026-08-10T09:00:00", "nextStep": "Review validation", "category": "Research",
+        }
+        parent.open_project_workspace = Mock()
+        parent.risk_response_queue = Mock(return_value=[attention])
+        dialog = APP.PortfolioRiskDialog(parent, [attention, old])
+
+        self.assertEqual([project["id"] for project in dialog.projects], ["old", "attention"])
+        self.assertEqual(len(dialog.findChildren(APP.QFrame, "riskQueueRow")), 2)
+        self.assertIn("阻塞 1", dialog.subtitle.text())
+
+        dialog.open_project(old)
+
+        parent.open_project_workspace.assert_called_once_with(old)
+        parent.risk_response_queue.assert_called_once_with()
+        self.assertEqual(dialog.projects, [attention])
+        self.assertEqual(len(dialog.findChildren(APP.QFrame, "riskQueueRow")), 1)
+        dialog.close(); parent.close()
+
     def test_focus_comparison_shows_objective_and_specific_execution_evidence(self):
         parent = APP.QWidget(); parent.today_tasks = []
         parent.projects = [{
@@ -1173,6 +1200,35 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertNotIn(legacy_review, groups["attention"])
         self.assertEqual(groups["needs_next"], [needs_next])
 
+    def test_risk_queue_prioritizes_oldest_known_blockers_without_guessing_unknown_age(self):
+        now = datetime(2026, 8, 10, 12, 0, 0)
+        older = {
+            "id": "older", "name": "Older", "status": "active", "health": "blocked",
+            "blocker": "Dependency A", "blockedAt": "2026-08-01T12:00:00",
+        }
+        newer = {
+            "id": "newer", "name": "Newer", "status": "active", "health": "blocked",
+            "blocker": "Dependency B", "blockedAt": "2026-08-09T12:00:00",
+        }
+        unknown = {
+            "id": "unknown", "name": "Unknown", "status": "active", "health": "blocked",
+            "blocker": "Legacy dependency",
+        }
+        attention = {
+            "id": "attention", "name": "Attention", "status": "active", "health": "attention",
+            "reviewedAt": "2026-08-10T09:00:00",
+        }
+
+        ordered = sorted(
+            [attention, unknown, newer, older],
+            key=lambda project: APP.project_risk_priority_key(project, now),
+        )
+        self.assertEqual([project["id"] for project in ordered], ["older", "newer", "unknown", "attention"])
+        self.assertEqual(
+            APP.project_risk_batch_summary(ordered, now),
+            "待处置 4 · 阻塞 3 · 需关注 1 · 最长记录 9 天 · 时长待确认 1",
+        )
+
     def test_portfolio_priority_selects_one_decision_in_management_order(self):
         risk = {"name": "Blocked release", "status": "active", "blocker": "Missing input"}
         alignment = {"project": {"name": "Model validation"}}
@@ -1246,10 +1302,15 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window = SimpleNamespace(
             _portfolio_priority_scope="alignment",
             show_execution_alignment_queue=Mock(), show_lifecycle_calibration=Mock(),
-            open_project_scope=Mock(),
+            show_risk_response_queue=Mock(), open_project_scope=Mock(),
         )
         APP.MainWindow.open_portfolio_priority_decision(window)
         window.show_execution_alignment_queue.assert_called_once_with()
+        window.open_project_scope.assert_not_called()
+
+        window._portfolio_priority_scope = "attention"
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_risk_response_queue.assert_called_once_with()
         window.open_project_scope.assert_not_called()
 
         window._portfolio_priority_scope = "task_wip"

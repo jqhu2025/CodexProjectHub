@@ -68,6 +68,7 @@ from codex_hub.management import (
     project_review_phase,
     project_review_overdue_days,
     project_management_validation_error,
+    project_blocker_age_seconds,
     project_blocker_duration_label,
     project_completion_outcome,
     project_change_establishes_review,
@@ -1326,14 +1327,55 @@ def project_management_sort_key(project):
     )
 
 
+def project_risk_priority_key(project, now=None):
+    """Rank real blockers by known age, without fabricating urgency for unknown clocks."""
+    state = project_control_state(project)[0]
+    if state == "blocked":
+        age_seconds = project_blocker_age_seconds(project, now)
+        return (
+            0,
+            1 if age_seconds is None else 0,
+            -(age_seconds or 0),
+            project_management_sort_key(project),
+        )
+    return 1, 0, 0, project_management_sort_key(project)
+
+
+def project_risk_batch_summary(projects, now=None):
+    projects = list(projects or [])
+    if not projects:
+        return "当前风险队列已清空"
+    blocked = [project for project in projects if project_control_state(project)[0] == "blocked"]
+    attention_count = len(projects) - len(blocked)
+    known = []
+    for project in blocked:
+        age_seconds = project_blocker_age_seconds(project, now)
+        if age_seconds is not None:
+            known.append((project, age_seconds))
+    unknown_count = len(blocked) - len(known)
+    parts = [f"待处置 {len(projects)}"]
+    if blocked:
+        parts.append(f"阻塞 {len(blocked)}")
+    if attention_count:
+        parts.append(f"需关注 {attention_count}")
+    if known:
+        oldest, _age = max(known, key=lambda item: item[1])
+        duration = project_blocker_duration_label(oldest, now)
+        estimate = "（起点估计）" if oldest.get("blockedAtEstimated") else ""
+        parts.append(f"最长记录 {duration}{estimate}")
+    if unknown_count:
+        parts.append(f"时长待确认 {unknown_count}")
+    return " · ".join(parts)
+
+
 def portfolio_decision_groups(projects):
     ordered = sorted(projects or [], key=project_management_sort_key)
     return {
         "focus": [project for project in ordered if project_focus_state(project)[0]],
-        "attention": [
-            project for project in ordered
-            if project_management_scope_matches(project, "attention")
-        ],
+        "attention": sorted(
+            [project for project in ordered if project_management_scope_matches(project, "attention")],
+            key=project_risk_priority_key,
+        ),
         "review": [project for project in ordered if project_management_scope_matches(project, "review")],
         "needs_next": [
             project for project in ordered
@@ -4871,6 +4913,100 @@ class FocusCapacityDialog(QDialog):
             self.render_state()
 
 
+class PortfolioRiskDialog(QDialog):
+    """A ranked risk queue that returns from each project workbench without losing context."""
+    def __init__(self, parent, projects):
+        super().__init__(parent)
+        self.window = parent
+        self.projects = sorted(list(projects or []), key=project_risk_priority_key)
+        self.setWindowTitle("风险与阻塞处置")
+        self.setObjectName("portfolioRiskDialog")
+        self.setMinimumSize(760, 520)
+        self.resize(820, 610)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(27, 24, 27, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(40, 40); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE7BA", color="#b54708", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #fff1db; border: 1px solid #ebcfaa; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("风险与阻塞处置"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
+        self.subtitle = QLabel(); self.subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(self.subtitle); heading.addLayout(title_box, 1)
+        self.count_badge = QLabel(); self.count_badge.setAlignment(Qt.AlignCenter); self.count_badge.setFixedHeight(29)
+        self.count_badge.setStyleSheet("color: #9a3412; background: #fff5e8; border: 1px solid #edcfaa; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 700;"); heading.addWidget(self.count_badge)
+        root.addLayout(heading)
+
+        guidance = QLabel("阻塞项目优先；已知时长按持续最久排序。时长未知只标记待确认，不推测风险年龄。")
+        guidance.setWordWrap(True); guidance.setStyleSheet("color: #7a4b12; background: #fff9ef; border: 1px solid #eddabb; border-radius: 9px; padding: 8px 10px; font-size: 11px;"); root.addWidget(guidance)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        self.rows_widget = QWidget(); self.rows_widget.setObjectName("riskQueueRows"); self.rows_widget.setStyleSheet("QWidget#riskQueueRows { background: #f7f9fc; }")
+        self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(8)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+
+        footer = QHBoxLayout(); footer.setSpacing(9)
+        self.feedback = QLabel("打开项目面板完成处置；关闭面板后会自动刷新并回到剩余风险队列。")
+        self.feedback.setWordWrap(True); self.feedback.setStyleSheet("color: #66758a; font-size: 11px;"); footer.addWidget(self.feedback, 1)
+        close = QPushButton("关闭"); close.clicked.connect(self.accept); footer.addWidget(close); root.addLayout(footer)
+        self.render_state()
+
+    def clear_rows(self):
+        while self.rows_layout.count():
+            item = self.rows_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide(); widget.setParent(None); widget.deleteLater()
+
+    def render_state(self):
+        self.clear_rows()
+        self.projects = sorted(self.projects, key=project_risk_priority_key)
+        summary = project_risk_batch_summary(self.projects)
+        self.subtitle.setText(summary)
+        self.subtitle.setToolTip(summary)
+        self.count_badge.setText(f"{len(self.projects)} 项")
+        if not self.projects:
+            self.count_badge.setStyleSheet("color: #087443; background: #e9f8f0; border: 1px solid #bfe3cf; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 700;")
+            empty = QFrame(); empty.setObjectName("riskQueueEmpty"); empty.setMinimumHeight(250)
+            empty.setStyleSheet("QFrame#riskQueueEmpty { background: #ffffff; border: 1px dashed #cbd8e5; border-radius: 11px; }")
+            layout = QVBoxLayout(empty); layout.setAlignment(Qt.AlignCenter); layout.setSpacing(8)
+            icon = QLabel(); icon.setFixedSize(52, 52); icon.setAlignment(Qt.AlignCenter); icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=26).pixmap(QSize(26, 26))); icon.setStyleSheet("background: #e8f7ef; border-radius: 14px;"); layout.addWidget(icon, 0, Qt.AlignCenter)
+            title = QLabel("当前风险队列已清空"); title.setAlignment(Qt.AlignCenter); title.setStyleSheet("color: #172033; font-size: 18px; font-weight: 700;"); layout.addWidget(title)
+            detail = QLabel("已解决或校准的项目会继续保留完整决策历史。")
+            detail.setAlignment(Qt.AlignCenter); detail.setStyleSheet("color: #66758a; font-size: 11px;"); layout.addWidget(detail)
+            self.rows_layout.addWidget(empty); self.feedback.setText("风险状态已同步到主页。")
+            return
+
+        self.count_badge.setStyleSheet("color: #9a3412; background: #fff5e8; border: 1px solid #edcfaa; border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: 700;")
+
+        for index, project in enumerate(self.projects, start=1):
+            state, state_text, color, background, reason = project_control_state(project)
+            row = QFrame(); row.setObjectName("riskQueueRow"); row.setMinimumHeight(92)
+            row.setStyleSheet(f"QFrame#riskQueueRow {{ background: #ffffff; border: 1px solid #dbe3ee; border-left: 4px solid {color}; border-radius: 10px; }} QFrame#riskQueueRow QLabel {{ background: transparent; border: none; }}")
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(12, 10, 10, 10); row_layout.setSpacing(11)
+            rank = QLabel(str(index)); rank.setFixedSize(28, 28); rank.setAlignment(Qt.AlignCenter); rank.setStyleSheet(f"color: {color}; background: {background}; border-radius: 8px; font-size: 11px; font-weight: 750;"); row_layout.addWidget(rank)
+            body = QVBoxLayout(); body.setSpacing(4)
+            headline = QHBoxLayout(); headline.setSpacing(8)
+            name = QLabel(str(project.get("name") or "未命名项目")); name.setStyleSheet("color: #172033; font-size: 14px; font-weight: 700;"); headline.addWidget(name, 1)
+            category = QLabel(str(project.get("category") or "未分类")); category.setStyleSheet("color: #66758a; background: #f1f4f8; border-radius: 7px; padding: 3px 7px; font-size: 9px; font-weight: 650;"); headline.addWidget(category)
+            badge = QLabel(state_text); badge.setStyleSheet(f"color: {color}; background: {background}; border-radius: 7px; padding: 3px 7px; font-size: 9px; font-weight: 700;"); headline.addWidget(badge); body.addLayout(headline)
+            reason_label = ElidedLabel(reason); reason_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 600;"); reason_label.setToolTip(reason); body.addWidget(reason_label)
+            next_step = str(project.get("nextStep") or "尚未明确下一步")
+            next_label = ElidedLabel(f"下一步 · {next_step}"); next_label.setStyleSheet("color: #66758a; font-size: 10px;"); next_label.setToolTip(next_step); body.addWidget(next_label); row_layout.addLayout(body, 1)
+            open_button = QPushButton("打开处置"); open_button.setFixedHeight(32); open_button.setIcon(fluent_icon("\uE72A", color=color, size=13)); open_button.setIconSize(QSize(13, 13)); open_button.setStyleSheet(f"QPushButton {{ color: {color}; background: #ffffff; border: 1px solid #d4dee9; border-radius: 8px; padding: 4px 9px; font-size: 10px; font-weight: 700; }} QPushButton:hover, QPushButton:focus {{ background: {background}; border-color: {color}; }}")
+            open_button.clicked.connect(lambda _checked=False, value=project: self.open_project(value)); row_layout.addWidget(open_button)
+            row.setAccessibleName(f"风险队列第 {index} 项，{project.get('name') or '未命名项目'}，{state_text}。{reason}。下一步：{next_step}")
+            self.rows_layout.addWidget(row)
+        self.rows_layout.addStretch()
+
+    def open_project(self, project):
+        self.window.open_project_workspace(project)
+        provider = getattr(self.window, "risk_response_queue", None)
+        if callable(provider):
+            self.projects = list(provider() or [])
+        self.render_state()
+
+
 class PortfolioReviewDialog(QDialog):
     """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
     def __init__(self, parent, projects, total_count=None):
@@ -6269,6 +6405,9 @@ class MainWindow(QMainWindow):
         if scope == "focus_capacity":
             self.show_focus_capacity()
             return
+        if scope == "attention":
+            self.show_risk_response_queue()
+            return
         if scope == "review":
             self.show_portfolio_review_queue()
             return
@@ -6306,6 +6445,19 @@ class MainWindow(QMainWindow):
             return 2, 0, project_management_sort_key(project)
 
         return sorted(filtered, key=confirmation_order)
+
+    def risk_response_queue(self):
+        return sorted(
+            portfolio_decision_groups(self.projects).get("attention", []),
+            key=project_risk_priority_key,
+        )
+
+    def show_risk_response_queue(self):
+        projects = self.risk_response_queue()
+        if not projects:
+            QMessageBox.information(self, "当前没有风险项目", "当前没有已确认的阻塞或需关注项目。")
+            return
+        PortfolioRiskDialog(self, projects).exec_()
 
     def show_portfolio_review_queue(self):
         projects = self.portfolio_review_queue()
@@ -6508,7 +6660,9 @@ class MainWindow(QMainWindow):
 
     def open_portfolio_priority_decision(self):
         scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
-        if scope == "task_wip":
+        if scope == "attention":
+            self.show_risk_response_queue()
+        elif scope == "task_wip":
             self.show_task_wip()
         elif scope == "completion_evidence":
             self.show_completion_evidence_queue()
