@@ -100,6 +100,16 @@ def task_is_archived(task):
     return bool(str((task or {}).get("archivedAt") or "").strip())
 
 
+def task_is_superseded_daily_record(task):
+    """Return True when a daily snapshot has already continued to a newer record.
+
+    Rollover deliberately leaves the previous day in its original ``doing``
+    state so daily history remains truthful.  That snapshot is evidence, not a
+    second open work item, once ``carriedToTaskId`` points at its successor.
+    """
+    return bool(str((task or {}).get("carriedToTaskId") or "").strip())
+
+
 def active_task_records(tasks):
     return [task for task in (tasks or []) if isinstance(task, dict) and not task_is_archived(task)]
 

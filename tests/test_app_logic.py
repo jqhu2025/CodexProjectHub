@@ -458,6 +458,10 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         tasks = [
             {"id": "planned", "projectId": "stable", "status": "planned"},
             {"id": "doing", "projectId": "current", "status": "doing"},
+            {
+                "id": "previous-day-snapshot", "projectId": "stable", "status": "doing",
+                "carriedToTaskId": "doing",
+            },
             {"id": "done", "projectId": "stable", "status": "done"},
             {"id": "archived", "projectId": "stable", "status": "doing", "archivedAt": "2026-08-10T11:00:00"},
             {"id": "other", "projectId": "other", "status": "planned"},

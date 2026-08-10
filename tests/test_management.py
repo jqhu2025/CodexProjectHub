@@ -20,6 +20,15 @@ class ManagementModuleTests(unittest.TestCase):
         event = management.task_status_events([task])[0]
         self.assertEqual((event["from"], event["to"], event["source"]), ("planned", "doing", "drag"))
 
+    def test_rollover_predecessor_is_historical_evidence_not_current_work(self):
+        predecessor = {"status": "doing", "carriedToTaskId": "next-day-task"}
+        successor = {"status": "doing", "carriedFromTaskId": "previous-day-task"}
+
+        self.assertTrue(management.task_is_superseded_daily_record(predecessor))
+        self.assertFalse(management.task_is_superseded_daily_record(successor))
+        self.assertFalse(management.task_is_superseded_daily_record(None))
+        self.assertEqual(management.active_task_records([predecessor]), [predecessor])
+
     def test_completion_outcome_is_audited_and_only_active_for_completed_tasks(self):
         task = {"id": "task-1", "status": "done"}
         self.assertTrue(management.record_task_completion_outcome(

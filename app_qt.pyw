@@ -78,6 +78,7 @@ from codex_hub.management import (
     task_status_events,
     task_status_transition_allowed,
     task_is_archived,
+    task_is_superseded_daily_record,
     task_completion_outcome,
     task_completion_revisions,
 )
@@ -1071,6 +1072,7 @@ def open_project_tasks(tasks, project):
         task for task in (tasks or [])
         if task_matches_project(task, project)
         and not task_is_archived(task)
+        and not task_is_superseded_daily_record(task)
         and task.get("status", "planned") != "done"
     ]
 
