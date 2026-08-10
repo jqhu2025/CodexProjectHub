@@ -127,6 +127,57 @@ class ManagementModuleTests(unittest.TestCase):
         project["nextStep"] = "Publish report"
         self.assertIsNone(management.project_next_step_reopen_update(project, task))
 
+    def test_project_governance_gaps_follow_real_management_requirements(self):
+        active = {
+            "status": "active", "objective": "", "nextStep": "", "stage": "execution",
+            "health": "blocked", "blocker": "",
+        }
+        self.assertEqual(
+            management.project_governance_gaps(active),
+            ["objective", "nextStep", "blocker"],
+        )
+        paused = {"status": "paused", "objective": "", "nextStep": "", "stage": "planning", "health": "on_track"}
+        self.assertEqual(management.project_governance_gaps(paused), ["objective"])
+
+    def test_codex_governance_merge_only_fills_missing_human_decisions(self):
+        project = {
+            "status": "active",
+            "objective": "Deliver the verified release",
+            "nextStep": "",
+            "stage": "validation",
+            "health": "on_track",
+            "blocker": "",
+            "nextStepReviewNeeded": True,
+        }
+        insight = {
+            "objective": "Replace the human objective",
+            "nextStep": "Run the release verification suite",
+            "stage": "delivery",
+            "health": "blocked",
+            "blocker": "Invented blocker",
+        }
+        merged, applied = management.merge_missing_project_insight(project, insight)
+        self.assertEqual(applied, ["nextStep"])
+        self.assertEqual(merged["objective"], project["objective"])
+        self.assertEqual(merged["stage"], "validation")
+        self.assertEqual(merged["health"], "on_track")
+        self.assertEqual(merged["blocker"], "")
+        self.assertEqual(merged["nextStep"], "Run the release verification suite")
+        self.assertFalse(merged["nextStepReviewNeeded"])
+
+    def test_codex_governance_merge_rechecks_gaps_after_analysis(self):
+        project = {
+            "status": "active", "objective": "Human decision made while Codex ran",
+            "nextStep": "Ship it", "stage": "execution", "health": "on_track",
+        }
+        merged, applied = management.merge_missing_project_insight(
+            project,
+            {"objective": "Stale suggestion", "nextStep": "Stale next step"},
+            allowed_fields=["objective", "nextStep"],
+        )
+        self.assertEqual(applied, [])
+        self.assertEqual(merged, project)
+
     def test_decision_diff_ignores_cosmetic_whitespace(self):
         before = {"objective": "Validate   the model", "health": "on_track"}
         after = {"objective": " Validate the model ", "health": "attention"}

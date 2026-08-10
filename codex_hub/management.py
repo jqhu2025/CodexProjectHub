@@ -55,6 +55,7 @@ PROJECT_DECISION_SOURCES = {
     "created": "建立项目",
     "category": "分类调整",
 }
+PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
 
 
 def archive_project_layout(layout, project_id):
@@ -282,6 +283,68 @@ def rollover_in_progress_tasks(tasks, today=None):
 
 def normalized_decision_value(value):
     return " ".join(str(value or "").split())
+
+
+def project_governance_gaps(project):
+    """Return only project-control fields that genuinely need a decision.
+
+    Defaults that are already stored remain deliberate user decisions.  Active
+    projects need a concrete next action; paused, idea, and completed projects
+    do not.  A next action awaiting review is intentionally treated as missing
+    so Codex can propose the successor without overwriting unrelated fields.
+    """
+    project = project or {}
+    gaps = []
+    if not normalized_decision_value(project.get("objective")):
+        gaps.append("objective")
+    if project.get("status", "active") == "active" and (
+        not normalized_decision_value(project.get("nextStep"))
+        or bool(project.get("nextStepReviewNeeded"))
+    ):
+        gaps.append("nextStep")
+    if project.get("health") == "blocked" and not normalized_decision_value(project.get("blocker")):
+        gaps.append("blocker")
+    if project.get("stage") not in PROJECT_STAGE:
+        gaps.append("stage")
+    if project.get("health") not in PROJECT_HEALTH:
+        gaps.append("health")
+    return gaps
+
+
+def merge_missing_project_insight(project, insight, allowed_fields=None):
+    """Apply a Codex insight strictly to still-missing governance fields.
+
+    The merge is deliberately conservative: a suggestion can fill a gap but
+    never replace a non-empty human decision.  Callers can safely re-run this
+    after a long background analysis because gaps are recalculated against the
+    latest project state at apply time.
+    """
+    current = dict(project or {})
+    suggestion = insight or {}
+    gaps = project_governance_gaps(current)
+    if allowed_fields is not None:
+        allowed = {str(field) for field in allowed_fields}
+        gaps = [field for field in gaps if field in allowed]
+    applied = []
+    for field in PROJECT_GOVERNANCE_FIELD_ORDER:
+        if field not in gaps:
+            continue
+        value = suggestion.get(field)
+        if field == "stage":
+            if value not in PROJECT_STAGE:
+                continue
+        elif field == "health":
+            if value not in PROJECT_HEALTH:
+                continue
+        else:
+            value = normalized_decision_value(value)
+            if not value:
+                continue
+        current[field] = value
+        if field == "nextStep":
+            current["nextStepReviewNeeded"] = False
+        applied.append(field)
+    return current, applied
 
 
 def display_project_decision_value(field, value):

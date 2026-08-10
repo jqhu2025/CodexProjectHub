@@ -17,7 +17,7 @@ from pathlib import Path
 from PyQt5.QtCore import QDate, QMimeData, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFrame, QGridLayout,
     QFileDialog, QGraphicsScene, QGraphicsView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QStackedWidget, QStatusBar, QStyle, QTextEdit, QToolButton,
     QVBoxLayout, QWidget,
@@ -44,11 +44,13 @@ from codex_hub.management import (
     display_project_decision_value,
     format_project_decision_summary,
     format_project_decision_time,
+    merge_missing_project_insight,
     normalize_project_management_decision,
     normalized_action_text,
     normalized_decision_value,
     ordered_board_tasks,
     project_decision_changes,
+    project_governance_gaps,
     project_management_validation_error,
     project_next_step_completion_update,
     project_next_step_reopen_update,
@@ -784,6 +786,40 @@ class ProjectInsightWorker(QThread):
 
     def run(self):
         self.generated.emit(generate_project_insight(self.project, self.tasks))
+
+
+class PortfolioGovernanceWorker(QThread):
+    """Analyze selected projects sequentially without blocking the Qt event loop."""
+
+    progressed = pyqtSignal(int, int, str)
+    generated = pyqtSignal(object)
+
+    def __init__(self, projects, tasks=None, parent=None):
+        super().__init__(parent)
+        self.projects = [dict(project or {}) for project in (projects or [])]
+        self.tasks = [dict(task or {}) for task in (tasks or [])]
+
+    def run(self):
+        results = []
+        total = len(self.projects)
+        for index, project in enumerate(self.projects, 1):
+            if self.isInterruptionRequested():
+                break
+            name = str(project.get("name") or "未命名项目")
+            self.progressed.emit(index - 1, total, f"正在分析：{name}")
+            project_tasks = [
+                task for task in self.tasks
+                if not task_is_archived(task) and task_matches_project(task, project)
+            ]
+            insight = generate_project_insight(project, project_tasks)
+            results.append({
+                "projectId": project.get("id"),
+                "projectName": name,
+                "gaps": project_governance_gaps(project),
+                "insight": insight,
+            })
+            self.progressed.emit(index, total, f"已完成：{name}")
+        self.generated.emit(results)
 
 
 class DailySummaryWorker(QThread):
@@ -1552,6 +1588,222 @@ class ProjectEditor(QDialog):
         return normalize_project_management_decision(self.project, data)[0]
 
 
+class PortfolioGovernanceDialog(QDialog):
+    """Reviewable batch completion for missing project-management decisions."""
+
+    def __init__(self, parent, projects):
+        super().__init__(parent)
+        self.window = parent
+        self.projects = list(projects or [])
+        self.worker = None
+        self.results = []
+        self.candidate_checks = {}
+        self.result_checks = {}
+        self.setWindowTitle("Codex 项目治理")
+        self.setObjectName("portfolioGovernanceDialog")
+        self.setMinimumSize(780, 620)
+        self.resize(860, 680)
+        self.setStyleSheet(STYLE + """
+            QDialog#portfolioGovernanceDialog { background: #f5f7fb; }
+            QFrame#governanceHero { background: #ffffff; border: 1px solid #d9e3ef; border-radius: 14px; }
+            QFrame#governanceRow { background: #ffffff; border: 1px solid #dce4ed; border-radius: 11px; }
+            QFrame#governanceRow:hover { border-color: #b7c8dc; background: #fbfdff; }
+            QCheckBox { color: #253247; font-size: 14px; font-weight: 650; spacing: 10px; }
+            QCheckBox::indicator { width: 18px; height: 18px; }
+        """)
+
+        root = QVBoxLayout(self); root.setContentsMargins(24, 22, 24, 20); root.setSpacing(14)
+        hero = QFrame(); hero.setObjectName("governanceHero")
+        hero_layout = QHBoxLayout(hero); hero_layout.setContentsMargins(16, 14, 16, 14); hero_layout.setSpacing(12)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE945", color="#1d4ed8", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #eaf1ff; border: none; border-radius: 11px;"); hero_layout.addWidget(icon)
+        hero_text = QVBoxLayout(); hero_text.setSpacing(2)
+        title = QLabel("Codex 项目治理"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); hero_text.addWidget(title)
+        subtitle = QLabel("只补齐缺失的目标或下一步；已有人工判断不会被覆盖，所有建议先审核再写入。")
+        subtitle.setWordWrap(True); subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); hero_text.addWidget(subtitle)
+        hero_layout.addLayout(hero_text, 1)
+        self.hero_count = QLabel(); self.hero_count.setAlignment(Qt.AlignCenter); self.hero_count.setFixedHeight(32)
+        self.hero_count.setStyleSheet("color: #1d4ed8; background: #edf3ff; border: none; border-radius: 8px; padding: 0 11px; font-size: 12px; font-weight: 700;")
+        hero_layout.addWidget(self.hero_count); root.addWidget(hero)
+
+        self.status = QLabel("选择本轮需要 Codex 只读分析的项目")
+        self.status.setStyleSheet("color: #526071; font-size: 12px; font-weight: 600;"); root.addWidget(self.status)
+        self.progress = QProgressBar(); self.progress.setFixedHeight(7); self.progress.setTextVisible(False)
+        self.progress.setStyleSheet("QProgressBar { background: #dfe7f1; border: none; border-radius: 3px; } QProgressBar::chunk { background: #2563eb; border-radius: 3px; }")
+        self.progress.hide(); root.addWidget(self.progress)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.rows_widget = QWidget(); self.rows_widget.setStyleSheet("background: transparent;")
+        self.rows = QVBoxLayout(self.rows_widget); self.rows.setContentsMargins(0, 0, 5, 0); self.rows.setSpacing(8)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        self.selection_caption = QLabel(); self.selection_caption.setStyleSheet("color: #748094; font-size: 11px;"); actions.addWidget(self.selection_caption)
+        actions.addStretch()
+        self.close_button = QPushButton("关闭"); self.close_button.setFixedHeight(38); self.close_button.clicked.connect(self.reject); actions.addWidget(self.close_button)
+        self.start_button = QPushButton("开始智能补全"); self.start_button.setObjectName("primary"); self.start_button.setFixedHeight(38); self.start_button.clicked.connect(self.start_analysis); actions.addWidget(self.start_button)
+        self.apply_button = QPushButton("应用所选建议"); self.apply_button.setObjectName("primary"); self.apply_button.setFixedHeight(38); self.apply_button.clicked.connect(self.apply_results); self.apply_button.hide(); actions.addWidget(self.apply_button)
+        root.addLayout(actions)
+        self.render_candidates()
+
+    def clear_rows(self):
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def render_candidates(self):
+        self.clear_rows()
+        self.candidate_checks = {}
+        self.hero_count.setText(f"{len(self.projects)} 个缺项项目")
+        for project in self.projects:
+            gaps = project_governance_gaps(project)
+            row = QFrame(); row.setObjectName("governanceRow"); row.setFixedHeight(68)
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(15, 8, 14, 8); row_layout.setSpacing(12)
+            check = QCheckBox(str(project.get("name") or "未命名项目")); check.setChecked(True)
+            check.stateChanged.connect(self.sync_selection); row_layout.addWidget(check, 1)
+            gap_text = "、".join(PROJECT_DECISION_FIELDS.get(field, field) for field in gaps)
+            gap = QLabel(f"待补：{gap_text}"); gap.setAlignment(Qt.AlignCenter); gap.setFixedHeight(27)
+            gap.setStyleSheet("color: #8a5a00; background: #fff5dd; border: none; border-radius: 7px; padding: 0 9px; font-size: 11px; font-weight: 650;")
+            row_layout.addWidget(gap)
+            self.candidate_checks[str(project.get("id") or "")] = check
+            self.rows.addWidget(row)
+        self.rows.addStretch()
+        self.sync_selection()
+
+    def selected_projects(self):
+        return [
+            project for project in self.projects
+            if self.candidate_checks.get(str(project.get("id") or ""))
+            and self.candidate_checks[str(project.get("id") or "")].isChecked()
+        ]
+
+    def sync_selection(self):
+        count = len(self.selected_projects())
+        self.selection_caption.setText(f"已选择 {count} 项 · 逐个只读分析")
+        self.start_button.setText(f"开始整理 {count} 项" if count else "请选择项目")
+        self.start_button.setEnabled(count > 0 and self.worker is None)
+
+    def start_analysis(self):
+        selected = self.selected_projects()
+        if not selected or self.worker is not None:
+            return
+        for check in self.candidate_checks.values():
+            check.setEnabled(False)
+        self.start_button.setEnabled(False); self.close_button.setEnabled(False)
+        self.progress.setRange(0, len(selected)); self.progress.setValue(0); self.progress.show()
+        self.status.setText("Codex 正在逐项读取项目目录；期间不会修改任何文件或项目判断。")
+        worker = PortfolioGovernanceWorker(selected, self.window.today_tasks, self)
+        worker.progressed.connect(self.on_progress)
+        worker.generated.connect(self.on_generated)
+        worker.finished.connect(lambda: self.finish_worker(worker))
+        self.worker = worker
+        worker.start()
+
+    def on_progress(self, completed, total, message):
+        self.progress.setRange(0, max(1, total)); self.progress.setValue(completed)
+        self.status.setText(message)
+
+    def on_generated(self, results):
+        self.results = list(results or [])
+        self.render_results()
+
+    def render_results(self):
+        self.clear_rows()
+        self.result_checks = {}
+        applicable = 0
+        for index, result in enumerate(self.results):
+            project = self.window.project_by_id(result.get("projectId"))
+            insight = result.get("insight") or {}
+            proposed, applied = merge_missing_project_insight(project, insight, result.get("gaps")) if project else ({}, [])
+            error = str(insight.get("error") or "")
+            changes = [change for change in project_decision_changes(project, proposed) if change.get("field") in applied] if project else []
+            row = QFrame(); row.setObjectName("governanceRow"); row.setMinimumHeight(82)
+            row_layout = QHBoxLayout(row); row_layout.setContentsMargins(15, 10, 14, 10); row_layout.setSpacing(12)
+            check = QCheckBox(str(result.get("projectName") or "未命名项目")); check.setChecked(bool(changes)); check.setEnabled(bool(changes))
+            check.stateChanged.connect(self.sync_result_selection)
+            row_layout.addWidget(check, 0, Qt.AlignTop)
+            text = QVBoxLayout(); text.setSpacing(3)
+            if error:
+                preview_text = f"整理失败：{compact_summary_text(error, 150)}"
+                preview_color = "#b42318"
+            elif changes:
+                preview_text = "；".join(
+                    f"{change.get('label')}：{display_project_decision_value(change.get('field'), change.get('after'))}"
+                    for change in changes
+                )
+                preview_color = "#34445c"
+                applicable += 1
+            else:
+                preview_text = "分析期间项目已补齐，或 Codex 未返回可用建议"
+                preview_color = "#748094"
+            preview = QLabel(preview_text); preview.setWordWrap(True); preview.setStyleSheet(f"color: {preview_color}; font-size: 12px;"); text.addWidget(preview)
+            summary = compact_summary_text(insight.get("summary"), 180)
+            if summary:
+                basis = QLabel(f"判断依据：{summary}"); basis.setWordWrap(True); basis.setStyleSheet("color: #748094; font-size: 10px;"); text.addWidget(basis)
+            row_layout.addLayout(text, 1)
+            self.result_checks[index] = check
+            self.rows.addWidget(row)
+        self.rows.addStretch()
+        self.hero_count.setText(f"{applicable} 项可应用")
+        self.selection_caption.setText("建议已生成 · 勾选后写入项目决策记录")
+        self.start_button.hide(); self.apply_button.show(); self.apply_button.setText(f"应用 {applicable} 项建议")
+        self.apply_button.setEnabled(False)
+        self.status.setText("整理完成。请审核建议；应用时仍会再次检查缺项，避免覆盖刚刚发生的人工修改。")
+
+    def sync_result_selection(self):
+        count = sum(check.isEnabled() and check.isChecked() for check in self.result_checks.values())
+        self.apply_button.setText(f"应用 {count} 项建议" if count else "请选择建议")
+        self.apply_button.setEnabled(count > 0 and self.worker is None)
+
+    def finish_worker(self, worker):
+        if self.worker is worker:
+            self.worker = None
+        worker.deleteLater()
+        self.close_button.setEnabled(True)
+        self.sync_result_selection()
+
+    def apply_results(self):
+        applied_projects = 0
+        applied_fields = 0
+        for index, result in enumerate(self.results):
+            check = self.result_checks.get(index)
+            if not check or not check.isEnabled() or not check.isChecked():
+                continue
+            project = self.window.project_by_id(result.get("projectId"))
+            if not project:
+                continue
+            proposed, fields = merge_missing_project_insight(project, result.get("insight"), result.get("gaps"))
+            if not fields:
+                continue
+            if self.window.update_project_management(project, proposed, notify=False, source="codex") is not None:
+                applied_projects += 1
+                applied_fields += len(fields)
+        if applied_projects:
+            self.window.statusBar().showMessage(
+                f"Codex 已补齐 {applied_projects} 个项目的 {applied_fields} 项缺失信息，并写入决策记录",
+                5000,
+            )
+            self.accept()
+        else:
+            self.status.setText("没有写入任何内容：所选缺项可能已经被人工补齐。")
+            self.apply_button.setEnabled(False)
+
+    def reject(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.status.setText("Codex 正在分析当前项目，请等待本轮完成后关闭。")
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None and self.worker.isRunning():
+            self.status.setText("Codex 正在分析当前项目，请等待本轮完成后关闭。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class ElidedLabel(QLabel):
     def __init__(self, text=""):
         super().__init__(text)
@@ -2117,6 +2369,9 @@ class ProjectGroup(QFrame):
         project_menu = QMenu(more)
         continue_action = project_menu.addAction(fluent_icon("\uE72A", color="#1d4ed8", size=14), "在 Codex 中继续"); continue_action.triggered.connect(lambda: window.continue_project(project))
         schedule_action = project_menu.addAction(fluent_icon("\uE787", color="#1d4ed8", size=14), "将下一步加入今日"); schedule_action.setEnabled(bool(str(project.get("nextStep") or "").strip())); schedule_action.triggered.connect(lambda: window.schedule_project_next_step(project))
+        governance_action = project_menu.addAction(fluent_icon("\uE945", color="#1d4ed8", size=14), "Codex 补全缺项")
+        governance_action.setEnabled(bool(project_governance_gaps(project)) and Path(str(project.get("path") or "")).is_dir() and project.get("status", "active") != "completed")
+        governance_action.triggered.connect(lambda: window.show_project_governance([project]))
         folder_action = project_menu.addAction(fluent_icon("\uE838", size=14), "打开文件夹"); folder_action.triggered.connect(lambda: window.open_folder(project))
         up_action = project_menu.addAction(fluent_icon("\uE74A", size=14), "向上移动"); up_action.triggered.connect(lambda: window.move_project(project, -1))
         down_action = project_menu.addAction(fluent_icon("\uE74B", size=14), "向下移动"); down_action.triggered.connect(lambda: window.move_project(project, 1))
@@ -3155,6 +3410,11 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("集中管理项目阶段、健康度、阻塞项、下一步与 Codex 工作上下文")
         subtitle.setStyleSheet("color: #66758a; font-size: 13px;"); heading_text.addWidget(subtitle)
         heading.addLayout(heading_text); heading.addStretch()
+        self.governance_button = QPushButton("Codex 补全"); self.governance_button.setFixedHeight(40)
+        self.governance_button.setIcon(fluent_icon("\uE945", color="#1d4ed8", size=15)); self.governance_button.setIconSize(QSize(15, 15))
+        self.governance_button.setToolTip("批量补齐缺失的项目目标和下一步，审核后再写入")
+        self.governance_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 9px; padding: 7px 12px; font-size: 12px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
+        self.governance_button.clicked.connect(lambda: self.show_project_governance()); heading.addWidget(self.governance_button)
         self.archive_button = QPushButton("归档箱"); self.archive_button.setFixedHeight(40)
         self.archive_button.setIcon(fluent_icon("\uE7B8", color="#42526a", size=15)); self.archive_button.setIconSize(QSize(15, 15))
         self.archive_button.setToolTip("查看并恢复从项目中心归档的项目"); self.archive_button.clicked.connect(self.show_archived_projects); heading.addWidget(self.archive_button)
@@ -4313,6 +4573,34 @@ class MainWindow(QMainWindow):
     def archived_projects(self):
         return archived_project_catalog(self.saved_projects, self.project_layout)
 
+    def project_governance_candidates(self, projects=None):
+        source = list(self.projects if projects is None else projects)
+        candidates = [
+            project for project in source
+            if project.get("status", "active") != "completed"
+            and project_governance_gaps(project)
+            and Path(str(project.get("path") or "")).is_dir()
+        ]
+        return sorted(candidates, key=project_management_sort_key)
+
+    def show_project_governance(self, projects=None):
+        candidates = self.project_governance_candidates(projects)
+        if not candidates:
+            source = list(self.projects if projects is None else projects)
+            missing_without_folder = [
+                project for project in source
+                if project.get("status", "active") != "completed"
+                and project_governance_gaps(project)
+                and not Path(str(project.get("path") or "")).is_dir()
+            ]
+            if missing_without_folder:
+                QMessageBox.information(self, "需要有效项目目录", "这些项目仍有管理缺项，但本地目录不可用。请先编辑项目并选择有效文件夹。")
+            else:
+                QMessageBox.information(self, "项目治理已完整", "当前项目都已经具备目标、必要的下一步和一致的健康状态。")
+            return
+        PortfolioGovernanceDialog(self, candidates).exec_()
+        self.render()
+
     def show_archived_projects(self):
         ArchivedProjectsDialog(self, self.archived_projects()).exec_()
 
@@ -4388,6 +4676,20 @@ class MainWindow(QMainWindow):
 
     def render(self):
         projects = self.shown()
+        if hasattr(self, "governance_button"):
+            governance_count = len(self.project_governance_candidates())
+            if governance_count:
+                self.governance_button.setText(f"Codex 补全  {governance_count}")
+                self.governance_button.setIcon(fluent_icon("\uE945", color="#1d4ed8", size=15))
+                self.governance_button.setEnabled(True)
+                self.governance_button.setToolTip(f"{governance_count} 个项目存在可由 Codex 补齐的管理缺项")
+                self.governance_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c8d8f4; border-radius: 9px; padding: 7px 12px; font-size: 12px; font-weight: 650; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #9eb8e4; }")
+            else:
+                self.governance_button.setText("信息完整")
+                self.governance_button.setIcon(fluent_icon("\uE73E", color="#087443", size=15))
+                self.governance_button.setEnabled(False)
+                self.governance_button.setToolTip("当前项目都具备目标、必要的下一步和一致的健康状态")
+                self.governance_button.setStyleSheet("QPushButton:disabled { color: #087443; background: #e9f8f0; border: 1px solid #b9e5cd; border-radius: 9px; padding: 7px 12px; font-size: 12px; font-weight: 650; }")
         if hasattr(self, "archive_button"):
             archived_count = len(self.archived_projects())
             self.archive_button.setText(f"归档箱  {archived_count}" if archived_count else "归档箱")

@@ -224,6 +224,17 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             result = APP.generate_project_insight({"path": "Z:/definitely-missing-project"})
         self.assertEqual(result["error"], "请先选择有效的项目文件夹")
 
+    def test_portfolio_governance_only_queues_actionable_local_projects(self):
+        with tempfile.TemporaryDirectory() as folder:
+            window = SimpleNamespace(projects=[
+                {"id": "eligible", "status": "active", "objective": "", "nextStep": "Run", "stage": "execution", "health": "on_track", "path": folder},
+                {"id": "complete", "status": "completed", "objective": "", "stage": "completion", "health": "on_track", "path": folder},
+                {"id": "invalid-path", "status": "active", "objective": "", "nextStep": "Run", "stage": "execution", "health": "on_track", "path": str(Path(folder) / "missing")},
+                {"id": "governed", "status": "active", "objective": "Ship", "nextStep": "Run", "stage": "execution", "health": "on_track", "path": folder},
+            ])
+            candidates = APP.MainWindow.project_governance_candidates(window)
+        self.assertEqual([project["id"] for project in candidates], ["eligible"])
+
     def test_control_state_prioritizes_blockers_and_missing_decisions(self):
         blocked = {"status": "active", "health": "on_track", "blocker": "Waiting for calibration", "objective": "Ship", "nextStep": "Test"}
         missing_next = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": ""}

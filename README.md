@@ -43,6 +43,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Keep task links stable when Codex refreshes a project's current identifier.
 - Promote a project's concrete next action into today's plan with one click, with duplicate protection and automatic handoff back to the next project decision when the task is completed.
 - Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.
+- Run a portfolio-wide Codex governance pass over selected projects with missing decisions. Analysis is sequential and read-only, every proposed field is reviewed before application, existing human decisions are never overwritten, and gaps are rechecked at write time to reject stale suggestions.
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
 - Keep a local, source-labelled history of real project-decision changes, including manual edits, Codex suggestions, category moves, and completed next-action handoffs.
 - Restore any recorded project decision selectively: only fields touched by that event are rolled back, newer conflicting edits are disclosed before confirmation, and the rollback is preserved as a new audit event.
