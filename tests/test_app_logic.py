@@ -237,6 +237,46 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(normalized["health"], "blocked")
         self.assertTrue(notes)
 
+    def test_project_update_engine_persists_blocker_start_and_resolution_metadata(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "category": "Research",
+            "priority": "normal", "stage": "validation", "health": "on_track", "objective": "Ship", "nextStep": "Validate", "blocker": "",
+        }
+        target = {**project, "id": "stable"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            categories=["全部", "Research"], project_layout={"categoryOrders": {}}, saved_projects=[target], project_decisions=[],
+            saved_record_for_project=lambda _project: target,
+            apply_project_completion_lifecycle=Mock(return_value=True),
+            refresh=Mock(), statusBar=lambda: status_bar, view_signature="old",
+        )
+
+        def record_decision(identity, before, after, source, occurred_at):
+            entry = APP.build_project_decision_entry(identity, before, after, source, occurred_at)
+            if entry:
+                window.project_decisions.append(entry)
+            return entry
+
+        window.record_project_decision = Mock(side_effect=record_decision)
+        blocked_data = {
+            "priority": "normal", "stage": "validation", "health": "on_track", "status": "active", "category": "Research",
+            "objective": "Ship", "nextStep": "Validate", "blocker": "Waiting for reference data",
+        }
+        with patch.object(APP, "save_json"):
+            saved = APP.MainWindow.update_project_management(window, project, blocked_data, notify=True)
+        self.assertEqual(saved["health"], "blocked")
+        self.assertTrue(saved["blockedAt"])
+        self.assertEqual(project["blockedAt"], saved["blockedAt"])
+        self.assertEqual(window.project_decisions[-1]["blockerLifecycle"]["action"], "started")
+
+        resolved_data = {**blocked_data, "health": "on_track", "blocker": ""}
+        with patch.object(APP, "save_json"):
+            saved = APP.MainWindow.update_project_management(window, project, resolved_data, notify=True)
+        self.assertNotIn("blockedAt", saved)
+        self.assertEqual(saved["lastResolvedBlocker"], "Waiting for reference data")
+        self.assertTrue(saved["lastBlockerResolvedAt"])
+        self.assertEqual(window.project_decisions[-1]["blockerLifecycle"]["action"], "resolved")
+
     def test_completed_project_is_closed_as_one_coherent_decision(self):
         normalized, notes = APP.normalize_project_management_decision(
             {"status": "active"},

@@ -62,6 +62,13 @@ PROJECT_DECISION_SOURCES = {
     "closeout": "项目收尾",
 }
 PROJECT_GOVERNANCE_FIELD_ORDER = ("objective", "nextStep", "blocker", "stage", "health")
+PROJECT_BLOCKER_LIFECYCLE_FIELDS = (
+    "blockedAt",
+    "blockerUpdatedAt",
+    "blockedAtEstimated",
+    "lastResolvedBlocker",
+    "lastBlockerResolvedAt",
+)
 
 
 def archive_project_layout(layout, project_id):
@@ -454,6 +461,94 @@ def normalized_decision_value(value):
     return " ".join(str(value or "").split())
 
 
+def reconcile_project_blocker_lifecycle(current, project, occurred_at):
+    """Mutate derived blocker timing metadata without resetting continuous age.
+
+    The blocker text remains the human decision. Timing fields are derived from
+    that decision so callers cannot accidentally create a blocked project with
+    no reason or silently lose the start of an ongoing block.
+    """
+    if not isinstance(project, dict):
+        return None
+    current = current or {}
+    previous = normalized_decision_value(current.get("blocker"))
+    blocker = normalized_decision_value(project.get("blocker"))
+    at = str(occurred_at or "")
+    for field in ("lastResolvedBlocker", "lastBlockerResolvedAt"):
+        if field in current and field not in project:
+            project[field] = current.get(field)
+    if blocker:
+        project["blocker"] = blocker
+        if previous:
+            started_at = str(current.get("blockedAt") or "")
+            project["blockedAt"] = started_at or at
+            if started_at:
+                if current.get("blockedAtEstimated"):
+                    project["blockedAtEstimated"] = True
+                else:
+                    project.pop("blockedAtEstimated", None)
+            else:
+                project["blockedAtEstimated"] = True
+            if normalized_decision_value(previous) != normalized_decision_value(blocker):
+                project["blockerUpdatedAt"] = at
+                return {"action": "updated", "previous": previous, "blocker": blocker, "at": at}
+            if current.get("blockerUpdatedAt"):
+                project["blockerUpdatedAt"] = current.get("blockerUpdatedAt")
+            elif not started_at:
+                project["blockerUpdatedAt"] = at
+                return {"action": "confirmed", "previous": previous, "blocker": blocker, "at": at}
+            return None
+        project["blockedAt"] = at
+        project["blockerUpdatedAt"] = at
+        project.pop("blockedAtEstimated", None)
+        return {"action": "started", "previous": "", "blocker": blocker, "at": at}
+    project["blocker"] = ""
+    for field in ("blockedAt", "blockerUpdatedAt", "blockedAtEstimated"):
+        project.pop(field, None)
+    if previous:
+        project["lastResolvedBlocker"] = previous
+        project["lastBlockerResolvedAt"] = at
+        return {"action": "resolved", "previous": previous, "blocker": "", "at": at}
+    return None
+
+
+def project_blocker_age_seconds(project, now=None):
+    """Return elapsed blocker age, or None when active blocker timing is unknown."""
+    project = project or {}
+    if not normalized_decision_value(project.get("blocker")):
+        return None
+    blocked_at = normalized_decision_value(project.get("blockedAt"))
+    if not blocked_at:
+        return None
+    try:
+        started = datetime.fromisoformat(blocked_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    current = now or datetime.now(tz=started.tzinfo)
+    if isinstance(current, str):
+        try:
+            current = datetime.fromisoformat(current.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if started.tzinfo is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=started.tzinfo)
+    elif started.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    return max(0, int((current - started).total_seconds()))
+
+
+def project_blocker_duration_label(project, now=None):
+    """Format blocker age for compact portfolio and workbench surfaces."""
+    seconds = project_blocker_age_seconds(project, now)
+    if seconds is None:
+        return "时长未知"
+    if seconds < 3600:
+        return "不足 1 小时"
+    if seconds < 86400:
+        return f"{max(1, seconds // 3600)} 小时"
+    return f"{max(1, seconds // 86400)} 天"
+
+
 def project_governance_gaps(project):
     """Return only project-control fields that genuinely need a decision.
 
@@ -604,7 +699,7 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
     if not changes:
         return None
     stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
-    return {
+    entry = {
         "id": entry_id or str(uuid.uuid4()),
         "projectId": stable_project_id,
         "projectName": str((project or {}).get("name") or "未命名项目"),
@@ -612,6 +707,22 @@ def build_project_decision_entry(project, before, after, source, occurred_at, en
         "source": source if source in PROJECT_DECISION_SOURCES else "manual",
         "changes": changes,
     }
+    blocker_change = next((change for change in changes if change.get("field") == "blocker"), None)
+    if blocker_change:
+        previous = normalized_decision_value(blocker_change.get("before"))
+        blocker = normalized_decision_value(blocker_change.get("after"))
+        if blocker and not previous:
+            action, duration = "started", "不足 1 小时"
+        elif blocker:
+            action, duration = "updated", project_blocker_duration_label(after, occurred_at)
+        else:
+            action, duration = "resolved", project_blocker_duration_label(before, occurred_at)
+        entry["blockerLifecycle"] = {
+            "action": action,
+            "blockedAt": str((after or {}).get("blockedAt") or (before or {}).get("blockedAt") or ""),
+            "duration": duration,
+        }
+    return entry
 
 
 def build_project_review_entry(project, occurred_at, entry_id=None):
@@ -683,6 +794,11 @@ def build_project_lifecycle_entry(project, action, occurred_at, entry_id=None):
             "objective": normalized_decision_value((project or {}).get("objective")),
             "nextStep": normalized_decision_value((project or {}).get("nextStep")),
             "blocker": normalized_decision_value((project or {}).get("blocker")),
+            "blockedAt": str((project or {}).get("blockedAt") or ""),
+            "blockerUpdatedAt": str((project or {}).get("blockerUpdatedAt") or ""),
+            "blockedAtEstimated": bool((project or {}).get("blockedAtEstimated")),
+            "lastResolvedBlocker": normalized_decision_value((project or {}).get("lastResolvedBlocker")),
+            "lastBlockerResolvedAt": str((project or {}).get("lastBlockerResolvedAt") or ""),
             "completionSummary": normalized_decision_value((project or {}).get("completionSummary")),
             "completedAt": str((project or {}).get("completedAt") or ""),
         },
@@ -749,7 +865,12 @@ def format_project_decision_summary(entry, max_changes=2):
         if normalized_decision_value(snapshot.get("completionSummary")):
             context = f"成果：{completion}"
         else:
-            context = f"阻塞：{blocker}" if normalized_decision_value(snapshot.get("blocker")) else f"下一步：{next_step}"
+            if normalized_decision_value(snapshot.get("blocker")):
+                duration = project_blocker_duration_label(snapshot, (entry or {}).get("at"))
+                estimate = "（从确认起）" if snapshot.get("blockedAtEstimated") else ""
+                context = f"阻塞 {duration}{estimate}：{blocker}"
+            else:
+                context = f"下一步：{next_step}"
         return f"归档项目 · {status} / {stage}阶段 · {context}"
     if (entry or {}).get("kind") == "closeout":
         snapshot = (entry or {}).get("snapshot") or {}
@@ -769,7 +890,17 @@ def format_project_decision_summary(entry, max_changes=2):
     ]
     if len(changes) > max_changes:
         parts.append(f"另 {len(changes) - max_changes} 项")
-    return "；".join(parts) if parts else "没有字段变化"
+    summary = "；".join(parts) if parts else "没有字段变化"
+    blocker_lifecycle = (entry or {}).get("blockerLifecycle") or {}
+    action = blocker_lifecycle.get("action")
+    duration = str(blocker_lifecycle.get("duration") or "时长未知")
+    if action == "started":
+        summary += " · 阻塞计时开始"
+    elif action == "updated":
+        summary += f" · 阻塞已持续 {duration}，计时未重置"
+    elif action == "resolved":
+        summary += f" · 阻塞已解除，持续 {duration}"
+    return summary
 
 
 def format_project_decision_time(value, compact=False):

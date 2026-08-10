@@ -101,6 +101,57 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertIn("重新打开", management.format_project_decision_summary(reopened))
         self.assertIsNone(management.build_project_closeout_entry(project, "archive", "Result", "2026-08-10T14:00:00"))
 
+    def test_blocker_lifecycle_preserves_continuous_age_and_records_resolution(self):
+        project = {"status": "active", "blocker": "Waiting for calibration"}
+        started = management.reconcile_project_blocker_lifecycle(
+            {"status": "active", "blocker": ""}, project, "2026-08-10T09:00:00"
+        )
+        self.assertEqual(started["action"], "started")
+        self.assertEqual(project["blockedAt"], "2026-08-10T09:00:00")
+        self.assertNotIn("blockedAtEstimated", project)
+
+        revised = {**project, "blocker": "Waiting for calibrated reference"}
+        updated = management.reconcile_project_blocker_lifecycle(
+            project, revised, "2026-08-10T11:00:00"
+        )
+        self.assertEqual(updated["action"], "updated")
+        self.assertEqual(revised["blockedAt"], "2026-08-10T09:00:00")
+        self.assertEqual(revised["blockerUpdatedAt"], "2026-08-10T11:00:00")
+
+        resolved = {**revised, "blocker": ""}
+        event = management.reconcile_project_blocker_lifecycle(
+            revised, resolved, "2026-08-10T14:00:00"
+        )
+        self.assertEqual(event["action"], "resolved")
+        self.assertNotIn("blockedAt", resolved)
+        self.assertEqual(resolved["lastResolvedBlocker"], "Waiting for calibrated reference")
+        self.assertEqual(resolved["lastBlockerResolvedAt"], "2026-08-10T14:00:00")
+
+    def test_legacy_blocker_timing_is_marked_as_estimated_from_confirmation(self):
+        legacy = {"status": "active", "blocker": "External dependency"}
+        target = dict(legacy)
+        event = management.reconcile_project_blocker_lifecycle(
+            legacy, target, "2026-08-10T09:00:00"
+        )
+        self.assertEqual(event["action"], "confirmed")
+        self.assertTrue(target["blockedAtEstimated"])
+        self.assertEqual(target["blockedAt"], "2026-08-10T09:00:00")
+
+    def test_blocker_duration_label_uses_hours_then_days(self):
+        project = {"blocker": "Dependency unavailable", "blockedAt": "2026-08-10T09:00:00"}
+        self.assertEqual(
+            management.project_blocker_duration_label(project, datetime(2026, 8, 10, 9, 30)),
+            "不足 1 小时",
+        )
+        self.assertEqual(
+            management.project_blocker_duration_label(project, datetime(2026, 8, 10, 14, 0)),
+            "5 小时",
+        )
+        self.assertEqual(
+            management.project_blocker_duration_label(project, datetime(2026, 8, 12, 10, 0)),
+            "2 天",
+        )
+
     def test_task_archive_round_trip_preserves_status_and_transition_history(self):
         task = {
             "id": "task-1",
@@ -342,6 +393,29 @@ class ManagementModuleTests(unittest.TestCase):
         after = {"objective": " Validate the model ", "health": "attention"}
         changes = management.project_decision_changes(before, after)
         self.assertEqual([change["field"] for change in changes], ["health"])
+
+    def test_blocker_decision_history_explains_start_update_and_resolution(self):
+        project = {"id": "stable", "name": "Release"}
+        started_after = {"blocker": "Waiting for input", "blockedAt": "2026-08-10T09:00:00"}
+        started = management.build_project_decision_entry(
+            project, {"blocker": ""}, started_after, "editor", "2026-08-10T09:00:00", "start"
+        )
+        self.assertEqual(started["blockerLifecycle"]["action"], "started")
+        self.assertIn("阻塞计时开始", management.format_project_decision_summary(started))
+
+        updated_after = {"blocker": "Waiting for verified input", "blockedAt": "2026-08-10T09:00:00"}
+        updated = management.build_project_decision_entry(
+            project, started_after, updated_after, "editor", "2026-08-10T11:00:00", "update"
+        )
+        self.assertEqual(updated["blockerLifecycle"]["duration"], "2 小时")
+        self.assertIn("计时未重置", management.format_project_decision_summary(updated))
+
+        resolved = management.build_project_decision_entry(
+            project, updated_after, {"blocker": ""}, "editor", "2026-08-11T11:00:00", "resolve"
+        )
+        self.assertEqual(resolved["blockerLifecycle"]["action"], "resolved")
+        self.assertEqual(resolved["blockerLifecycle"]["duration"], "1 天")
+        self.assertIn("阻塞已解除", management.format_project_decision_summary(resolved))
 
     def test_decision_rollback_is_selective_and_detects_newer_changes(self):
         project = {"objective": "Validated model", "health": "blocked", "nextStep": "Publish report"}
