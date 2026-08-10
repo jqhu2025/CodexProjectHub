@@ -191,7 +191,9 @@ CodexProjectHub/
 ├─ app_qt.pyw
 ├─ assets/
 ├─ codex_hub/
-│  └─ runtime.py
+│  ├─ management.py
+│  ├─ runtime.py
+│  └─ desktop_bridge.py
 ├─ data/
 ├─ docs/images/
 ├─ tests/
@@ -208,7 +210,7 @@ python -m py_compile app_qt.pyw
 python -m unittest discover -s tests -v
 ```
 
-Codex session discovery and state classification are isolated in `codex_hub/runtime.py`. Unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory.
+Project decisions, task transitions, daily rollover, and next-action handoffs are isolated in the Qt-independent `codex_hub/management.py` domain module. Codex session discovery and state classification live in `codex_hub/runtime.py`; unchanged session-log tails are cached, and periodic refreshes use indexed user threads instead of recursively scanning the complete Codex session directory. Desktop deep-link handling is separated in `codex_hub/desktop_bridge.py`.
 
 The application currently targets Windows and the local storage format used by Codex Desktop. A Codex update may require adjustments to the local metadata readers.
 
