@@ -1028,14 +1028,20 @@ def project_priority_key(project):
     return value if value in PROJECT_PRIORITY else "normal"
 
 
-def find_open_project_next_step_task(tasks, project, title, target_date):
+def find_open_project_next_step_task(tasks, project, title):
+    """Return the one current open work item for a declared project action.
+
+    A project next step is a portfolio decision, not a per-day template. Search
+    across dates and ignore rollover predecessors so scheduling or restoring
+    cannot create a second live copy of the same action.
+    """
     expected = normalized_action_text(title)
     return next(
         (
             task for task in tasks
             if task_matches_project(task, project)
             and not task_is_archived(task)
-            and str(task.get("date") or "") == str(target_date or "")
+            and not task_is_superseded_daily_record(task)
             and task.get("status", "planned") != "done"
             and normalized_action_text(task.get("title")) == expected
         ),
@@ -5957,10 +5963,10 @@ class MainWindow(QMainWindow):
 
     def restore_archived_task(self, task):
         stored = next((item for item in self.today_tasks if item.get("id") == (task or {}).get("id")), None)
-        if (stored or {}).get("origin") == "project_next_step":
+        if (stored or {}).get("origin") == "project_next_step" and not task_is_superseded_daily_record(stored):
             project = self.project_by_id(stored.get("projectId"))
             title = str(stored.get("projectNextStep") or stored.get("title") or "").strip()
-            existing = find_open_project_next_step_task(self.today_tasks, project, title, stored.get("date")) if project else None
+            existing = find_open_project_next_step_task(self.today_tasks, project, title) if project else None
             if existing is not None and existing.get("id") != stored.get("id"):
                 QMessageBox.information(
                     self,
@@ -6438,9 +6444,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "尚未明确下一步", "请先在项目面板中填写一个可以直接执行的下一步。")
             return None
         today = QDate.currentDate().toString(Qt.ISODate)
-        existing = find_open_project_next_step_task(self.today_tasks, project, title, today)
+        existing = find_open_project_next_step_task(self.today_tasks, project, title)
         if existing:
-            self.statusBar().showMessage("这个项目下一步已经在今日任务中，无需重复添加", 3500)
+            existing_date = QDate.fromString(str(existing.get("date") or ""), Qt.ISODate)
+            if existing_date.isValid() and hasattr(self, "board_date_field"):
+                self.board_date_field.setDate(existing_date)
+            self.render_today_tasks()
+            date_text = existing_date.toString("yyyy年MM月dd日") if existing_date.isValid() else "任务记录"
+            self.statusBar().showMessage(f"这个项目下一步已存在于 {date_text}，已为你定位", 3800)
             return existing
         conversations = project.get("conversations") or []
         conversation = next((item for item in conversations if codex_state(item)[0] == "running"), None)

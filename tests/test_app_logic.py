@@ -143,14 +143,40 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(task["projectNameSnapshot"], "Release")
         self.assertEqual(task["projectCategorySnapshot"], "Research")
 
-    def test_project_next_step_duplicate_detection_ignores_spacing_and_case(self):
+    def test_project_next_step_duplicate_detection_spans_dates_and_ignores_rollover_history(self):
         project = {"id": "current-id", "savedId": "stable-id"}
-        tasks = [{
-            "projectId": "stable-id", "title": " Run   Validation Set ",
-            "date": "2026-08-10", "status": "doing",
-        }]
-        duplicate = APP.find_open_project_next_step_task(tasks, project, "run validation set", "2026-08-10")
-        self.assertIs(duplicate, tasks[0])
+        tasks = [
+            {
+                "id": "history", "projectId": "stable-id", "title": "Run validation set",
+                "date": "2026-08-09", "status": "doing", "carriedToTaskId": "current",
+            },
+            {
+                "id": "current", "projectId": "stable-id", "title": " Run   Validation Set ",
+                "date": "2026-08-10", "status": "doing", "carriedFromTaskId": "history",
+            },
+        ]
+        duplicate = APP.find_open_project_next_step_task(tasks, project, "run validation set")
+        self.assertIs(duplicate, tasks[1])
+
+    def test_scheduling_an_existing_next_step_navigates_instead_of_duplicating_it(self):
+        project = {"id": "project", "nextStep": "Validate release"}
+        existing = {
+            "id": "existing", "projectId": "project", "title": "Validate release",
+            "date": "2026-08-08", "status": "planned",
+        }
+        date_field = Mock(); status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[existing], board_date_field=date_field,
+            render_today_tasks=Mock(), statusBar=lambda: status_bar,
+        )
+
+        result = APP.MainWindow.schedule_project_next_step(window, project)
+
+        self.assertIs(result, existing)
+        selected_date = date_field.setDate.call_args.args[0]
+        self.assertEqual(selected_date.toString(APP.Qt.ISODate), "2026-08-08")
+        window.render_today_tasks.assert_called_once_with()
+        self.assertIn("已为你定位", status_bar.showMessage.call_args.args[0])
 
     def test_completed_project_next_step_returns_project_to_next_decision(self):
         project = {"nextStep": "Run validation set"}
@@ -1048,7 +1074,7 @@ class TaskStatusHistoryTests(unittest.TestCase):
         }
         active = {
             "id": "new", "title": "Validate release", "origin": "project_next_step",
-            "projectId": "stable", "date": "2026-08-10", "status": "doing",
+            "projectId": "stable", "date": "2026-08-11", "status": "doing",
         }
         project = {"id": "current", "savedId": "stable"}
         window = SimpleNamespace(today_tasks=[archived, active], project_by_id=lambda _project_id: project)
@@ -1057,6 +1083,33 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertFalse(restored)
         self.assertTrue(APP.task_is_archived(archived))
         information.assert_called_once()
+
+    def test_restoring_a_superseded_snapshot_preserves_history_without_duplicating_work(self):
+        archived = {
+            "id": "old", "title": "Validate release", "projectNextStep": "Validate release",
+            "origin": "project_next_step", "projectId": "stable", "date": "2026-08-09",
+            "status": "doing", "archivedAt": "2026-08-10T10:00:00",
+            "carriedToTaskId": "current", "carriedToDate": "2026-08-10",
+        }
+        current = {
+            "id": "current", "title": "Validate release", "origin": "project_next_step",
+            "projectId": "stable", "date": "2026-08-10", "status": "doing",
+            "carriedFromTaskId": "old",
+        }
+        project = {"id": "current-project", "savedId": "stable"}
+        date_field = Mock(); status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[archived, current], project_by_id=lambda _project_id: project,
+            board_date_field=date_field, sync_project_workload=Mock(), render_today_tasks=Mock(),
+            render=Mock(), statusBar=lambda: status_bar, view_signature=None,
+        )
+        with patch.object(APP, "save_json"):
+            restored = APP.MainWindow.restore_archived_task(window, archived)
+
+        self.assertTrue(restored)
+        self.assertFalse(APP.task_is_archived(archived))
+        self.assertTrue(APP.task_is_superseded_daily_record(archived))
+        self.assertEqual(APP.open_project_tasks(window.today_tasks, project), [current])
 
     def test_undo_reenters_the_status_engine_and_rejects_stale_transitions(self):
         event = {"at": "2026-08-10T10:00:00", "from": "doing", "to": "done", "source": "drag"}
