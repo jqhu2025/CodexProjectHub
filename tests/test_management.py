@@ -326,6 +326,20 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(management.task_status_events([task])[0]["source"], "legacy")
         self.assertEqual(management.task_schedule_events([task])[0]["source"], "editor")
 
+    def test_missing_completion_evidence_only_includes_current_unverified_work(self):
+        tasks = [
+            {"id": "recent", "title": "Recent", "date": "2026-08-10", "status": "done", "updatedAt": "2026-08-10T11:00:00"},
+            {"id": "older", "title": "Older", "date": "2026-08-08", "status": "done", "updatedAt": "2026-08-08T11:00:00"},
+            {"id": "verified", "date": "2026-08-10", "status": "done", "completionNote": "Passed all checks."},
+            {"id": "doing", "date": "2026-08-10", "status": "doing"},
+            {"id": "archived", "date": "2026-08-10", "status": "done", "archivedAt": "2026-08-10T12:00:00"},
+            {"id": "snapshot", "date": "2026-08-09", "status": "done", "carriedToTaskId": "current"},
+        ]
+
+        result = management.tasks_missing_completion_outcomes(tasks)
+
+        self.assertEqual([task["id"] for task in result], ["recent", "older"])
+
     def test_task_board_legacy_order_is_stable_until_user_reorders(self):
         tasks = [
             {"id": "later", "date": "2026-08-10", "status": "doing", "createdAt": "2026-08-10T10:00:00"},

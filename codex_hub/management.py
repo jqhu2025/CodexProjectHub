@@ -183,6 +183,29 @@ def task_completion_outcome(task):
     return str(task.get("completionNote") or "").strip()
 
 
+def tasks_missing_completion_outcomes(tasks):
+    """Return current completed work that still lacks human-confirmed evidence."""
+
+    missing = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        if task_is_archived(task) or task_is_superseded_daily_record(task):
+            continue
+        if task.get("status") != "done" or task_completion_outcome(task):
+            continue
+        missing.append(task)
+    return sorted(
+        missing,
+        key=lambda task: (
+            str(task.get("date") or ""),
+            str(task.get("updatedAt") or task.get("createdAt") or ""),
+            str(task.get("title") or "").casefold(),
+        ),
+        reverse=True,
+    )
+
+
 def record_task_completion_outcome(task, outcome, occurred_at, source="manual"):
     """Store a completed task's outcome and retain every real outcome revision."""
     if not isinstance(task, dict) or task.get("status") != "done":

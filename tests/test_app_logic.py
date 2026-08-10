@@ -49,6 +49,7 @@ class GlobalCommandPaletteTests(unittest.TestCase):
             open_project_workspace=Mock(), show_task_audit=Mock(), open_codex_conversation=Mock(),
             new_today_task=Mock(), edit_project=Mock(), show_task_history=Mock(), refresh=Mock(),
             select_section=Mock(), show_running_conversations=Mock(), show_planning_backlog=Mock(),
+            show_completion_evidence_queue=Mock(),
         )
 
     def test_project_task_and_conversation_results_return_to_existing_workflows(self):
@@ -85,9 +86,20 @@ class GlobalCommandPaletteTests(unittest.TestCase):
         self.assertTrue(handled)
         window.show_planning_backlog.assert_called_once_with()
 
+    def test_completion_evidence_action_opens_the_review_queue(self):
+        window = self.command_window()
+
+        handled = APP.MainWindow.execute_command_entry(
+            window, {"kind": "action", "payload": {"action": "completion_evidence"}}
+        )
+
+        self.assertTrue(handled)
+        window.show_completion_evidence_queue.assert_called_once_with()
+
     def test_command_catalog_surfaces_planning_backlog_only_when_actionable(self):
         window = SimpleNamespace(
             running_count=0,
+            completion_evidence_queue=lambda: [],
             planning_backlog=lambda: [{"id": "task-1", "title": "Validate", "date": "2026-08-08"}],
             projects=[],
             today_tasks=[],
@@ -99,6 +111,11 @@ class GlobalCommandPaletteTests(unittest.TestCase):
         backlog = next(entry for entry in entries if entry.get("key") == "action:plan_backlog")
         self.assertIn("1 项", backlog["subtitle"])
         self.assertEqual(backlog["payload"]["action"], "plan_backlog")
+
+        window.completion_evidence_queue = lambda: [{"id": "done", "title": "Delivered", "status": "done"}]
+        entries = APP.MainWindow.command_catalog(window)
+        evidence = next(entry for entry in entries if entry.get("key") == "action:completion_evidence")
+        self.assertIn("1 项", evidence["subtitle"])
 
     def test_unknown_command_is_safely_ignored(self):
         window = self.command_window()
@@ -917,6 +934,13 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual(alignment_decision["scope"], "alignment")
         self.assertEqual(alignment_decision["secondary"], "生命周期 1")
         backlog = [{"title": "Recheck experiment", "date": "2026-08-07"}]
+        completion = [{"title": "Publish validation result", "date": "2026-08-08"}]
+        completion_decision = APP.portfolio_priority_decision(
+            groups, capacity, [], [lifecycle], overdue_tasks=backlog, completion_tasks=completion
+        )
+        self.assertEqual(completion_decision["scope"], "completion_evidence")
+        self.assertIn("可验证结果", completion_decision["summary"])
+        self.assertEqual(completion_decision["secondary"], "生命周期 1 · 待安排计划 1")
         backlog_decision = APP.portfolio_priority_decision(
             groups, capacity, [], [lifecycle], overdue_tasks=backlog
         )
@@ -958,6 +982,11 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         window.show_planning_backlog = Mock()
         APP.MainWindow.open_portfolio_priority_decision(window)
         window.show_planning_backlog.assert_called_once_with()
+
+        window._portfolio_priority_scope = "completion_evidence"
+        window.show_completion_evidence_queue = Mock()
+        APP.MainWindow.open_portfolio_priority_decision(window)
+        window.show_completion_evidence_queue.assert_called_once_with()
 
         window._portfolio_priority_scope = "review"
         APP.MainWindow.open_portfolio_priority_decision(window)
@@ -1582,6 +1611,26 @@ class TaskStatusHistoryTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(task["status"], "doing")
         self.assertEqual(task["statusHistory"][-1]["source"], "drag")
+        window.offer_task_undo.assert_called_once()
+
+    def test_completing_without_an_outcome_keeps_status_but_requests_evidence(self):
+        task = {"id": "task-1", "title": "Validate release", "date": "2026-08-10", "status": "doing"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[task],
+            complete_project_next_step=Mock(return_value=False),
+            reopen_project_next_step=Mock(return_value=False),
+            sync_project_workload=Mock(), render_today_tasks=Mock(), render=Mock(),
+            statusBar=lambda: status_bar, offer_task_undo=Mock(), view_signature=None,
+        )
+
+        with patch.object(APP, "save_json"):
+            changed = APP.MainWindow.set_task_status(window, "task-1", "done", source="selector")
+
+        self.assertTrue(changed)
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(APP.tasks_missing_completion_outcomes([task]), [task])
+        self.assertIn("记录实际成果", status_bar.showMessage.call_args.args[0])
         window.offer_task_undo.assert_called_once()
 
     def test_same_column_drag_changes_priority_without_faking_a_status_event(self):

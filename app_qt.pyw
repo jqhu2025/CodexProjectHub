@@ -88,6 +88,7 @@ from codex_hub.management import (
     task_is_superseded_daily_record,
     task_completion_outcome,
     task_completion_revisions,
+    tasks_missing_completion_outcomes,
 )
 from codex_hub.navigation import build_navigation_entries, search_navigation_entries
 from codex_hub.portfolio import (
@@ -1239,7 +1240,7 @@ def portfolio_decision_groups(projects):
     }
 
 
-def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None, focus_commitments=None, overdue_tasks=None):
+def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecycle_items=None, wip_state=None, focus_commitments=None, overdue_tasks=None, completion_tasks=None):
     """Choose one calm, evidence-based management decision from competing queues."""
     groups = groups or {}
     capacity_state = capacity_state or {}
@@ -1248,6 +1249,7 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
     wip_state = wip_state or {}
     focus_commitments = list(focus_commitments or [])
     overdue_tasks = list(overdue_tasks or [])
+    completion_tasks = list(completion_tasks or [])
 
     def names_for(items, nested=False):
         projects = [(item.get("project") or {}) if nested else item for item in items]
@@ -1267,6 +1269,8 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             secondary.append(f"重点落地 {len(focus_commitments)}")
         if overdue_tasks and decision["scope"] != "plan_backlog":
             secondary.append(f"待安排计划 {len(overdue_tasks)}")
+        if completion_tasks and decision["scope"] != "completion_evidence":
+            secondary.append(f"待补成果 {len(completion_tasks)}")
         decision["secondary"] = " · ".join(secondary)
         return decision
 
@@ -1298,6 +1302,14 @@ def portfolio_priority_decision(groups, capacity_state, alignments=None, lifecyc
             "scope": "alignment", "count": len(alignments), "title": "校准实际执行方向",
             "summary": f"今日执行与项目已保存的下一步不一致：{preview(names)}",
             "names": names, "action": "逐项校准",
+        })
+
+    if completion_tasks:
+        names = [str(task.get("title") or "未命名任务") for task in completion_tasks]
+        return finalize({
+            "scope": "completion_evidence", "count": len(completion_tasks), "title": "补齐任务完成成果",
+            "summary": f"这些任务已结束，但日报和项目交接仍缺少可验证结果：{preview(names)}",
+            "names": names, "action": "逐项补录",
         })
 
     if overdue_tasks:
@@ -4209,6 +4221,98 @@ class PlanningBacklogDialog(QDialog):
         self.render_tasks()
 
 
+class TaskCompletionEvidenceDialog(QDialog):
+    """Close the gap between a completed status and a verifiable result."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.window = parent
+        self.setWindowTitle("任务完成成果待补录")
+        self.setObjectName("completionEvidenceDialog")
+        self.setMinimumSize(760, 520)
+        self.resize(820, 620)
+        self.setStyleSheet(STYLE + """
+            QDialog#completionEvidenceDialog { background: #f5f7fb; }
+            QFrame#completionEvidenceHero { background: #f3faf7; border: 1px solid #c9e3d6; border-radius: 13px; }
+            QFrame#completionEvidenceRow { background: #ffffff; border: 1px solid #dce4ee; border-left: 4px solid #2f8f68; border-radius: 10px; }
+            QFrame#completionEvidenceRow:hover { border-color: #a8d2be; background: #fbfefc; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE73E", color="#176b4d", size=21).pixmap(QSize(21, 21)))
+        icon.setStyleSheet("background: #e2f3ea; border: 1px solid #c9e3d6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("补齐已完成任务的实际成果"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel("完成状态保留不变；补充一句交付、结果或验证，日报与项目交接才会把它作为成果引用")
+        subtitle.setWordWrap(True); subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
+        self.count = QLabel(); self.count.setAlignment(Qt.AlignCenter); self.count.setFixedHeight(30)
+        self.count.setStyleSheet("color: #176b4d; background: #e8f6ef; border: 1px solid #c9e3d6; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 700;"); heading.addWidget(self.count)
+        root.addLayout(heading)
+
+        hero = QFrame(); hero.setObjectName("completionEvidenceHero")
+        hero_layout = QHBoxLayout(hero); hero_layout.setContentsMargins(14, 10, 14, 10); hero_layout.setSpacing(9)
+        hero_icon = QLabel(); hero_icon.setFixedSize(26, 26); hero_icon.setAlignment(Qt.AlignCenter)
+        hero_icon.setPixmap(fluent_icon("\uE946", color="#176b4d", size=14).pixmap(QSize(14, 14))); hero_layout.addWidget(hero_icon)
+        guidance = QLabel("系统不会替你编造成果。请记录已经发生的结果；如果任务其实尚未结束，可打开编辑并恢复为进行中。")
+        guidance.setWordWrap(True); guidance.setStyleSheet("color: #365f4e; font-size: 11px;"); hero_layout.addWidget(guidance, 1); root.addWidget(hero)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        self.rows_widget = QWidget(); self.rows_widget.setObjectName("completionEvidenceRows")
+        self.rows_widget.setStyleSheet("QWidget#completionEvidenceRows { background: #f7f9fc; }")
+        self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
+        scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
+        actions = QHBoxLayout(); actions.addStretch()
+        close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        self.render_tasks()
+
+    def render_tasks(self):
+        MainWindow._clear_layout(self.rows_layout)
+        tasks = self.window.completion_evidence_queue()
+        self.count.setText(f"{len(tasks)} 项待补录")
+        if not tasks:
+            empty = QWidget(); empty_layout = QVBoxLayout(empty); empty_layout.setAlignment(Qt.AlignCenter)
+            icon = QLabel(); icon.setAlignment(Qt.AlignCenter); icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); empty_layout.addWidget(icon)
+            text = QLabel("完成成果已经补齐"); text.setAlignment(Qt.AlignCenter); text.setStyleSheet("color: #34445c; font-size: 14px; font-weight: 650; margin-top: 8px;"); empty_layout.addWidget(text)
+            detail = QLabel("日报和项目交接可以引用这些人工确认的结果"); detail.setAlignment(Qt.AlignCenter); detail.setStyleSheet("color: #748094; font-size: 11px;"); empty_layout.addWidget(detail)
+            self.rows_layout.addWidget(empty, 1); return
+        for task in tasks:
+            self.rows_layout.addWidget(self.task_row(task))
+        self.rows_layout.addStretch()
+
+    def task_row(self, task):
+        row = QFrame(); row.setObjectName("completionEvidenceRow"); row.setMinimumHeight(74)
+        layout = QHBoxLayout(row); layout.setContentsMargins(14, 10, 10, 10); layout.setSpacing(11)
+        text = QVBoxLayout(); text.setSpacing(3)
+        title_text = str(task.get("title") or "未命名任务")
+        title = ElidedLabel(title_text); title.setToolTip(title_text); title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); text.addWidget(title)
+        project = self.window.project_by_id(task.get("projectId")) or {}
+        task_date = QDate.fromString(str(task.get("date") or ""), Qt.ISODate)
+        date_text = task_date.toString("yyyy年MM月dd日") if task_date.isValid() else str(task.get("date") or "日期未知")
+        meta_text = f"{task_project_identity(task, project)['name']}  ·  完成日期 {date_text}"
+        meta = ElidedLabel(meta_text); meta.setToolTip(meta_text); meta.setStyleSheet("color: #66758a; font-size: 10px;"); text.addWidget(meta)
+        notes_text = str(task.get("notes") or "尚无计划说明").replace("\n", " ")
+        notes = ElidedLabel(f"原计划 · {notes_text}"); notes.setToolTip(notes_text); notes.setStyleSheet("color: #7a8798; font-size: 10px;"); text.addWidget(notes); layout.addLayout(text, 1)
+        view = QToolButton(); view.setFixedSize(34, 34); view.setIcon(fluent_icon("\uE81C", color="#315f9b", size=14)); view.setIconSize(QSize(14, 14)); view.setToolTip("查看任务档案")
+        view.clicked.connect(lambda _checked=False, value=task: self.window.show_task_audit(value)); layout.addWidget(view)
+        edit = QPushButton("编辑任务"); edit.setFixedSize(76, 34); edit.setToolTip("任务若尚未结束，可恢复为计划或进行中")
+        edit.clicked.connect(lambda _checked=False, value=task: self.edit_task(value)); layout.addWidget(edit)
+        record = QPushButton("记录成果"); record.setFixedSize(94, 34); record.setIcon(fluent_icon("\uE73E", color="#176b4d", size=13)); record.setIconSize(QSize(13, 13))
+        record.setStyleSheet("QPushButton { color: #176b4d; background: #eef9f3; border: 1px solid #abd6c1; border-radius: 8px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #e1f3e9; border-color: #79bc9d; }")
+        record.clicked.connect(lambda _checked=False, value=task: self.record_outcome(value)); layout.addWidget(record)
+        return row
+
+    def record_outcome(self, task):
+        if self.window.edit_task_outcome(task):
+            self.render_tasks()
+
+    def edit_task(self, task):
+        self.window.edit_today_task(task)
+        self.render_tasks()
+
+
 class LifecycleCalibrationDialog(QDialog):
     """Review quiet active projects one at a time without auto-pausing anything."""
     def __init__(self, parent, queue_items):
@@ -5997,6 +6101,8 @@ class MainWindow(QMainWindow):
         scope = str(getattr(self, "_portfolio_priority_scope", "") or "")
         if scope == "task_wip":
             self.show_task_wip()
+        elif scope == "completion_evidence":
+            self.show_completion_evidence_queue()
         elif scope == "plan_backlog":
             self.show_planning_backlog()
         elif scope == "alignment":
@@ -6095,9 +6201,11 @@ class MainWindow(QMainWindow):
             lifecycle_items = self.lifecycle_calibration_queue()
             wip_state = self.task_wip_state(QDate.currentDate().toString(Qt.ISODate))
             overdue_tasks = self.planning_backlog()
+            completion_tasks = self.completion_evidence_queue()
             decision = portfolio_priority_decision(
                 groups, capacity_state, alignments, lifecycle_items,
-                wip_state=wip_state, focus_commitments=focus_commitments, overdue_tasks=overdue_tasks,
+                wip_state=wip_state, focus_commitments=focus_commitments,
+                overdue_tasks=overdue_tasks, completion_tasks=completion_tasks,
             )
             self.portfolio_priority_panel.setVisible(decision is not None)
             self._portfolio_priority_scope = (decision or {}).get("scope", "")
@@ -6106,6 +6214,7 @@ class MainWindow(QMainWindow):
                 palette = {
                     "attention": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE7BA"),
                     "task_wip": ("#b54708", "#fff8ed", "#efd7b4", "#f8e7cd", "\uE8EF"),
+                    "completion_evidence": ("#176b4d", "#f3faf7", "#c9e3d6", "#e2f3ea", "\uE73E"),
                     "plan_backlog": ("#9a6700", "#fffaf0", "#ead7ad", "#f7ebcf", "\uE787"),
                     "alignment": ("#1d4ed8", "#f5f8ff", "#c9d8ee", "#e7effc", "\uE8A7"),
                     "needs_next": ("#6d3fc0", "#f8f5ff", "#ded2f4", "#eee7fb", "\uE72A"),
@@ -6272,6 +6381,16 @@ class MainWindow(QMainWindow):
     def show_running_conversations(self):
         RunningConversationsDialog(self, self.running_conversations()).exec_()
 
+    def completion_evidence_queue(self):
+        return tasks_missing_completion_outcomes(self.today_tasks)
+
+    def show_completion_evidence_queue(self):
+        tasks = self.completion_evidence_queue()
+        if not tasks:
+            QMessageBox.information(self, "成果已完整", "当前已完成任务都有可引用的实际成果。")
+            return
+        TaskCompletionEvidenceDialog(self).exec_()
+
     @staticmethod
     def _command_action(action, title, subtitle, keywords, priority, order):
         return {
@@ -6299,11 +6418,17 @@ class MainWindow(QMainWindow):
                 "running", "查看运行中的 Codex 对话", f"当前有 {self.running_count} 个对话正在执行",
                 "运行 工作区", 8, 6,
             ))
+        completion_count = len(self.completion_evidence_queue())
+        if completion_count:
+            actions.append(self._command_action(
+                "completion_evidence", "补齐任务完成成果", f"{completion_count} 项已完成任务尚无可验证结果",
+                "成果 结果 交付 验证 补录", 6, 7,
+            ))
         backlog_count = len(self.planning_backlog())
         if backlog_count:
             actions.append(self._command_action(
                 "plan_backlog", "重新安排历史计划", f"{backlog_count} 项未启动计划需要确认日期",
-                "改期 遗留 过期 计划债务", 7, 7,
+                "改期 遗留 过期 计划债务", 7, 8,
             ))
         today = QDate.currentDate().toString(Qt.ISODate)
         return actions + build_navigation_entries(self.projects, active_task_records(self.today_tasks), today=today)
@@ -6335,6 +6460,7 @@ class MainWindow(QMainWindow):
             "home": lambda: self.select_section("home"),
             "projects": lambda: self.select_section("projects"),
             "running": self.show_running_conversations,
+            "completion_evidence": self.show_completion_evidence_queue,
             "plan_backlog": self.show_planning_backlog,
         }
         handler = handlers.get(action)
@@ -7081,7 +7207,10 @@ class MainWindow(QMainWindow):
         if completed_handoff or reopened_handoff:
             self.view_signature = None
             self.refresh(silent=True, scan=False)
-            message = "任务已完成；项目已回到“需要下一步”，请明确后续动作" if completed_handoff else "任务已重新打开；项目下一步已同步恢复"
+            if completed_handoff:
+                message = "任务已完成，成果待补录；项目已回到“需要下一步”" if not task_completion_outcome(task) else "任务已完成；项目已回到“需要下一步”，请明确后续动作"
+            else:
+                message = "任务已重新打开；项目下一步已同步恢复"
             self.statusBar().showMessage(message, 4500)
         else:
             self.sync_project_workload(); self.view_signature = None
@@ -7091,7 +7220,10 @@ class MainWindow(QMainWindow):
         if dialog.codex_requested and not completed_handoff and not reopened_handoff:
             self.plan_task_in_codex(task)
         elif not completed_handoff and not reopened_handoff:
-            message = "任务与完成成果已保存" if outcome_changed and current_status == "done" else "今日任务已保存"
+            if current_status == "done" and not task_completion_outcome(task):
+                message = "任务已保存；完成成果待补录"
+            else:
+                message = "任务与完成成果已保存" if outcome_changed and current_status == "done" else "今日任务已保存"
             self.statusBar().showMessage(message, 3000)
         return task
 
@@ -7128,16 +7260,23 @@ class MainWindow(QMainWindow):
         task["updatedAt"] = now
         completed_handoff = status_changed and previous_status != "done" and status == "done" and self.complete_project_next_step(task, now)
         reopened_handoff = status_changed and previous_status == "done" and status != "done" and self.reopen_project_next_step(task, now, "undo" if source == "undo" else "task_reopen")
+        missing_outcome = status_changed and status == "done" and not task_completion_outcome(task)
         save_json(TASKS_FILE, self.today_tasks)
         if completed_handoff or reopened_handoff:
             self.view_signature = None
             self.refresh(silent=True, scan=False)
-            message = "任务已完成；项目已回到“需要下一步”，请明确后续动作" if completed_handoff else "任务已重新打开；项目下一步已同步恢复"
+            if completed_handoff:
+                message = "任务已完成，成果待补录；项目已回到“需要下一步”" if missing_outcome else "任务已完成；项目已回到“需要下一步”，请明确后续动作"
+            else:
+                message = "任务已重新打开；项目下一步已同步恢复"
             self.statusBar().showMessage(message, 4500)
         elif status_changed:
             self.sync_project_workload(); self.view_signature = None
             self.render_today_tasks(); self.render()
-            self.statusBar().showMessage(f"任务已移至“{TASK_STATUS[status]}”", 2200)
+            if missing_outcome:
+                self.statusBar().showMessage("任务已完成；请记录实际成果，供日报与项目交接引用", 4200)
+            else:
+                self.statusBar().showMessage(f"任务已移至“{TASK_STATUS[status]}”", 2200)
         else:
             self.render_today_tasks()
             self.statusBar().showMessage(f"“{task.get('title', '任务')}”已调整为第 {movement.get('targetIndex', 0) + 1} 项", 2200)
