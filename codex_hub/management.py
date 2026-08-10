@@ -178,6 +178,24 @@ def clear_task_completion_outcome(task, occurred_at, source="reopen"):
     return True
 
 
+def task_completion_revisions(task):
+    """Return outcome revisions newest-first, including a truthful legacy fallback."""
+    if not isinstance(task, dict):
+        return []
+    history = task.get("completionHistory")
+    revisions = [dict(item) for item in history or [] if isinstance(item, dict)] if isinstance(history, list) else []
+    if not revisions:
+        legacy = str(task.get("completionNote") or "").strip()
+        if legacy:
+            revisions = [{
+                "at": str(task.get("completionRecordedAt") or task.get("updatedAt") or ""),
+                "previous": "",
+                "text": legacy,
+                "source": "legacy",
+            }]
+    return sorted(revisions, key=lambda item: str(item.get("at") or ""), reverse=True)
+
+
 def record_task_status_event(task, previous_status, status, occurred_at, source="manual"):
     """Append one real task status transition, avoiding no-op events."""
     if not isinstance(task, dict) or status not in TASK_STATUS:

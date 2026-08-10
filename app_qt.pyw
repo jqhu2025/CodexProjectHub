@@ -67,6 +67,7 @@ from codex_hub.management import (
     task_status_transition_allowed,
     task_is_archived,
     task_completion_outcome,
+    task_completion_revisions,
 )
 from codex_hub.runtime import activity_state, analyze_session_records, find_codex_binary as locate_codex_binary, read_user_thread_rows
 
@@ -2783,6 +2784,9 @@ class TodayTaskCard(QFrame):
         more.setAccessibleName(f"任务 {task.get('title', '')} 的更多操作")
         more.setStyleSheet("QToolButton { border: none; border-radius: 7px; background: transparent; } QToolButton:hover { background: #eaf1fa; } QToolButton::menu-indicator { image: none; }")
         menu = QMenu(more)
+        audit_action = menu.addAction(fluent_icon("\uE81C", color="#315f9b", size=14), "查看任务记录")
+        audit_action.triggered.connect(lambda: window.show_task_audit(task))
+        menu.addSeparator()
         edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
         edit_action.triggered.connect(lambda: window.edit_today_task(task))
         if task.get("status") == "done":
@@ -2792,6 +2796,136 @@ class TodayTaskCard(QFrame):
         delete_action.triggered.connect(lambda: window.delete_today_task(task))
         more.setMenu(menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
         root.addLayout(actions)
+
+
+class TaskAuditDialog(QDialog):
+    OUTCOME_SOURCES = {
+        "task_editor": "任务编辑",
+        "outcome_editor": "成果编辑",
+        "reopen": "任务重新打开",
+        "legacy": "历史导入",
+        "manual": "手动记录",
+    }
+
+    def __init__(self, parent, task):
+        super().__init__(parent)
+        self.window = parent
+        self.task = task or {}
+        self.setWindowTitle("任务档案")
+        self.setObjectName("taskAuditDialog")
+        self.setMinimumSize(760, 560)
+        self.resize(840, 640)
+        self.setStyleSheet(STYLE + """
+            QDialog#taskAuditDialog { background: #f5f7fb; }
+            QFrame#auditSection { background: #ffffff; border: 1px solid #dce4ee; border-radius: 11px; }
+            QFrame#auditEvent { background: #f8fafc; border: 1px solid #e5eaf0; border-radius: 8px; }
+        """)
+        root = QVBoxLayout(self); root.setContentsMargins(28, 24, 28, 22); root.setSpacing(14)
+
+        heading = QHBoxLayout(); heading.setSpacing(12)
+        icon = QLabel(); icon.setFixedSize(42, 42); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=20).pixmap(QSize(20, 20)))
+        icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        eyebrow = QLabel("TASK RECORD"); eyebrow.setStyleSheet("color: #2563eb; font-size: 10px; font-weight: 750; letter-spacing: 1px;"); title_box.addWidget(eyebrow)
+        title = QLabel(str(self.task.get("title") or "未命名任务")); title.setWordWrap(True)
+        title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
+        project = self.window.project_by_id(self.task.get("projectId")); project_name = (project or {}).get("name") or "未关联项目"
+        conversation = self.window.conversation_by_id(self.task.get("sessionId"))
+        conversation_title = conversation_name(conversation) if conversation else self.task.get("conversationTitle") or "未关联 Codex"
+        task_date = QDate.fromString(str(self.task.get("date") or ""), Qt.ISODate)
+        date_text = task_date.toString("yyyy年MM月dd日") if task_date.isValid() else str(self.task.get("date") or "日期未知")
+        meta = QLabel(f"{date_text}  ·  {project_name}  ·  {conversation_title}"); meta.setWordWrap(True)
+        meta.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(meta); heading.addLayout(title_box, 1)
+        status = str(self.task.get("status") or "planned"); color = TASK_COLORS.get(status, "#64748b")
+        tint = {"planned": "#f3edff", "doing": "#eaf2ff", "done": "#e8f7ef"}.get(status, "#eef2f6")
+        if task_is_archived(self.task):
+            archived = QLabel("已归档"); archived.setAlignment(Qt.AlignCenter); archived.setFixedSize(64, 30)
+            archived.setToolTip(f"{format_project_decision_time(self.task.get('archivedAt'))} 移到任务回收站")
+            archived.setStyleSheet("color: #526071; background: #eef2f6; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 11px; font-weight: 650;"); heading.addWidget(archived, 0, Qt.AlignTop)
+        state = QLabel(TASK_STATUS.get(status, status)); state.setAlignment(Qt.AlignCenter); state.setFixedSize(76, 30)
+        state.setStyleSheet(f"color: {color}; background: {tint}; border: 1px solid {color}; border-radius: 9px; font-size: 12px; font-weight: 700;"); heading.addWidget(state, 0, Qt.AlignTop)
+        root.addLayout(heading)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        body = QVBoxLayout(content); body.setContentsMargins(0, 0, 6, 0); body.setSpacing(11)
+
+        notes = str(self.task.get("notes") or "").strip()
+        self._add_text_section(body, "计划说明", notes or "没有补充计划说明", "\uE70B", "#315f9b", notes != "")
+
+        revisions = task_completion_revisions(self.task)
+        current_outcome = task_completion_outcome(self.task)
+        historical_outcome = next((str(item.get("text") or item.get("previous") or "").strip() for item in revisions if str(item.get("text") or item.get("previous") or "").strip()), "")
+        if current_outcome:
+            outcome_title, outcome_text, outcome_color = "完成成果", current_outcome, "#16803c"
+        elif historical_outcome:
+            outcome_title, outcome_text, outcome_color = "历史完成成果（任务已重新打开）", historical_outcome, "#64748b"
+        else:
+            outcome_title, outcome_text, outcome_color = "完成成果", "尚未记录完成成果", "#748094"
+        self._add_text_section(body, outcome_title, outcome_text, "\uE73E", outcome_color, bool(current_outcome or historical_outcome))
+
+        events = task_status_events([self.task])[:30]
+        event_section, event_layout = self._section("状态流转", "\uE8A7", "#2563eb")
+        for event in events:
+            before = TASK_STATUS.get(event.get("from"), "建立任务")
+            after = TASK_STATUS.get(event.get("to"), "更新")
+            event_color = TASK_COLORS.get(event.get("to"), "#64748b")
+            self._add_event_row(
+                event_layout,
+                f"{before}  →  {after}",
+                f"{TASK_EVENT_SOURCES.get(event.get('source'), '手动')}  ·  {format_project_decision_time(event.get('at'))}",
+                event_color,
+            )
+        body.addWidget(event_section)
+
+        revision_section, revision_layout = self._section("成果修订", "\uE70F", "#7c3aed")
+        if not revisions:
+            empty = QLabel("尚无成果修订记录"); empty.setStyleSheet("color: #748094; font-size: 12px; padding: 6px 2px;"); revision_layout.addWidget(empty)
+        else:
+            for revision in revisions[:30]:
+                current = str(revision.get("text") or "").strip()
+                previous = str(revision.get("previous") or "").strip()
+                if current and previous:
+                    label, detail, revision_color = "更新完成成果", current, "#7c3aed"
+                elif current:
+                    label, detail, revision_color = "记录完成成果", current, "#16803c"
+                else:
+                    label, detail, revision_color = "任务重新打开，原成果转为历史", previous or "原成果已退役", "#64748b"
+                source = self.OUTCOME_SOURCES.get(str(revision.get("source") or ""), "手动记录")
+                self._add_event_row(revision_layout, label, f"{source}  ·  {format_project_decision_time(revision.get('at'))}\n{detail}", revision_color)
+        body.addWidget(revision_section); body.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout(); actions.setSpacing(8)
+        if self.task.get("sessionId"):
+            open_codex = QPushButton("打开 Codex 对话"); open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_codex.setIconSize(QSize(14, 14))
+            open_codex.clicked.connect(lambda: self.window.open_task_conversation(self.task)); actions.addWidget(open_codex)
+        actions.addStretch(); close = QPushButton("关闭"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+
+    def _section(self, title_text, glyph, color):
+        section = QFrame(); section.setObjectName("auditSection")
+        layout = QVBoxLayout(section); layout.setContentsMargins(15, 12, 15, 14); layout.setSpacing(8)
+        heading = QHBoxLayout(); heading.setSpacing(8)
+        icon = QLabel(); icon.setFixedSize(20, 20); icon.setPixmap(fluent_icon(glyph, color=color, size=14).pixmap(QSize(14, 14))); icon.setAlignment(Qt.AlignCenter); heading.addWidget(icon)
+        title = QLabel(title_text); title.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 700;"); heading.addWidget(title); heading.addStretch(); layout.addLayout(heading)
+        return section, layout
+
+    def _add_text_section(self, parent_layout, title, text, glyph, color, has_value):
+        section, layout = self._section(title, glyph, color)
+        value = QLabel(text); value.setWordWrap(True)
+        value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        value.setStyleSheet(f"color: {'#34445c' if has_value else '#748094'}; font-size: 13px; line-height: 1.45; padding: 2px;")
+        layout.addWidget(value); parent_layout.addWidget(section)
+
+    def _add_event_row(self, parent_layout, title_text, meta_text, color):
+        row = QFrame(); row.setObjectName("auditEvent")
+        layout = QHBoxLayout(row); layout.setContentsMargins(11, 8, 11, 8); layout.setSpacing(10)
+        dot = QLabel(); dot.setFixedSize(8, 8); dot.setStyleSheet(f"background: {color}; border-radius: 4px;"); layout.addWidget(dot, 0, Qt.AlignTop | Qt.AlignHCenter)
+        text = QVBoxLayout(); text.setSpacing(2)
+        title = QLabel(title_text); title.setStyleSheet("color: #26364c; font-size: 12px; font-weight: 650;"); text.addWidget(title)
+        meta = QLabel(meta_text); meta.setWordWrap(True); meta.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        meta.setStyleSheet("color: #66758a; font-size: 11px;"); text.addWidget(meta); layout.addLayout(text, 1)
+        parent_layout.addWidget(row)
 
 
 class TaskHistoryRow(QFrame):
@@ -2824,8 +2958,14 @@ class TaskHistoryRow(QFrame):
             event_text = f" · {TASK_EVENT_SOURCES.get(latest.get('source'), '手动')} {event_time_text}"
         meta = QLabel(f"{project_name}{carry_text}{event_text}"); meta.setStyleSheet("color: #718096; font-size: 11px; border: none;"); content.addWidget(meta)
         layout.addLayout(content, 1)
+        if task_completion_revisions(task):
+            evidence = QLabel("有成果记录"); evidence.setAlignment(Qt.AlignCenter); evidence.setFixedSize(72, 24)
+            evidence.setToolTip("该任务保留了完成成果或成果修订记录")
+            evidence.setStyleSheet("color: #16803c; background: #e8f7ef; border: none; border-radius: 7px; font-size: 10px; font-weight: 650;"); layout.addWidget(evidence)
         state = QLabel(TASK_STATUS.get(status, status)); state.setAlignment(Qt.AlignCenter); state.setFixedSize(62, 26)
         state.setStyleSheet(f"color: {color}; background: {tint}; border: none; border-radius: 8px; font-size: 11px; font-weight: 600;"); layout.addWidget(state)
+        view = QToolButton(); view.setFixedSize(30, 30); view.setIcon(fluent_icon("\uE81C", color="#315f9b", size=14)); view.setIconSize(QSize(14, 14)); view.setToolTip("查看完整任务记录")
+        view.setAccessibleName(f"查看任务 {task.get('title', '')} 的完整记录"); view.clicked.connect(lambda: window.show_task_audit(task)); layout.addWidget(view)
 
 
 class TaskHistoryDialog(QDialog):
@@ -2881,7 +3021,8 @@ class TaskHistoryDialog(QDialog):
             key=lambda task: (task.get("createdAt", ""), task.get("updatedAt", "")),
         )
         counts = {status: sum(task.get("status", "planned") == status for task in records) for status in TASK_STATUS}
-        self.summary.setText(f"{len(records)} 项 · {counts['planned']} 计划 · {counts['doing']} 进行中 · {counts['done']} 已完成")
+        outcome_count = sum(bool(task_completion_revisions(task)) for task in records)
+        self.summary.setText(f"{len(records)} 项 · {counts['planned']} 计划 · {counts['doing']} 进行中 · {counts['done']} 已完成 · {outcome_count} 项有成果记录")
         if not records:
             empty = QLabel("当天没有任务记录"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7b8798; padding: 70px; font-size: 12px;"); self.records_layout.addWidget(empty)
         else:
@@ -2952,6 +3093,8 @@ class TaskArchiveDialog(QDialog):
             archived_at = format_project_decision_time(task.get("archivedAt"), compact=True)
             meta = QLabel(f"{date_text}  ·  {project_name}  ·  {TASK_STATUS.get(status, '计划')}  ·  {archived_at} 移除")
             meta.setStyleSheet("color: #748094; font-size: 11px;"); text.addWidget(meta); row_layout.addLayout(text, 1)
+            audit = QToolButton(); audit.setFixedSize(34, 34); audit.setIcon(fluent_icon("\uE81C", color="#315f9b", size=14)); audit.setIconSize(QSize(14, 14)); audit.setToolTip("查看任务记录")
+            audit.setAccessibleName(f"查看已移除任务 {task.get('title', '')} 的记录"); audit.clicked.connect(lambda _checked=False, value=task: self.window.show_task_audit(value)); row_layout.addWidget(audit)
             restore = QPushButton("恢复任务"); restore.setFixedSize(92, 36); restore.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); restore.setIconSize(QSize(13, 13))
             restore.setToolTip("恢复到原日期与原状态，并放在对应看板列末端"); restore.clicked.connect(lambda _checked=False, value=task: self.restore_task(value)); row_layout.addWidget(restore)
             self.rows.addWidget(row)
@@ -4423,6 +4566,9 @@ class MainWindow(QMainWindow):
         if hasattr(dialog, "tabs"):
             dialog.tabs.setCurrentIndex(max(0, min(initial_tab, dialog.tabs.count() - 1)))
         dialog.exec_()
+
+    def show_task_audit(self, task):
+        TaskAuditDialog(self, task).exec_()
 
     def show_task_archive(self):
         TaskArchiveDialog(self, self.today_tasks).exec_()

@@ -43,6 +43,20 @@ class ManagementModuleTests(unittest.TestCase):
         ))
         self.assertNotIn("completionNote", task)
 
+    def test_completion_revisions_are_newest_first_and_support_legacy_records(self):
+        task = {
+            "status": "done",
+            "completionHistory": [
+                {"at": "2026-08-10T10:00:00", "text": "Initial result", "previous": "", "source": "task_editor"},
+                {"at": "2026-08-10T11:00:00", "text": "Verified result", "previous": "Initial result", "source": "outcome_editor"},
+            ],
+        }
+        self.assertEqual([item["text"] for item in management.task_completion_revisions(task)], ["Verified result", "Initial result"])
+        legacy = {"status": "done", "completionNote": "Imported outcome", "updatedAt": "2026-08-09T12:00:00"}
+        revision = management.task_completion_revisions(legacy)[0]
+        self.assertEqual((revision["text"], revision["source"]), ("Imported outcome", "legacy"))
+        self.assertEqual(management.task_completion_revisions(None), [])
+
     def test_task_archive_round_trip_preserves_status_and_transition_history(self):
         task = {
             "id": "task-1",

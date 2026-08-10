@@ -72,6 +72,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Keep a daily activity record.
 - Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, or daily rollover—and feed that evidence into daily reviews.
 - Record a concise, verifiable completion outcome after a task is finished. Outcomes keep their own revision history, appear compactly on completed cards, feed Codex daily reviews as stronger evidence than planning notes, and follow project-next-action handoffs back into the project workbench.
+- Open a read-only task record from the board, daily history, or recycle bin to inspect planning notes, source-labelled status transitions, the current completion outcome, and every outcome revision. Reopened tasks keep retired outcomes clearly historical instead of presenting them as current evidence.
 - Move unwanted tasks to a recoverable recycle bin instead of deleting their daily record; archived tasks retain their original date, three-state status, ordering context, and complete transition history while remaining excluded from boards, workload counts, and generated reviews.
 - Carry unfinished in-progress tasks to the next day while preserving previous records.
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
