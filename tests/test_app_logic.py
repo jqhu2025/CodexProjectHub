@@ -63,8 +63,38 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertTrue(hasattr(window, "task_tools_button"))
         self.assertEqual(window.task_tools_button.accessibleName(), "更多任务工具")
         self.assertFalse(window.task_link_repair_action.isVisible())
+        summary_panel = page.findChild(APP.QFrame, "dailySummaryPanel")
+        self.assertEqual(summary_panel.findChildren(APP.QPushButton), [])
         window.render_portfolio_decisions.assert_not_called()
         page.close(); window.close()
+
+    def test_task_card_keeps_only_direct_daily_actions_visible(self):
+        project = {"id": "project-1", "name": "Release", "category": "Research"}
+        conversation = {"sessionId": "session-1", "title": "Validate candidate", "state": "running"}
+        window = SimpleNamespace(
+            project_by_id=lambda _project_id: project,
+            conversation_by_id=lambda _session_id: conversation,
+            open_task_conversation=Mock(), set_task_status=Mock(), show_task_audit=Mock(),
+            edit_today_task=Mock(), edit_task_outcome=Mock(), delete_today_task=Mock(),
+            open_current_task_record=Mock(),
+        )
+        task = {
+            "id": "task-1", "title": "Validate release", "status": "doing",
+            "projectId": "project-1", "sessionId": "session-1", "notes": "Run the final checks",
+        }
+
+        card = APP.TodayTaskCard(task, window)
+
+        self.assertEqual(card.findChildren(APP.QComboBox), [])
+        self.assertEqual(
+            [button.text() for button in card.findChildren(APP.QPushButton)],
+            ["打开 Codex", "完成"],
+        )
+        visible_text = " ".join(label.text() for label in card.findChildren(APP.QLabel))
+        self.assertNotIn("手动状态", visible_text)
+        self.assertNotIn("延续任务", visible_text)
+        self.assertNotIn("项目下一步", visible_text)
+        card.close()
 
     def test_legacy_attention_review_exposes_two_explicit_health_decisions(self):
         parent = APP.QWidget(); parent.today_tasks = []
@@ -163,8 +193,11 @@ class ReviewDialogStructureTests(unittest.TestCase):
         dialog = APP.ProjectEditor(parent, project, ["全部", "Research", "未分类"])
 
         self.assertEqual(dialog.success_criteria.toPlainText(), "Pass all release checks")
+        self.assertTrue(dialog.advanced_panel.isHidden())
         dialog.success_criteria.setPlainText("Pass 18 checks and publish artifacts")
         self.assertEqual(dialog.value()["successCriteria"], "Pass 18 checks and publish artifacts")
+        dialog.set_advanced_visible(True)
+        self.assertFalse(dialog.advanced_panel.isHidden())
         dialog.close(); parent.close()
 
     def test_risk_dialog_returns_to_the_refreshed_ranked_queue(self):

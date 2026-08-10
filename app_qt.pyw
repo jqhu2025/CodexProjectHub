@@ -2102,8 +2102,8 @@ class ProjectEditor(QDialog):
         self.completion_criteria_snapshot = None
         self.setWindowTitle("编辑项目" if project else "新建项目")
         self.setObjectName("projectEditor")
-        self.setMinimumSize(720, 650)
-        self.resize(760, 720)
+        self.setMinimumSize(720, 390)
+        self.resize(760, 460)
         self.setStyleSheet(STYLE + """
             QDialog#projectEditor QLabel[fieldLabel='true'] { color: #4a586b; font-size: 12px; font-weight: 500; }
             QDialog#projectEditor QLineEdit, QDialog#projectEditor QComboBox { min-height: 24px; font-size: 13px; }
@@ -2116,7 +2116,7 @@ class ProjectEditor(QDialog):
         title = QLabel("编辑项目" if project else "新建项目")
         title.setStyleSheet("font-size: 24px; font-weight: 600; color: #172033;")
         layout.addWidget(title)
-        subtitle = QLabel("定义项目目标、验收标准和下一步；项目中心不会修改或移动磁盘文件")
+        subtitle = QLabel("只需填写名称、分类和文件夹；其他资料按需补充")
         subtitle.setStyleSheet("color: #718096; font-size: 12px;"); layout.addWidget(subtitle)
         self.fields = {}
         name = QLineEdit(item.get("name", "")); name.setFixedHeight(40); name.setPlaceholderText("例如：Desktop Analytics App"); name.setAccessibleName("项目名称"); self.fields["name"] = name
@@ -2155,26 +2155,39 @@ class ProjectEditor(QDialog):
             self.restore_source_name.setVisible(differs)
         name.textChanged.connect(sync_source_name_action); sync_source_name_action(name.text())
         form.addWidget(name_holder, 1, 0, 1, 6)
-        form.addWidget(field_label("类别"), 2, 0, 1, 3); form.addWidget(field_label("项目状态"), 2, 3, 1, 3)
-        form.addWidget(category, 3, 0, 1, 3); form.addWidget(status, 3, 3, 1, 3)
+        form.addWidget(field_label("类别"), 2, 0, 1, 6)
+        form.addWidget(category, 3, 0, 1, 6)
         form.addWidget(field_label("本地路径"), 4, 0, 1, 6)
         path_holder = QWidget(); path_layout = QHBoxLayout(path_holder); path_layout.setContentsMargins(0, 0, 0, 0); path_layout.setSpacing(7); path_layout.addWidget(path, 1)
         browse = QPushButton("选择文件夹"); browse.setFixedHeight(40); browse.setIcon(fluent_icon("\uE838", size=15)); browse.setIconSize(QSize(15, 15)); browse.clicked.connect(self.choose_folder); path_layout.addWidget(browse)
         form.addWidget(path_holder, 5, 0, 1, 6)
-        form.addWidget(field_label("管理优先级"), 6, 0, 1, 2); form.addWidget(field_label("当前阶段"), 6, 2, 1, 2); form.addWidget(field_label("项目健康度"), 6, 4, 1, 2)
-        form.addWidget(priority, 7, 0, 1, 2); form.addWidget(stage, 7, 2, 1, 2); form.addWidget(health, 7, 4, 1, 2)
         layout.addLayout(form)
+
+        self.advanced_toggle = QPushButton("更多项目资料（可选）")
+        self.advanced_toggle.setCheckable(True); self.advanced_toggle.setChecked(False); self.advanced_toggle.setFixedHeight(36)
+        self.advanced_toggle.setIcon(fluent_icon("\uE70D", color="#526071", size=13)); self.advanced_toggle.setIconSize(QSize(13, 13))
+        self.advanced_toggle.setStyleSheet("QPushButton { color: #526071; background: #f7f9fc; border: 1px solid #d9e2ec; border-radius: 8px; padding: 5px 10px; text-align: left; font-size: 12px; font-weight: 600; } QPushButton:hover { background: #eef3f8; }")
+        self.advanced_toggle.toggled.connect(self.set_advanced_visible); layout.addWidget(self.advanced_toggle)
+
+        self.advanced_panel = QFrame(); self.advanced_panel.setObjectName("advancedProjectFields")
+        self.advanced_panel.setStyleSheet("QFrame#advancedProjectFields { background: #f8fafc; border: 1px solid #dfe6ef; border-radius: 10px; }")
+        advanced_layout = QVBoxLayout(self.advanced_panel); advanced_layout.setContentsMargins(14, 12, 14, 12); advanced_layout.setSpacing(10)
+        management = QGridLayout(); management.setHorizontalSpacing(10); management.setVerticalSpacing(6)
+        management.addWidget(field_label("项目状态"), 0, 0); management.addWidget(field_label("管理优先级"), 0, 1)
+        management.addWidget(status, 1, 0); management.addWidget(priority, 1, 1)
+        management.addWidget(field_label("当前阶段"), 2, 0); management.addWidget(field_label("项目健康度"), 2, 1)
+        management.addWidget(stage, 3, 0); management.addWidget(health, 3, 1)
+        management.setColumnStretch(0, 1); management.setColumnStretch(1, 1); advanced_layout.addLayout(management)
 
         definition = QHBoxLayout(); definition.setSpacing(10)
         objective_box = QVBoxLayout(); objective_box.setSpacing(6); objective_box.addWidget(field_label("项目目标"))
-        self.objective = QTextEdit(); self.objective.setFixedHeight(76); self.objective.setPlainText(str(item.get("objective") or ""))
+        self.objective = QTextEdit(); self.objective.setFixedHeight(68); self.objective.setPlainText(str(item.get("objective") or ""))
         self.objective.setPlaceholderText("这个项目最终要交付或解决什么？")
         self.objective.setAccessibleName("项目目标"); objective_box.addWidget(self.objective); definition.addLayout(objective_box, 1)
         criteria_box = QVBoxLayout(); criteria_box.setSpacing(6); criteria_box.addWidget(field_label("验收标准（可逐步补充）"))
-        self.success_criteria = QTextEdit(); self.success_criteria.setFixedHeight(76); self.success_criteria.setPlainText(str(item.get("successCriteria") or ""))
+        self.success_criteria = QTextEdit(); self.success_criteria.setFixedHeight(68); self.success_criteria.setPlainText(str(item.get("successCriteria") or ""))
         self.success_criteria.setPlaceholderText("达到什么可验证结果时，项目可以结束？")
-        self.success_criteria.setAccessibleName("项目验收标准"); criteria_box.addWidget(self.success_criteria); definition.addLayout(criteria_box, 1)
-        layout.addLayout(definition)
+        self.success_criteria.setAccessibleName("项目验收标准"); criteria_box.addWidget(self.success_criteria); definition.addLayout(criteria_box, 1); advanced_layout.addLayout(definition)
         decision = QGridLayout(); decision.setHorizontalSpacing(10); decision.setVerticalSpacing(6)
         next_step_label = field_label("明确下一步"); decision.addWidget(next_step_label, 0, 0)
         blocker_label = field_label("当前阻塞"); decision.addWidget(blocker_label, 0, 1)
@@ -2183,7 +2196,8 @@ class ProjectEditor(QDialog):
         self.next_step.setAccessibleName("项目下一步"); decision.addWidget(self.next_step, 1, 0)
         self.blocker = QLineEdit(str(item.get("blocker") or "")); self.blocker.setFixedHeight(40)
         self.blocker.setPlaceholderText("没有阻塞可留空；有阻塞时写清具体原因")
-        self.blocker.setAccessibleName("项目阻塞项"); decision.addWidget(self.blocker, 1, 1); layout.addLayout(decision)
+        self.blocker.setAccessibleName("项目阻塞项"); decision.addWidget(self.blocker, 1, 1); advanced_layout.addLayout(decision)
+        self.advanced_panel.hide(); layout.addWidget(self.advanced_panel)
         actions = QHBoxLayout(); actions.setContentsMargins(0, 10, 0, 0); actions.setSpacing(8)
         self.insight_button = QPushButton("Codex 自动整理"); self.insight_button.setFixedHeight(38); self.insight_button.setIcon(fluent_icon("\uE945", color="#1d4ed8", size=14)); self.insight_button.setIconSize(QSize(14, 14)); self.insight_button.clicked.connect(self.start_codex_insight); actions.addWidget(self.insight_button)
         self.insight_status = QLabel("选择文件夹后可让 Codex 填写项目态势"); self.insight_status.setMaximumWidth(280); self.insight_status.setStyleSheet("color: #748094; font-size: 11px;"); actions.addWidget(self.insight_status)
@@ -2193,6 +2207,12 @@ class ProjectEditor(QDialog):
         status.currentIndexChanged.connect(self.update_status_controls)
         self.update_status_controls()
         self.fields["name"].setFocus()
+
+    def set_advanced_visible(self, visible):
+        self.advanced_panel.setVisible(bool(visible))
+        self.advanced_toggle.setText("收起项目资料" if visible else "更多项目资料（可选）")
+        self.advanced_toggle.setIcon(fluent_icon("\uE70E" if visible else "\uE70D", color="#526071", size=13))
+        self.resize(760, 720 if visible else 460)
 
     def update_status_controls(self):
         completed = self.fields["status"].currentData() == "completed"
@@ -3269,10 +3289,10 @@ class TaskEditor(QDialog):
         self.category_field.currentIndexChanged.connect(self.load_projects)
         self.project_field.currentIndexChanged.connect(self.load_conversations)
         self.load_projects()
-        layout.addWidget(QLabel("当前阶段")); self.status_field = QComboBox(); self.status_field.setFixedHeight(38); self.status_field.setAccessibleName("当前阶段")
+        self.status_field = QComboBox(); self.status_field.setAccessibleName("当前阶段")
         for status, label in TASK_STATUS.items(): self.status_field.addItem(label, status)
-        status_index = self.status_field.findData(self.task.get("status") or default_status or "planned"); self.status_field.setCurrentIndex(max(0, status_index)); layout.addWidget(self.status_field)
-        layout.addWidget(QLabel("备注")); self.notes_field = QTextEdit(self.task.get("notes", "")); self.notes_field.setFixedHeight(88); self.notes_field.setAccessibleName("任务备注"); self.notes_field.setPlaceholderText("补充交付标准、重点或下一步…"); layout.addWidget(self.notes_field)
+        status_index = self.status_field.findData(self.task.get("status") or default_status or "planned"); self.status_field.setCurrentIndex(max(0, status_index)); self.status_field.hide()
+        layout.addWidget(QLabel("备注（可选）")); self.notes_field = QTextEdit(self.task.get("notes", "")); self.notes_field.setFixedHeight(76); self.notes_field.setAccessibleName("任务备注"); self.notes_field.setPlaceholderText("补充交付标准或关键提醒…"); layout.addWidget(self.notes_field)
         self.outcome_frame = QFrame(); self.outcome_frame.setObjectName("taskOutcomeEditor")
         self.outcome_frame.setStyleSheet("QFrame#taskOutcomeEditor { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 11px; } QFrame#taskOutcomeEditor QLabel { background: transparent; border: none; }")
         outcome_layout = QVBoxLayout(self.outcome_frame); outcome_layout.setContentsMargins(14, 11, 14, 13); outcome_layout.setSpacing(6)
@@ -3592,17 +3612,17 @@ class TodayTaskCard(QFrame):
         self.task_id = str((task or {}).get("id") or "")
         historical_snapshot = task_is_superseded_daily_record(task)
         self.setObjectName("todayTaskCard")
+        status_key = task.get("status", "planned")
         project = window.project_by_id(task.get("projectId")); project_name = task_project_identity(task, project)["name"]
-        conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or "未关联 Codex"
+        conversation = window.conversation_by_id(task.get("sessionId")); conversation_title = conversation_name(conversation) if conversation else task.get("conversationTitle") or ""
         conversation_state = codex_state(conversation)[0] if conversation else None
-        accent = TASK_COLORS.get(task.get("status"), "#64748b")
-        tint = {"planned": "#f4efff", "doing": "#eaf2ff", "done": "#e8f7ef"}.get(task.get("status"), "#eef4fb")
+        accent = TASK_COLORS.get(status_key, "#64748b")
         self.setStyleSheet(f"QFrame#todayTaskCard {{ background: #ffffff; border: 1px solid #d9e2ec; border-left: 3px solid {accent}; border-radius: 10px; }} QFrame#todayTaskCard:hover {{ background: #fbfdff; border-color: #9eb4ce; border-left-color: {accent}; }}")
-        root = QVBoxLayout(self); root.setContentsMargins(12, 10, 10, 9); root.setSpacing(7)
+        root = QVBoxLayout(self); root.setContentsMargins(12, 10, 10, 9); root.setSpacing(6)
         headline = QHBoxLayout(); headline.setSpacing(8)
-        title = QLabel(task.get("title") or "未命名任务"); title.setWordWrap(True); title.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); headline.addWidget(title, 1)
+        title = ElidedLabel(task.get("title") or "未命名任务"); title.setToolTip(task.get("title") or "未命名任务"); title.setStyleSheet("font-size: 14px; font-weight: 680; color: #253247; border: none;"); headline.addWidget(title, 1)
         if historical_snapshot:
-            snapshot = QLabel("历史快照")
+            snapshot = QLabel("已延续")
             snapshot.setToolTip(f"该日状态已延续至 {task.get('carriedToDate') or '后续日期'}，请在最新记录中继续管理")
             snapshot.setStyleSheet("color: #526071; background: #eef2f6; border: none; border-radius: 7px; padding: 3px 7px; font-size: 10px; font-weight: 650;")
             headline.addWidget(snapshot, 0, Qt.AlignTop)
@@ -3610,49 +3630,17 @@ class TodayTaskCard(QFrame):
             headline.addWidget(TaskDragHandle(task), 0, Qt.AlignTop)
         root.addLayout(headline)
         meta_row = QHBoxLayout(); meta_row.setSpacing(7)
-        meta = ElidedLabel(f"{project_name}  ·  {conversation_title}"); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
+        identity = project_name
+        if conversation_title:
+            identity = f"{identity}  ·  {conversation_title}"
+        meta = ElidedLabel(identity); meta.setToolTip(identity); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
         if conversation_state == "running":
             live = QLabel("● Codex 运行中"); live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 3px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
-        elif not historical_snapshot and not task.get("sessionId") and task.get("origin") != "project_next_step":
-            manual = QLabel("手动状态"); manual.setToolTip("未关联具体 Codex 对话，因此不会自动切换任务状态")
-            manual.setStyleSheet("color: #8a5a00; background: #fff4d8; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
-            meta_row.addWidget(manual)
-        if task.get("origin") == "project_next_step":
-            source_step = QLabel("项目下一步"); source_step.setToolTip("从项目面板的一项明确下一步加入；完成后项目会等待新的下一步")
-            source_step.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
-            meta_row.addWidget(source_step)
-        if historical_snapshot:
-            carried = QLabel(f"已延续至 {task.get('carriedToDate') or '后续日期'}")
-            carried.setToolTip("这是当日状态快照，不再作为当前工作项编辑")
-            carried.setStyleSheet("color: #526071; background: #eef2f6; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 600;")
-            meta_row.addWidget(carried)
-        elif task.get("carriedFromTaskId"):
-            carried = QLabel("延续任务"); carried.setToolTip(f"由 {task.get('carriedFromDate', '前一天')} 的进行中任务自动延续")
-            carried.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 3px 7px; font-size: 11px; font-weight: 500;")
-            meta_row.addWidget(carried)
         root.addLayout(meta_row)
         if task.get("notes"):
             notes = ElidedLabel(task["notes"].replace("\n", " ")); notes.setStyleSheet("color: #526071; font-size: 11px; border: none;"); root.addWidget(notes)
         completion_outcome = task_completion_outcome(task)
-        if completion_outcome:
-            outcome_row = QFrame(); outcome_row.setObjectName("completionOutcome")
-            outcome_row.setStyleSheet("QFrame#completionOutcome { background: #eef8f2; border: 1px solid #c8e5d3; border-radius: 8px; } QFrame#completionOutcome QLabel { border: none; background: transparent; }")
-            outcome_layout = QHBoxLayout(outcome_row); outcome_layout.setContentsMargins(9, 6, 9, 6); outcome_layout.setSpacing(7)
-            outcome_icon = QLabel(); outcome_icon.setFixedSize(16, 16); outcome_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=13).pixmap(QSize(13, 13))); outcome_layout.addWidget(outcome_icon)
-            outcome_text = ElidedLabel(f"成果 · {completion_outcome.replace(chr(10), ' ')}"); outcome_text.setToolTip(completion_outcome); outcome_text.setStyleSheet("color: #17623b; font-size: 11px; font-weight: 600;"); outcome_layout.addWidget(outcome_text, 1)
-            root.addWidget(outcome_row)
         actions = QHBoxLayout(); actions.setSpacing(6)
-        if historical_snapshot:
-            status = QLabel(f"当日 · {TASK_STATUS.get(task.get('status', 'planned'), '计划')}")
-            status.setAlignment(Qt.AlignCenter); status.setFixedSize(92, 30)
-            status.setStyleSheet(f"color: {accent}; background: {tint}; border: 1px solid {accent}; border-radius: 8px; font-size: 11px; font-weight: 650;")
-            actions.addWidget(status)
-        else:
-            status = QComboBox(); status.setFixedSize(86, 30); status.setToolTip("调整任务状态")
-            for value, label in TASK_STATUS.items(): status.addItem(label, value)
-            status.setCurrentIndex(max(0, status.findData(task.get("status", "planned"))))
-            status.setStyleSheet(f"QComboBox {{ background: {tint}; color: {accent}; border: 1px solid {accent}; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 650; }} QComboBox::drop-down {{ border: none; width: 18px; }}")
-            status.activated.connect(lambda _index: window.set_task_status(task["id"], status.currentData(), source="selector")); actions.addWidget(status)
         actions.addStretch()
         if historical_snapshot:
             current = QPushButton("查看当前")
@@ -3660,12 +3648,7 @@ class TodayTaskCard(QFrame):
             current.setToolTip("跳转到这项工作的最新每日记录")
             current.setStyleSheet("QPushButton { color: #315f9b; background: #edf4ff; border: 1px solid #cfdaeb; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #e2ebfa; }")
             current.clicked.connect(lambda: window.open_current_task_record(task)); actions.addWidget(current)
-        if task.get("status") == "done" and not completion_outcome and not historical_snapshot:
-            record_outcome = QPushButton("记录成果"); record_outcome.setFixedSize(88, 30)
-            record_outcome.setIcon(fluent_icon("\uE73E", color="#16803c", size=13)); record_outcome.setIconSize(QSize(13, 13)); record_outcome.setToolTip("补充实际完成结果，供项目交接与每日总结使用")
-            record_outcome.setStyleSheet("QPushButton { color: #126b3b; background: #eaf7ef; border: 1px solid #b9dfc8; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dff2e7; border-color: #88cda4; }")
-            record_outcome.clicked.connect(lambda: window.edit_task_outcome(task)); actions.addWidget(record_outcome)
-        if task.get("sessionId"):
+        elif task.get("sessionId"):
             open_codex = QPushButton("打开 Codex")
             open_codex.setFixedSize(96, 30)
             open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14))
@@ -3675,22 +3658,38 @@ class TodayTaskCard(QFrame):
             open_codex.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c7d7f2; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dfe9fb; border-color: #9db7e4; }")
             open_codex.clicked.connect(lambda: window.open_task_conversation(task))
             actions.addWidget(open_codex)
+        elif status_key == "planned":
+            begin = QPushButton("开始")
+            begin.setFixedSize(72, 30); begin.setIcon(fluent_icon("\uE768", color="#1d4ed8", size=13)); begin.setIconSize(QSize(13, 13))
+            begin.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #c7d7f2; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dfe9fb; border-color: #9db7e4; }")
+            begin.clicked.connect(lambda: window.set_task_status(task["id"], "doing", source="manual")); actions.addWidget(begin)
+        if not historical_snapshot and status_key == "doing":
+            finish = QPushButton("完成")
+            finish.setFixedSize(72, 30); finish.setIcon(fluent_icon("\uE73E", color="#087443", size=13)); finish.setIconSize(QSize(13, 13))
+            finish.setStyleSheet("QPushButton { color: #087443; background: #e9f8f0; border: 1px solid #b9dfc8; border-radius: 8px; padding: 3px 8px; font-size: 11px; font-weight: 650; } QPushButton:hover { background: #dff2e7; border-color: #88cda4; }")
+            finish.clicked.connect(lambda: window.set_task_status(task["id"], "done", source="manual")); actions.addWidget(finish)
         more = QToolButton(); more.setFixedSize(32, 30); more.setIcon(fluent_icon("\uE712", size=14)); more.setIconSize(QSize(14, 14)); more.setToolTip("更多操作")
         more.setAccessibleName(f"任务 {task.get('title', '')} 的更多操作")
         more.setStyleSheet("QToolButton { border: none; border-radius: 7px; background: transparent; } QToolButton:hover { background: #eaf1fa; } QToolButton::menu-indicator { image: none; }")
         menu = QMenu(more)
-        audit_action = menu.addAction(fluent_icon("\uE81C", color="#315f9b", size=14), "查看任务记录")
-        audit_action.triggered.connect(lambda: window.show_task_audit(task))
-        menu.addSeparator()
         if historical_snapshot:
             current_action = menu.addAction(fluent_icon("\uE72A", color="#315f9b", size=14), "查看当前任务")
             current_action.triggered.connect(lambda: window.open_current_task_record(task))
         else:
             edit_action = menu.addAction(fluent_icon("\uE70F", size=14), "编辑任务")
             edit_action.triggered.connect(lambda: window.edit_today_task(task))
-        if task.get("status") == "done" and not historical_snapshot:
+            if status_key == "done":
+                reopen_action = menu.addAction(fluent_icon("\uE7A7", color="#315f9b", size=14), "重新打开")
+                reopen_action.triggered.connect(lambda: window.set_task_status(task["id"], "doing", source="manual"))
+            elif status_key == "planned":
+                begin_action = menu.addAction(fluent_icon("\uE768", color="#1d4ed8", size=14), "移到进行中")
+                begin_action.triggered.connect(lambda: window.set_task_status(task["id"], "doing", source="manual"))
+        audit_action = menu.addAction(fluent_icon("\uE81C", color="#315f9b", size=14), "任务记录")
+        audit_action.triggered.connect(lambda: window.show_task_audit(task))
+        if status_key == "done" and not historical_snapshot:
             outcome_action = menu.addAction(fluent_icon("\uE73E", color="#16803c", size=14), "编辑完成成果" if completion_outcome else "记录完成成果")
             outcome_action.triggered.connect(lambda: window.edit_task_outcome(task))
+        menu.addSeparator()
         delete_action = menu.addAction(fluent_icon("\uE74D", color="#526071", size=14), "移到任务回收站")
         delete_action.triggered.connect(lambda: window.delete_today_task(task))
         more.setMenu(menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
@@ -6602,9 +6601,9 @@ class MainWindow(QMainWindow):
     def build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
         root = QVBoxLayout(central); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        top = QFrame(); top.setObjectName("systemSpine"); top.setFixedHeight(76)
+        top = QFrame(); top.setObjectName("systemSpine"); top.setFixedHeight(68)
         top.setStyleSheet("QFrame#systemSpine { background: #ffffff; border-bottom: 1px solid #dbe3ee; }")
-        top_layout = QHBoxLayout(top); top_layout.setContentsMargins(18, 10, 20, 10); top_layout.setSpacing(12)
+        top_layout = QHBoxLayout(top); top_layout.setContentsMargins(18, 7, 20, 7); top_layout.setSpacing(12)
 
         brand_frame = QFrame(); brand_frame.setFixedWidth(218); brand_frame.setStyleSheet("background: transparent; border: none;")
         brand_layout = QHBoxLayout(brand_frame); brand_layout.setContentsMargins(0, 0, 0, 0); brand_layout.setSpacing(10)
@@ -6651,13 +6650,8 @@ class MainWindow(QMainWindow):
         self.usage_progress.setStyleSheet("QProgressBar { background: #e2e8f0; border: none; border-radius: 2px; } QProgressBar::chunk { background: #2563eb; border-radius: 2px; }")
         telemetry_layout.addWidget(self.usage_progress); top_layout.addWidget(telemetry, 2)
 
-        self.command_button = QToolButton(); self.command_button.setFixedSize(38, 38)
-        self.command_button.setIcon(fluent_icon("\uE721", color="#315b94", size=17)); self.command_button.setIconSize(QSize(17, 17))
-        self.command_button.setToolTip("快速打开项目、任务、对话或指令（Ctrl+K）"); self.command_button.setAccessibleName("全局快速打开，快捷键 Ctrl+K")
-        self.command_button.setStyleSheet("QToolButton { background: #f7f9fc; border: 1px solid #d5dee9; border-radius: 9px; } QToolButton:hover, QToolButton:focus { background: #edf3ff; border-color: #9eb8d8; }")
-        self.command_button.clicked.connect(self.show_command_palette); top_layout.addWidget(self.command_button)
-        self.sync = QLabel("●  自动同步"); self.sync.setAlignment(Qt.AlignCenter); self.sync.setMinimumWidth(112); self.sync.setFixedHeight(34)
-        self.sync.setStyleSheet("color: #087443; background: #e9f8f0; border: 1px solid #b9e5cd; border-radius: 9px; padding: 3px 9px; font-size: 11px; font-weight: 650;"); top_layout.addWidget(self.sync)
+        self.sync = QLabel("●  自动同步"); self.sync.setAlignment(Qt.AlignRight | Qt.AlignVCenter); self.sync.setMinimumWidth(100); self.sync.setFixedHeight(34)
+        self.sync.setStyleSheet("color: #087443; background: transparent; border: none; padding: 3px 2px; font-size: 11px; font-weight: 650;"); top_layout.addWidget(self.sync)
         root.addWidget(top)
         body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0); root.addLayout(body)
         side = QFrame(); side.setObjectName("navigationRail"); side.setFixedWidth(248)
@@ -6683,8 +6677,6 @@ class MainWindow(QMainWindow):
         manage_categories.setMenu(category_menu); manage_categories.setPopupMode(QToolButton.InstantPopup); category_header.addWidget(manage_categories)
         category_panel_layout.addWidget(category_header_frame)
         self.nav = QVBoxLayout(); self.nav.setSpacing(2); category_panel_layout.addLayout(self.nav); side_layout.addWidget(self.category_panel); side_layout.addStretch()
-
-        history_nav = QPushButton("今日任务记录"); history_nav.setObjectName("nav"); history_nav.setIcon(fluent_icon("\uE81C", color="#315b94", size=16)); history_nav.setIconSize(QSize(16, 16)); history_nav.clicked.connect(lambda: self.show_task_history(0)); side_layout.addWidget(history_nav)
         body.addWidget(side)
         self.pages = QStackedWidget(); self.home_page = self.build_home_page(); self.projects_page = self.build_projects_page(); self.pages.addWidget(self.home_page); self.pages.addWidget(self.projects_page); body.addWidget(self.pages, 1)
         status_bar = QStatusBar(); self.setStatusBar(status_bar)
@@ -6754,22 +6746,19 @@ class MainWindow(QMainWindow):
         self.daily_summary_panel.setToolTip("点击查看昨日工作的完整总结")
         self.daily_summary_panel.setStyleSheet("QFrame#dailySummaryPanel { background: #ffffff; border: 1px solid #d8e1eb; border-left: 4px solid #2563eb; border-radius: 12px; } QFrame#dailySummaryPanel:hover, QFrame#dailySummaryPanel:focus { background: #fbfdff; border-color: #a9bfdf; border-left-color: #1d4ed8; }")
         self.daily_summary_panel.clicked.connect(self.show_daily_summary_dialog)
-        summary_layout = QVBoxLayout(self.daily_summary_panel); summary_layout.setContentsMargins(16, 12, 16, 12); summary_layout.setSpacing(6)
+        summary_layout = QVBoxLayout(self.daily_summary_panel); summary_layout.setContentsMargins(16, 10, 14, 10); summary_layout.setSpacing(4)
         summary_head = QHBoxLayout(); summary_head.setSpacing(9)
-        summary_icon = QLabel(); summary_icon.setAttribute(Qt.WA_TransparentForMouseEvents); summary_icon.setFixedSize(28, 28); summary_icon.setAlignment(Qt.AlignCenter); summary_icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); summary_icon.setStyleSheet("background: #eaf1ff; border-radius: 8px;"); summary_head.addWidget(summary_icon)
-        summary_title_box = QVBoxLayout(); summary_title_box.setSpacing(0)
-        summary_title = QLabel("昨日回顾"); summary_title.setAttribute(Qt.WA_TransparentForMouseEvents); summary_title.setStyleSheet("color: #253247; font-size: 15px; font-weight: 700;"); summary_title_box.addWidget(summary_title)
-        self.daily_summary_date_label = QLabel(); self.daily_summary_date_label.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_date_label.setStyleSheet("color: #748094; font-size: 10px;"); summary_title_box.addWidget(self.daily_summary_date_label); summary_head.addLayout(summary_title_box)
+        summary_icon = QLabel(); summary_icon.setAttribute(Qt.WA_TransparentForMouseEvents); summary_icon.setFixedSize(24, 24); summary_icon.setAlignment(Qt.AlignCenter); summary_icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=15).pixmap(QSize(15, 15))); summary_icon.setStyleSheet("background: #eaf1ff; border-radius: 7px;"); summary_head.addWidget(summary_icon)
+        summary_title = QLabel("昨日回顾"); summary_title.setAttribute(Qt.WA_TransparentForMouseEvents); summary_title.setStyleSheet("color: #253247; font-size: 14px; font-weight: 700;"); summary_head.addWidget(summary_title)
+        self.daily_summary_date_label = QLabel(); self.daily_summary_date_label.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_date_label.setStyleSheet("color: #748094; font-size: 10px;"); summary_head.addWidget(self.daily_summary_date_label)
         summary_head.addStretch()
         self.daily_summary_state = QLabel("等待总结"); self.daily_summary_state.setAlignment(Qt.AlignCenter); self.daily_summary_state.setFixedHeight(26)
         self.daily_summary_state.setStyleSheet("color: #526071; background: #eef2f6; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"); summary_head.addWidget(self.daily_summary_state)
-        open_summary_thread = QPushButton("总结对话"); open_summary_thread.setFixedHeight(32); open_summary_thread.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_summary_thread.setIconSize(QSize(14, 14)); open_summary_thread.setToolTip("打开固定的 Codex 总结任务"); open_summary_thread.setAccessibleName("打开 Codex 每日总结任务"); open_summary_thread.clicked.connect(self.open_daily_summary_thread); summary_head.addWidget(open_summary_thread)
-        self.daily_summary_regenerate_button = QPushButton("重新生成"); self.daily_summary_regenerate_button.setFixedHeight(32); self.daily_summary_regenerate_button.setIcon(fluent_icon("\uE72C", color="#1d4ed8", size=13)); self.daily_summary_regenerate_button.setIconSize(QSize(13, 13)); self.daily_summary_regenerate_button.clicked.connect(lambda: self.start_daily_summary(force=True)); summary_head.addWidget(self.daily_summary_regenerate_button)
+        summary_chevron = QLabel(); summary_chevron.setAttribute(Qt.WA_TransparentForMouseEvents); summary_chevron.setFixedSize(18, 18); summary_chevron.setPixmap(fluent_icon("\uE76C", color="#64748b", size=13).pixmap(QSize(13, 13))); summary_chevron.setAlignment(Qt.AlignCenter); summary_head.addWidget(summary_chevron)
         summary_layout.addLayout(summary_head)
         self.daily_summary_overview = QLabel("软件将在每天首次打开时，用固定 Codex 任务总结前一天的工作记录。")
-        self.daily_summary_overview.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_overview.setWordWrap(True); self.daily_summary_overview.setMaximumHeight(42); self.daily_summary_overview.setStyleSheet("color: #42526a; font-size: 13px; line-height: 1.35;"); summary_layout.addWidget(self.daily_summary_overview)
-        self.daily_summary_meta = QLabel("点击查看完整回顾")
-        self.daily_summary_meta.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_meta.setStyleSheet("color: #718096; font-size: 11px;"); summary_layout.addWidget(self.daily_summary_meta)
+        self.daily_summary_overview.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_overview.setWordWrap(False); self.daily_summary_overview.setMaximumHeight(22); self.daily_summary_overview.setStyleSheet("color: #42526a; font-size: 12px;"); summary_layout.addWidget(self.daily_summary_overview)
+        self.daily_summary_meta = QLabel("点击查看完整回顾"); self.daily_summary_meta.hide()
         layout.addWidget(self.daily_summary_panel)
 
         board_head = QHBoxLayout(); board_head.setSpacing(9)
@@ -8281,9 +8270,6 @@ class MainWindow(QMainWindow):
             header = QHBoxLayout(); header.setSpacing(7)
             state_icon = QLabel(); state_icon.setFixedSize(18, 18); state_icon.setPixmap(fluent_icon("\uE768", color=accent, size=14).pixmap(QSize(14, 14))); state_icon.setAlignment(Qt.AlignCenter); header.addWidget(state_icon)
             name = QLabel(label); name.setStyleSheet("font-size: 14px; font-weight: 700; color: #253247; border: none;"); header.addWidget(name); header.addStretch()
-            quick_add = QToolButton(); quick_add.setFixedSize(24, 22); quick_add.setIcon(fluent_icon("\uE710", color=accent, size=12)); quick_add.setIconSize(QSize(12, 12)); quick_add.setToolTip(f"直接新建“{label}”任务"); quick_add.setAccessibleName(f"新建{label}任务")
-            quick_add.setStyleSheet(f"QToolButton {{ color: {accent}; background: #ffffff; border: 1px solid #d8e1eb; border-radius: 7px; }} QToolButton:hover, QToolButton:focus {{ background: {surface}; border-color: {accent}; }}")
-            quick_add.clicked.connect(lambda _checked=False, value=status: self.new_today_task(value)); header.addWidget(quick_add)
             count_text = str(counts[status])
             count_width = 24
             count_bg = accent if counts[status] else "#e1eaf6"
@@ -8291,7 +8277,7 @@ class MainWindow(QMainWindow):
             count = QLabel(count_text); count.setAlignment(Qt.AlignCenter); count.setFixedSize(count_width, 20); count.setStyleSheet(f"color: {count_color}; background: {count_bg}; font-size: 10px; font-weight: 700; border: none; border-radius: 9px;"); header.addWidget(count); column_layout.addLayout(header)
             status_tasks = ordered_board_tasks(tasks, date_key, status)
             if not status_tasks:
-                empty = QLabel("暂无任务\n新建任务或从其他状态移入"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
+                empty = QLabel("暂无任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
             for task in status_tasks:
                 column_layout.addWidget(TodayTaskCard(task, self))
             column_layout.addStretch(); self.task_board_layout.addWidget(column, 1, Qt.AlignTop)
