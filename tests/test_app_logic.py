@@ -36,6 +36,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         planning = APP.PlanningBacklogDialog(parent)
 
         self.assertFalse(hasattr(wip, "undo_move"))
+        self.assertTrue(hasattr(wip, "undo_wip_button"))
+        self.assertTrue(wip.undo_wip_button.isHidden())
         self.assertTrue(hasattr(planning, "undo_move"))
         self.assertTrue(planning.undo_move.isHidden())
         wip.close(); planning.close(); parent.close()
@@ -716,7 +718,39 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             task_wip_state=Mock(return_value={"overBy": 0}), statusBar=lambda: status_bar,
         )
         self.assertTrue(APP.MainWindow.defer_task_from_wip(window, task))
-        move.assert_called_once_with("task-1", "planned", None, source="manual")
+        move.assert_called_once_with("task-1", "planned", None, source="wip")
+
+    def test_wip_dialog_exposes_undo_inside_the_modal_after_reduction(self):
+        task = {"id": "task-1", "title": "Validate release", "date": "2026-08-10", "status": "doing"}
+        window = SimpleNamespace(
+            defer_task_from_wip=Mock(return_value=True),
+            task_wip_state=Mock(return_value={
+            "limit": 3, "count": 3, "remaining": 0, "overBy": 0,
+            "doing": [], "protected": [],
+            }),
+            undo_last_task_transition=Mock(),
+        )
+        feedback = Mock(); feedback.text.return_value = "已收敛 Validate release · 当前 3/3"
+        dialog = SimpleNamespace(
+            window=window, target_date="2026-08-10", undo_feedback=feedback,
+            undo_wip_button=Mock(), undo_wip_timer=Mock(), render_state=Mock(),
+        )
+
+        APP.TaskWipDialog.defer_task(dialog, task)
+
+        feedback_text = feedback.setText.call_args.args[0]
+        self.assertIn("Validate release", feedback_text)
+        self.assertIn("3/3", feedback_text)
+        dialog.undo_wip_button.show.assert_called_once_with()
+        dialog.undo_wip_timer.start.assert_called_once_with(7500)
+        dialog.render_state.assert_called_once_with()
+
+        dialog.render_state.reset_mock()
+        APP.TaskWipDialog.undo_last_wip_change(dialog)
+        window.undo_last_task_transition.assert_called_once_with()
+        dialog.undo_wip_button.hide.assert_called_once_with()
+        self.assertIn("已撤销收敛", feedback.setText.call_args.args[0])
+        dialog.render_state.assert_called_once_with()
 
     def test_wip_recommendation_still_uses_the_existing_reversible_action(self):
         task = {"id": "task-1", "status": "doing"}

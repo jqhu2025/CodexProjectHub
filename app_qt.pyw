@@ -4022,14 +4022,23 @@ class TaskWipDialog(QDialog):
         guidance_layout = QHBoxLayout(self.guidance); guidance_layout.setContentsMargins(11, 8, 10, 8); guidance_layout.setSpacing(9)
         self.guidance_icon = QLabel(); self.guidance_icon.setFixedSize(26, 26); self.guidance_icon.setAlignment(Qt.AlignCenter); guidance_layout.addWidget(self.guidance_icon)
         self.guidance_text = QLabel(); self.guidance_text.setWordWrap(True); self.guidance_text.setStyleSheet("color: #526071; font-size: 11px;"); guidance_layout.addWidget(self.guidance_text, 1)
-        self.recommend_button = QPushButton("采用建议"); self.recommend_button.setFixedHeight(32); self.recommend_button.setIcon(fluent_icon("\uE72A", color="#b54708", size=13)); self.recommend_button.setIconSize(QSize(13, 13)); self.recommend_button.clicked.connect(self.apply_recommendation); guidance_layout.addWidget(self.recommend_button)
+        self.recommend_button = QPushButton("移回计划"); self.recommend_button.setFixedHeight(32); self.recommend_button.setIcon(fluent_icon("\uE72A", color="#b54708", size=13)); self.recommend_button.setIconSize(QSize(13, 13)); self.recommend_button.clicked.connect(self.apply_recommendation); guidance_layout.addWidget(self.recommend_button)
         root.addWidget(self.guidance)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
         self.rows_widget = QWidget(); self.rows_widget.setObjectName("taskWipRows"); self.rows_widget.setStyleSheet("QWidget#taskWipRows { background: #f7f9fc; }")
         self.rows_layout = QVBoxLayout(self.rows_widget); self.rows_layout.setContentsMargins(10, 10, 10, 10); self.rows_layout.setSpacing(7)
         scroll.setWidget(self.rows_widget); root.addWidget(scroll, 1)
-        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+        actions = QHBoxLayout(); actions.setSpacing(9)
+        self.undo_feedback = QLabel(); self.undo_feedback.setStyleSheet("color: #526071; font-size: 11px;"); self.undo_feedback.hide(); actions.addWidget(self.undo_feedback, 1)
+        actions.addStretch(1)
+        self.undo_wip_button = QPushButton("撤销刚才收敛"); self.undo_wip_button.setFixedHeight(36)
+        self.undo_wip_button.setIcon(fluent_icon("\uE7A7", color="#1d4ed8", size=13)); self.undo_wip_button.setIconSize(QSize(13, 13))
+        self.undo_wip_button.setToolTip("将刚刚移回计划的任务恢复为进行中"); self.undo_wip_button.setAccessibleName("撤销刚才的 WIP 收敛")
+        self.undo_wip_button.setStyleSheet("QPushButton { color: #1d4ed8; background: #edf3ff; border: 1px solid #bfd1ef; border-radius: 8px; padding: 5px 11px; font-size: 11px; font-weight: 700; } QPushButton:hover, QPushButton:focus { background: #dfe9fb; border-color: #8eace0; }")
+        self.undo_wip_button.clicked.connect(self.undo_last_wip_change); self.undo_wip_button.hide(); actions.addWidget(self.undo_wip_button)
+        self.undo_wip_timer = QTimer(self); self.undo_wip_timer.setSingleShot(True); self.undo_wip_timer.timeout.connect(self.expire_wip_undo)
+        close = QPushButton("完成"); close.setObjectName("primary"); close.setFixedHeight(38); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
         self.render_state()
 
     @staticmethod
@@ -4073,9 +4082,10 @@ class TaskWipDialog(QDialog):
         if state["overBy"] and primary_recommendation:
             task = primary_recommendation["task"]
             remaining = max(0, state["overBy"] - 1)
-            remaining_text = f"；采用后仍需再收敛 {remaining} 项" if remaining else "；采用后即可恢复容量"
+            remaining_text = f"执行后仍需再收敛 {remaining} 项" if remaining else "执行后即可恢复容量"
             self.guidance_text.setText(
-                f"建议先移回“{task.get('title') or '未命名任务'}”：{primary_recommendation['reason']}{remaining_text}。"
+                f"建议收敛“{task.get('title') or '未命名任务'}”。依据：{primary_recommendation['reason']}。"
+                f"影响：任务回到计划并保留全部记录；{remaining_text}。"
             )
             self.guidance_icon.setPixmap(fluent_icon("\uE8EF", color="#b54708", size=15).pixmap(QSize(15, 15)))
             self.guidance_icon.setStyleSheet("background: #f8e7cd; border-radius: 7px;")
@@ -4130,7 +4140,7 @@ class TaskWipDialog(QDialog):
             open_codex = QToolButton(); open_codex.setFixedSize(34, 34); open_codex.setIcon(fluent_icon("\uE72A", color="#1d4ed8", size=14)); open_codex.setIconSize(QSize(14, 14)); open_codex.setToolTip("打开关联的 Codex 对话")
             open_codex.clicked.connect(lambda _checked=False, value=task: self.open_codex_task(value)); layout.addWidget(open_codex)
         defer = QPushButton("执行中保护" if protected else "移回计划"); defer.setFixedSize(96 if protected else 90, 34); defer.setEnabled(not protected)
-        defer.setToolTip("Codex 正在执行，不能移回计划" if protected else "保留任务，但将状态改回计划")
+        defer.setToolTip("Codex 正在执行，不能移回计划" if protected else "保留任务与全部历史记录，只将状态改回计划")
         if protected:
             defer.setStyleSheet("QPushButton:disabled { color: #708097; background: #eef2f6; border: 1px solid #d8e1eb; border-radius: 8px; font-size: 11px; font-weight: 650; }")
         elif recommended:
@@ -4146,7 +4156,26 @@ class TaskWipDialog(QDialog):
 
     def defer_task(self, task):
         if self.window.defer_task_from_wip(task):
+            state = self.window.task_wip_state(self.target_date)
+            title = str(task.get("title") or "未命名任务")
+            self.undo_feedback.setText(f"已收敛“{title}” · 当前 {state['count']}/{state['limit']}，全部记录已保留")
+            self.undo_feedback.setToolTip(self.undo_feedback.text()); self.undo_feedback.show()
+            self.undo_wip_button.show()
+            # The main window owns the authoritative undo snapshot for eight seconds.
+            # Hide this modal-local affordance slightly earlier so it cannot outlive that snapshot.
+            self.undo_wip_timer.start(7500)
             self.render_state()
+
+    def expire_wip_undo(self):
+        self.undo_wip_button.hide()
+        if self.undo_feedback.isVisible():
+            self.undo_feedback.setText("最近一次收敛已记录在任务历史中")
+
+    def undo_last_wip_change(self):
+        self.undo_wip_timer.stop(); self.undo_wip_button.hide()
+        self.window.undo_last_task_transition()
+        self.undo_feedback.setText("已撤销收敛，任务恢复为进行中"); self.undo_feedback.show()
+        self.render_state()
 
     def apply_recommendation(self):
         recommendation = self.recommendations[0] if getattr(self, "recommendations", None) else None
@@ -6124,7 +6153,7 @@ class MainWindow(QMainWindow):
         if str(current.get("sessionId") or "") in self.running_codex_session_ids():
             self.statusBar().showMessage("Codex 正在执行此任务，暂不能移回计划", 3600)
             return False
-        changed = self.move_task_on_board(current.get("id"), "planned", None, source="manual")
+        changed = self.move_task_on_board(current.get("id"), "planned", None, source="wip")
         if changed:
             state = self.task_wip_state(current.get("date"))
             message = "进行中容量已恢复" if not state["overBy"] else f"仍超出 WIP 容量 {state['overBy']} 项"
@@ -7318,7 +7347,7 @@ class MainWindow(QMainWindow):
         else:
             self.render_today_tasks()
             self.statusBar().showMessage(f"“{task.get('title', '任务')}”已调整为第 {movement.get('targetIndex', 0) + 1} 项", 2200)
-        if status_changed and allow_undo and source in {"manual", "selector", "drag"}:
+        if status_changed and allow_undo and source in {"manual", "selector", "drag", "wip"}:
             self.offer_task_undo(task, previous_status, status, now)
         return True
 

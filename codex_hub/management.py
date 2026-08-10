@@ -17,6 +17,7 @@ TASK_EVENT_SOURCES = {
     "manual": "手动",
     "selector": "状态选择",
     "drag": "看板拖放",
+    "wip": "WIP 收敛",
     "editor": "任务编辑",
     "codex": "Codex 自动",
     "project": "项目下一步",

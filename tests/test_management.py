@@ -34,6 +34,14 @@ class ManagementModuleTests(unittest.TestCase):
         event = management.task_status_events([task])[0]
         self.assertEqual((event["from"], event["to"], event["source"]), ("planned", "doing", "drag"))
 
+    def test_wip_reduction_has_a_distinct_audit_source(self):
+        self.assertEqual(management.TASK_EVENT_SOURCES["wip"], "WIP 收敛")
+        task = {"id": "task-1", "status": "doing"}
+        self.assertTrue(management.record_task_status_event(
+            task, "doing", "planned", "2026-08-10T09:10:00", "wip"
+        ))
+        self.assertEqual(task["statusHistory"][-1]["source"], "wip")
+
     def test_rollover_predecessor_is_historical_evidence_not_current_work(self):
         predecessor = {"id": "previous-day-task", "status": "doing", "carriedToTaskId": "next-day-task"}
         successor = {"id": "next-day-task", "status": "doing", "carriedFromTaskId": "previous-day-task"}
