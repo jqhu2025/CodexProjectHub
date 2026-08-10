@@ -44,6 +44,7 @@ All screenshots use fictional sample data. They do not contain real project path
 - Promote a project's concrete next action into today's plan with one click, with duplicate protection and automatic handoff back to the next project decision when the task is completed.
 - Ask Codex to inspect a project in read-only, ephemeral mode and suggest its objective, stage, health, blocker, and next action; suggestions remain editable and require confirmation before saving.
 - Open a single project workbench for decisions, today's tasks, local files, and Codex conversations.
+- Keep a local, source-labelled history of real project-decision changes, including manual edits, Codex suggestions, category moves, and completed next-action handoffs.
 - Search projects by name, category, path, objective, next action, conversation title, or conversation summary.
 - Filter the portfolio by current focus, missing next action, or paused/idea state.
 - Filter projects by running, completed, linked, or unlinked state.
@@ -146,6 +147,7 @@ The repository does not include personal runtime data. To load the fictional dat
 Copy-Item data\categories.example.json data\categories.json
 Copy-Item data\projects.example.json data\projects.json
 Copy-Item data\project_layout.example.json data\project_layout.json
+Copy-Item data\project_decisions.example.json data\project_decisions.json
 Copy-Item data\today_tasks.example.json data\today_tasks.json
 Copy-Item data\settings.example.json data\settings.json
 ```
@@ -172,6 +174,7 @@ Runtime data is stored in the `data` directory:
 | `data/daily_summaries.json` | Codex-generated reviews for previous workdays. |
 | `data/settings.json` | Local configuration, including the optional summary conversation ID. |
 | `data/project_layout.json` | Project order and hidden-project settings. |
+| `data/project_decisions.json` | Local audit trail for real objective, stage, health, blocker, category, and next-action changes. |
 
 These files may contain local paths or Codex conversation IDs and are excluded by `.gitignore`. Only fictional `*.example.json` files are committed.
 

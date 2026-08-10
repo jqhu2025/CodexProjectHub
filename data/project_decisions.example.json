@@ -1,0 +1,38 @@
+[
+  {
+    "id": "decision-demo-001",
+    "projectId": "project-spectral-benchmark",
+    "projectName": "Spectral Benchmark",
+    "at": "2026-08-09T16:40:00",
+    "source": "manual",
+    "changes": [
+      {
+        "field": "stage",
+        "label": "当前阶段",
+        "before": "planning",
+        "after": "execution"
+      },
+      {
+        "field": "nextStep",
+        "label": "明确下一步",
+        "before": "",
+        "after": "Run the baseline benchmark on the validation set"
+      }
+    ]
+  },
+  {
+    "id": "decision-demo-002",
+    "projectId": "project-spectral-benchmark",
+    "projectName": "Spectral Benchmark",
+    "at": "2026-08-10T10:15:00",
+    "source": "task_completion",
+    "changes": [
+      {
+        "field": "nextStep",
+        "label": "明确下一步",
+        "before": "Run the baseline benchmark on the validation set",
+        "after": ""
+      }
+    ]
+  }
+]

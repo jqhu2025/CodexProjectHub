@@ -30,6 +30,7 @@ PROJECTS_FILE = ROOT / "data" / "projects.json"
 CATEGORIES_FILE = ROOT / "data" / "categories.json"
 TASKS_FILE = ROOT / "data" / "today_tasks.json"
 DAILY_SUMMARIES_FILE = ROOT / "data" / "daily_summaries.json"
+PROJECT_DECISIONS_FILE = ROOT / "data" / "project_decisions.json"
 SETTINGS_FILE = ROOT / "data" / "settings.json"
 PROJECT_LAYOUT_FILE = ROOT / "data" / "project_layout.json"
 CODEX_HOME = Path(os.environ.get("USERPROFILE", "")) / ".codex"
@@ -51,6 +52,24 @@ PROJECT_STAGE = {
     "maintenance": "维护",
 }
 PROJECT_HEALTH = {"on_track": "正常", "attention": "需关注", "blocked": "阻塞"}
+PROJECT_DECISION_FIELDS = {
+    "priority": "管理优先级",
+    "status": "项目状态",
+    "category": "项目分类",
+    "stage": "当前阶段",
+    "health": "项目健康度",
+    "objective": "项目目标",
+    "nextStep": "明确下一步",
+    "blocker": "当前阻塞",
+}
+PROJECT_DECISION_SOURCES = {
+    "manual": "手动决策",
+    "editor": "项目编辑",
+    "codex": "Codex 建议",
+    "task_completion": "任务完成",
+    "created": "建立项目",
+    "category": "分类调整",
+}
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -928,6 +947,78 @@ def task_matches_project(task, project):
     return bool(project_id and project_id in project_reference_ids(project))
 
 
+def normalized_decision_value(value):
+    return " ".join(str(value or "").split())
+
+
+def display_project_decision_value(field, value):
+    normalized = normalized_decision_value(value)
+    if field == "priority":
+        return PROJECT_PRIORITY.get(normalized, normalized or "未设置")
+    if field == "status":
+        return STATUS_TEXT.get(normalized, normalized or "未设置")
+    if field == "stage":
+        return PROJECT_STAGE.get(normalized, normalized or "未设置")
+    if field == "health":
+        return PROJECT_HEALTH.get(normalized, normalized or "未设置")
+    if normalized:
+        return normalized
+    return "无" if field == "blocker" else "未设置"
+
+
+def project_decision_changes(before, after):
+    changes = []
+    before = before or {}; after = after or {}
+    for field, label in PROJECT_DECISION_FIELDS.items():
+        old_value = normalized_decision_value(before.get(field))
+        new_value = normalized_decision_value(after.get(field))
+        if old_value == new_value:
+            continue
+        changes.append({"field": field, "label": label, "before": old_value, "after": new_value})
+    return changes
+
+
+def build_project_decision_entry(project, before, after, source, occurred_at, entry_id=None):
+    changes = project_decision_changes(before, after)
+    if not changes:
+        return None
+    stable_project_id = (project or {}).get("savedId") or (project or {}).get("codexProjectId") or (project or {}).get("id")
+    return {
+        "id": entry_id or str(uuid.uuid4()),
+        "projectId": stable_project_id,
+        "projectName": str((project or {}).get("name") or "未命名项目"),
+        "at": occurred_at,
+        "source": source if source in PROJECT_DECISION_SOURCES else "manual",
+        "changes": changes,
+    }
+
+
+def compact_project_decision_value(field, value, limit=36):
+    text = display_project_decision_value(field, value)
+    return text if len(text) <= limit else text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def format_project_decision_summary(entry, max_changes=2):
+    changes = (entry or {}).get("changes") or []
+    parts = [
+        f"{change.get('label') or PROJECT_DECISION_FIELDS.get(change.get('field'), '项目字段')}："
+        f"{compact_project_decision_value(change.get('field'), change.get('before'))} → "
+        f"{compact_project_decision_value(change.get('field'), change.get('after'))}"
+        for change in changes[:max_changes]
+    ]
+    if len(changes) > max_changes:
+        parts.append(f"另 {len(changes) - max_changes} 项")
+    return "；".join(parts) if parts else "没有字段变化"
+
+
+def format_project_decision_time(value, compact=False):
+    try:
+        point = datetime.fromisoformat(str(value or ""))
+        return point.strftime("%m-%d %H:%M" if compact else "%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(value or "时间未知")
+
+
 def normalized_action_text(value):
     return " ".join(str(value or "").split()).casefold()
 
@@ -1369,6 +1460,7 @@ class ProjectEditor(QDialog):
         super().__init__(parent)
         self.project = project
         self.insight_worker = None
+        self.insight_applied = False
         self.setWindowTitle("编辑项目" if project else "新建项目")
         self.setObjectName("projectEditor")
         self.setMinimumSize(720, 650)
@@ -1478,6 +1570,7 @@ class ProjectEditor(QDialog):
             field = self.fields[field_name]; index = field.findData(result.get(key))
             if index >= 0: field.setCurrentIndex(index)
         summary = str(result.get("summary") or "Codex 已生成建议")
+        self.insight_applied = True
         self.insight_status.setText("已填入建议，请确认后保存")
         self.insight_status.setToolTip(summary)
 
@@ -2378,6 +2471,47 @@ class DailySummaryDialog(QDialog):
         self.window.start_daily_summary(force=True)
 
 
+class ProjectDecisionHistoryDialog(QDialog):
+    def __init__(self, parent, project, entries):
+        super().__init__(parent)
+        self.setWindowTitle(f"项目决策记录 · {project.get('name', '未命名项目')}")
+        self.setObjectName("projectDecisionHistory")
+        self.setMinimumSize(780, 560)
+        self.resize(820, 620)
+        self.setStyleSheet(STYLE)
+        root = QVBoxLayout(self); root.setContentsMargins(26, 22, 26, 20); root.setSpacing(13)
+        heading = QHBoxLayout(); heading.setSpacing(11)
+        icon = QLabel(); icon.setFixedSize(38, 38); icon.setAlignment(Qt.AlignCenter)
+        icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=19).pixmap(QSize(19, 19))); icon.setStyleSheet("background: #eaf1ff; border-radius: 10px;"); heading.addWidget(icon)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
+        title = QLabel("项目决策记录"); title.setStyleSheet("color: #172033; font-size: 22px; font-weight: 720;"); title_box.addWidget(title)
+        subtitle = QLabel(f"{project.get('name', '未命名项目')}  ·  {len(entries)} 条真实字段变更")
+        subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box); heading.addStretch(); root.addLayout(heading)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setStyleSheet("QScrollArea { background: #f7f9fc; border: 1px solid #dbe3ee; border-radius: 11px; }")
+        content = QWidget(); content.setObjectName("decisionHistoryContent"); content.setStyleSheet("QWidget#decisionHistoryContent { background: #f7f9fc; }")
+        rows = QVBoxLayout(content); rows.setContentsMargins(10, 10, 10, 10); rows.setSpacing(8)
+        if not entries:
+            empty = QLabel("暂无项目决策记录\n只有目标、阶段、健康度、下一步等字段真正发生变化时才会记录")
+            empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #748094; font-size: 12px; padding: 80px 20px;"); rows.addWidget(empty)
+        for entry in entries:
+            card = QFrame(); card.setObjectName("decisionHistoryCard"); card.setStyleSheet("QFrame#decisionHistoryCard { background: #ffffff; border: 1px solid #dce4ed; border-radius: 10px; }")
+            card_layout = QVBoxLayout(card); card_layout.setContentsMargins(14, 11, 14, 12); card_layout.setSpacing(7)
+            header = QHBoxLayout(); header.setSpacing(8)
+            timestamp = QLabel(format_project_decision_time(entry.get("at"))); timestamp.setStyleSheet("color: #34445c; font-size: 12px; font-weight: 650;"); header.addWidget(timestamp)
+            header.addStretch()
+            source_text = PROJECT_DECISION_SOURCES.get(entry.get("source"), "手动决策")
+            source = QLabel(source_text); source.setAlignment(Qt.AlignCenter); source.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); header.addWidget(source); card_layout.addLayout(header)
+            for change in entry.get("changes") or []:
+                field = change.get("field")
+                before = display_project_decision_value(field, change.get("before"))
+                after = display_project_decision_value(field, change.get("after"))
+                line = QLabel(f"{change.get('label') or PROJECT_DECISION_FIELDS.get(field, '项目字段')}：  {before}  →  {after}")
+                line.setWordWrap(True); line.setTextInteractionFlags(Qt.TextSelectableByMouse); line.setStyleSheet("color: #526071; font-size: 12px; padding: 2px 0;"); card_layout.addWidget(line)
+            rows.addWidget(card)
+        rows.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
+        actions = QHBoxLayout(); actions.addStretch(); close = QPushButton("关闭"); close.setFixedHeight(36); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
+
+
 class ProjectWorkbenchDialog(QDialog):
     def __init__(self, parent, project):
         super().__init__(parent)
@@ -2386,7 +2520,7 @@ class ProjectWorkbenchDialog(QDialog):
         self.setWindowTitle(f"项目面板 · {project.get('name', '未命名项目')}")
         self.setObjectName("projectWorkbench")
         self.setMinimumSize(900, 650)
-        self.resize(980, 700)
+        self.resize(980, 740)
         self.setStyleSheet(STYLE + """
             QDialog#projectWorkbench QLabel[sectionTitle='true'] { color: #253247; font-size: 14px; font-weight: 700; }
             QDialog#projectWorkbench QLabel[fieldLabel='true'] { color: #66758a; font-size: 11px; font-weight: 600; }
@@ -2447,6 +2581,19 @@ class ProjectWorkbenchDialog(QDialog):
         save = QPushButton("保存项目决策"); save.setFixedHeight(40); save.setIcon(fluent_icon("\uE74E", color="#1d4ed8", size=14)); save.setIconSize(QSize(14, 14)); save.clicked.connect(self.save_changes); next_row.addWidget(save, 0, Qt.AlignBottom)
         management_layout.addLayout(next_row); root.addWidget(management)
 
+        self.decision_history_frame = ClickableFrame(); self.decision_history_frame.setObjectName("decisionHistoryStrip"); self.decision_history_frame.setFixedHeight(52)
+        self.decision_history_frame.setAccessibleName("查看项目决策记录"); self.decision_history_frame.setToolTip("查看这个项目的目标、阶段、健康度和下一步等真实变更")
+        self.decision_history_frame.setStyleSheet("QFrame#decisionHistoryStrip { background: #f8fafc; border: 1px solid #dbe3ee; border-radius: 10px; } QFrame#decisionHistoryStrip:hover, QFrame#decisionHistoryStrip:focus { background: #f1f6fd; border-color: #a9bfdf; }")
+        decision_layout = QHBoxLayout(self.decision_history_frame); decision_layout.setContentsMargins(13, 6, 12, 6); decision_layout.setSpacing(10)
+        decision_icon = QLabel(); decision_icon.setFixedSize(32, 32); decision_icon.setAlignment(Qt.AlignCenter); decision_icon.setAttribute(Qt.WA_TransparentForMouseEvents)
+        decision_icon.setPixmap(fluent_icon("\uE81C", color="#1d4ed8", size=16).pixmap(QSize(16, 16))); decision_icon.setStyleSheet("background: #eaf1ff; border: none; border-radius: 8px;"); decision_layout.addWidget(decision_icon)
+        decision_text = QVBoxLayout(); decision_text.setSpacing(1)
+        decision_caption = QLabel("最近决策"); decision_caption.setAttribute(Qt.WA_TransparentForMouseEvents); decision_caption.setStyleSheet("color: #253247; font-size: 11px; font-weight: 700;"); decision_text.addWidget(decision_caption)
+        self.decision_history_summary = ElidedLabel(); self.decision_history_summary.setAttribute(Qt.WA_TransparentForMouseEvents); self.decision_history_summary.setStyleSheet("color: #66758a; font-size: 11px;"); decision_text.addWidget(self.decision_history_summary); decision_layout.addLayout(decision_text, 1)
+        self.decision_history_count = QLabel(); self.decision_history_count.setAttribute(Qt.WA_TransparentForMouseEvents); self.decision_history_count.setAlignment(Qt.AlignCenter); self.decision_history_count.setStyleSheet("color: #315f9b; background: #eaf2ff; border: none; border-radius: 7px; padding: 4px 8px; font-size: 10px; font-weight: 650;"); decision_layout.addWidget(self.decision_history_count)
+        decision_chevron = QLabel(); decision_chevron.setFixedSize(18, 18); decision_chevron.setAlignment(Qt.AlignCenter); decision_chevron.setAttribute(Qt.WA_TransparentForMouseEvents); decision_chevron.setPixmap(fluent_icon("\uE76C", color="#7a8798", size=13).pixmap(QSize(13, 13))); decision_layout.addWidget(decision_chevron)
+        self.decision_history_frame.clicked.connect(self.show_decision_history); root.addWidget(self.decision_history_frame)
+
         lower = QHBoxLayout(); lower.setSpacing(12)
         tasks_card = QFrame(); tasks_card.setObjectName("projectTasksCard"); tasks_card.setStyleSheet("QFrame#projectTasksCard { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 12px; }")
         tasks_layout = QVBoxLayout(tasks_card); tasks_layout.setContentsMargins(16, 14, 16, 14); tasks_layout.setSpacing(8)
@@ -2471,6 +2618,7 @@ class ProjectWorkbenchDialog(QDialog):
         edit = QPushButton("完整编辑"); edit.setIcon(fluent_icon("\uE70F", size=14)); edit.setIconSize(QSize(14, 14)); edit.clicked.connect(self.full_edit); actions.addWidget(edit)
         actions.addStretch(); close = QPushButton("关闭"); close.clicked.connect(self.accept); actions.addWidget(close); root.addLayout(actions)
         self.render_tasks()
+        self.render_decision_history()
 
     def render_tasks(self):
         while self.project_tasks.count():
@@ -2493,6 +2641,24 @@ class ProjectWorkbenchDialog(QDialog):
             edit = QToolButton(); edit.setFixedSize(30, 30); edit.setIcon(fluent_icon("\uE70F", size=13)); edit.setToolTip("编辑任务"); edit.clicked.connect(lambda _checked=False, value=task: self.edit_task(value)); row_layout.addWidget(edit)
             self.project_tasks.addWidget(row)
 
+    def render_decision_history(self):
+        entries = self.window.project_decisions_for(self.project)
+        if not entries:
+            summary = "暂无记录；首次保存真实变更后会自动形成历史"
+            count = "0 条"
+        else:
+            latest = entries[0]
+            source = PROJECT_DECISION_SOURCES.get(latest.get("source"), "手动决策")
+            summary = f"{format_project_decision_time(latest.get('at'), compact=True)} · {source} · {format_project_decision_summary(latest)}"
+            count = f"{len(entries)} 条"
+        self.decision_history_summary.setText(summary)
+        self.decision_history_summary.setToolTip(summary)
+        self.decision_history_count.setText(count)
+
+    def show_decision_history(self):
+        entries = self.window.project_decisions_for(self.project)
+        ProjectDecisionHistoryDialog(self, self.project, entries).exec_()
+
     def save_changes(self, notify=True):
         data = {
             "priority": self.priority_field.currentData(),
@@ -2505,6 +2671,7 @@ class ProjectWorkbenchDialog(QDialog):
             "blocker": self.blocker_field.text().strip(),
         }
         self.window.update_project_management(self.project, data, notify=notify)
+        self.render_decision_history()
 
     def new_task(self):
         self.save_changes(notify=False)
@@ -2592,6 +2759,9 @@ class MainWindow(QMainWindow):
         self.project_layout = load_project_layout()
         self.today_tasks = load_json(TASKS_FILE, [])
         self.daily_summaries = load_json(DAILY_SUMMARIES_FILE, [])
+        self.project_decisions = load_json(PROJECT_DECISIONS_FILE, [])
+        if not isinstance(self.project_decisions, list):
+            self.project_decisions = []
         self.daily_summary_worker = None
         self.daily_summary_error = ""
         self.summary_attempt_date = None
@@ -2891,6 +3061,9 @@ class MainWindow(QMainWindow):
         if isinstance(stored_summaries, list) and stored_summaries != self.daily_summaries:
             self.daily_summaries = stored_summaries
             self.render_daily_summary()
+        stored_decisions = load_json(PROJECT_DECISIONS_FILE, [])
+        if isinstance(stored_decisions, list) and stored_decisions != self.project_decisions:
+            self.project_decisions = stored_decisions
         self.saved_projects = load_json(PROJECTS_FILE, [])
         self.projects = visible_project_catalog(self.saved_projects, self.project_layout)
         events = self.live_sessions
@@ -3195,6 +3368,30 @@ class MainWindow(QMainWindow):
         if not reference:
             return None
         return next((project for project in self.projects if reference in project_reference_ids(project)), None)
+
+    def project_decisions_for(self, project):
+        references = project_reference_ids(project)
+        return sorted(
+            [entry for entry in self.project_decisions if str(entry.get("projectId") or "") in references],
+            key=lambda entry: str(entry.get("at") or ""),
+            reverse=True,
+        )
+
+    def record_project_decision(self, project, before, after, source="manual", occurred_at=None):
+        entry = build_project_decision_entry(
+            project,
+            before,
+            after,
+            source,
+            occurred_at or datetime.now().isoformat(timespec="seconds"),
+        )
+        if entry is None:
+            return None
+        self.project_decisions.append(entry)
+        if len(self.project_decisions) > 2000:
+            self.project_decisions = self.project_decisions[-2000:]
+        save_json(PROJECT_DECISIONS_FILE, self.project_decisions)
+        return entry
 
     def sync_project_workload(self):
         """Attach today's task counts so portfolio focus reflects work that is actually moving."""
@@ -3532,6 +3729,7 @@ class MainWindow(QMainWindow):
 
     def update_project_management(self, project, data, notify=True):
         previous_category = project.get("category", "未分类")
+        before = dict(project)
         target = self.saved_record_for_project(project)
         target.update({
             "priority": data.get("priority") if data.get("priority") in PROJECT_PRIORITY else "normal",
@@ -3553,6 +3751,7 @@ class MainWindow(QMainWindow):
                 orders[new_category].append(project.get("id"))
         for key in ("priority", "stage", "health", "status", "category", "objective", "nextStep", "blocker", "nextStepReviewNeeded"):
             project[key] = target.get(key)
+        self.record_project_decision(project, before, target, "manual")
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None
@@ -3593,6 +3792,7 @@ class MainWindow(QMainWindow):
         project = self.project_by_id(task.get("projectId"))
         if project is None:
             return False
+        before = dict(project)
         completed_at = now or datetime.now().isoformat(timespec="seconds")
         update = project_next_step_completion_update(project, task, completed_at)
         if update is None:
@@ -3600,15 +3800,19 @@ class MainWindow(QMainWindow):
         target = self.saved_record_for_project(project)
         target.update(update)
         project.update(update)
+        self.record_project_decision(project, before, target, "task_completion", completed_at)
         save_json(PROJECTS_FILE, self.saved_projects)
         return True
 
     def change_project_category(self, project, category):
         if category not in self.categories[1:] or category == project.get("category"):
             return
+        before = dict(project)
         previous_category = project.get("category", "未分类")
         target = self.saved_record_for_project(project)
         target["category"] = category
+        project["category"] = category
+        self.record_project_decision(project, before, target, "category")
         orders = self.project_layout.setdefault("categoryOrders", {})
         orders[previous_category] = [value for value in orders.get(previous_category, []) if value != project.get("id")]
         if project.get("id") not in orders.setdefault(category, []):
@@ -3788,6 +3992,7 @@ class MainWindow(QMainWindow):
         if not data["name"] or not data["path"]:
             QMessageBox.warning(self, "信息不完整", "项目名称和本地路径不能为空。", parent=self); return
         if not data["color"].startswith("#") or len(data["color"]) != 7: data["color"] = "#58d7f6"
+        before = dict(project or {})
         if project:
             previous_category = project.get("category", "未分类")
             target = self.saved_record_for_project(project)
@@ -3811,6 +4016,9 @@ class MainWindow(QMainWindow):
             if codex_match:
                 hidden = self.project_layout.setdefault("hiddenProjectIds", [])
                 self.project_layout["hiddenProjectIds"] = [value for value in hidden if value != codex_match.get("id")]
+        decision_project = project or {**target, "savedId": target.get("id")}
+        source = ("codex" if dialog.insight_applied else "editor") if project else "created"
+        self.record_project_decision(decision_project, before, target, source)
         save_json(PROJECTS_FILE, self.saved_projects)
         save_json(PROJECT_LAYOUT_FILE, self.project_layout)
         self.view_signature = None

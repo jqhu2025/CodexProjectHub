@@ -206,6 +206,53 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in projects], ["Blocked", "Focus"])
 
 
+class ProjectDecisionHistoryTests(unittest.TestCase):
+    def test_changes_include_only_real_normalized_field_differences(self):
+        before = {"objective": "Ship   a validated model", "stage": "planning", "blocker": ""}
+        after = {"objective": " Ship a validated model ", "stage": "execution", "blocker": "Waiting for data"}
+        changes = APP.project_decision_changes(before, after)
+        self.assertEqual([item["field"] for item in changes], ["stage", "blocker"])
+        self.assertEqual(changes[1]["before"], "")
+
+    def test_entry_uses_stable_project_id_and_known_source(self):
+        project = {"id": "current-id", "savedId": "stable-id", "name": "Model validation"}
+        entry = APP.build_project_decision_entry(
+            project,
+            {"health": "on_track"},
+            {"health": "attention"},
+            "codex",
+            "2026-08-10T11:30:00",
+            entry_id="decision-1",
+        )
+        self.assertEqual(entry["projectId"], "stable-id")
+        self.assertEqual(entry["source"], "codex")
+        self.assertEqual(entry["id"], "decision-1")
+
+    def test_entry_is_not_created_when_nothing_changed(self):
+        entry = APP.build_project_decision_entry(
+            {"id": "project-1"},
+            {"nextStep": "Run validation"},
+            {"nextStep": " Run   validation "},
+            "manual",
+            "2026-08-10T11:30:00",
+        )
+        self.assertIsNone(entry)
+
+    def test_display_and_summary_use_readable_management_labels(self):
+        entry = {
+            "changes": [
+                {"field": "stage", "label": "当前阶段", "before": "planning", "after": "execution"},
+                {"field": "blocker", "label": "当前阻塞", "before": "", "after": "Awaiting review"},
+                {"field": "health", "label": "项目健康度", "before": "on_track", "after": "attention"},
+            ]
+        }
+        self.assertEqual(APP.display_project_decision_value("stage", "execution"), "执行")
+        self.assertEqual(APP.display_project_decision_value("blocker", ""), "无")
+        summary = APP.format_project_decision_summary(entry)
+        self.assertIn("当前阶段：规划 → 执行", summary)
+        self.assertIn("另 1 项", summary)
+
+
 class DailySummaryTests(unittest.TestCase):
     def test_payload_uses_only_requested_date_and_resolves_project(self):
         tasks = [
