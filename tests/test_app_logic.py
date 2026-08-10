@@ -472,7 +472,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
             candidates = APP.MainWindow.project_governance_candidates(window)
         self.assertEqual([project["id"] for project in candidates], ["eligible"])
 
-    def test_control_state_prioritizes_blockers_and_missing_decisions(self):
+    def test_control_state_prioritizes_blockers_missing_decisions_and_baseline_review(self):
         blocked = {"status": "active", "health": "on_track", "blocker": "Waiting for calibration", "objective": "Ship", "nextStep": "Test"}
         missing_next = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": ""}
         healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
@@ -480,7 +480,8 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertIn("calibration", APP.project_control_state(blocked)[4])
         self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
         self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
-        self.assertEqual(APP.project_control_state(healthy)[0], "on_track")
+        self.assertEqual(APP.project_control_state(healthy)[0], "review")
+        self.assertIn("首次复核基线", APP.project_control_state(healthy)[4])
 
     def test_legacy_attention_becomes_review_instead_of_current_risk(self):
         legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
@@ -490,7 +491,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertEqual(APP.project_control_state(fresh_attention)[:2], ("attention", "需关注"))
         self.assertEqual(APP.project_control_state(overdue_attention)[:2], ("attention", "需关注"))
-        self.assertTrue(APP.project_management_scope_matches(overdue_attention, "review"))
+        self.assertFalse(APP.project_management_scope_matches(overdue_attention, "review"))
 
     def test_search_matches_conversation_title_and_status(self):
         search = SimpleNamespace(text=lambda: "benchmark")
@@ -538,6 +539,25 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         APP.MainWindow.open_project_scope(window, "review")
         window.show_portfolio_review_queue.assert_called_once_with()
 
+    def test_guided_review_limits_each_session_to_a_manageable_batch(self):
+        projects = [{"id": f"project-{index}"} for index in range(8)]
+        window = SimpleNamespace(portfolio_review_queue=Mock(return_value=projects))
+        with patch.object(APP, "PortfolioReviewDialog") as dialog:
+            APP.MainWindow.show_portfolio_review_queue(window)
+        dialog.assert_called_once_with(window, projects[:5], total_count=8)
+        dialog.return_value.exec_.assert_called_once_with()
+
+    def test_review_queue_defers_to_the_more_specific_lifecycle_decision(self):
+        normal = {"id": "normal", "status": "active"}
+        quiet = {"id": "quiet", "status": "active"}
+        window = SimpleNamespace(
+            projects=[normal, quiet],
+            lifecycle_calibration_queue=Mock(return_value=[{"project": quiet, "state": {"due": True}}]),
+        )
+        with patch.object(APP, "portfolio_decision_groups", return_value={"review": [normal, quiet]}):
+            queue = APP.MainWindow.portfolio_review_queue(window)
+        self.assertEqual(queue, [normal])
+
     def test_management_scope_surfaces_attention_and_blocked_projects(self):
         blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
         attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
@@ -550,6 +570,7 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertFalse(APP.project_management_scope_matches(legacy_attention, "attention"))
         self.assertTrue(APP.project_management_scope_matches(legacy_attention, "review"))
         self.assertFalse(APP.project_management_scope_matches(healthy, "attention"))
+        self.assertTrue(APP.project_management_scope_matches(healthy, "review"))
         self.assertTrue(APP.project_management_scope_matches(due_review, "review"))
 
     def test_focus_projects_sort_before_regular_projects(self):

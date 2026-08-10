@@ -112,6 +112,7 @@ CODEX_SESSIONS = CODEX_HOME / "sessions"
 CODEX_GLOBAL_STATE = CODEX_HOME / ".codex-global-state.json"
 CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
 DEFAULT_CATEGORIES = ["Product Development", "Research Lab", "Operations", "External Projects", "未分类"]
+PROJECT_REVIEW_BATCH_SIZE = 5
 
 STYLE = """
 QMainWindow, QWidget { background: #f5f7fb; color: #172033; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 14px; }
@@ -1113,16 +1114,16 @@ def project_control_state(project):
     review_due, review_age, review_cadence = project_review_status(project)
     if health == "attention" and (not review_due or review_age is not None):
         return "attention", "需关注", "#b54708", "#fff4e5", "已确认关注；请处理风险并按复核节奏更新"
+    if not str(project.get("nextStep") or "").strip():
+        reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
+        return "on_track", "正常", "#087443", "#e7f7ef", reason
     if review_due:
         reason = (
             f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
             if review_age is not None else
-            "历史关注状态尚未经过当前复核"
+            "尚未建立首次复核基线"
         )
         return "review", "待复核", "#315f9b", "#edf4ff", reason
-    if not str(project.get("nextStep") or "").strip():
-        reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
-        return "on_track", "正常", "#087443", "#e7f7ef", reason
     return "on_track", "正常", "#087443", "#e7f7ef", "按当前下一步推进"
 
 
@@ -1133,7 +1134,7 @@ def project_review_summary(project):
         state = "已到复核周期" if due else f"{max(0, cadence - (age_days or 0))} 天后复核"
         return f"上次复核 {format_project_decision_time(reviewed_at, compact=True)} · {cadence} 天周期 · {state}"
     if due:
-        return f"历史状态尚未确认 · 建议现在复核 · 后续每 {cadence} 天"
+        return f"尚未完成首次复核 · 确认后每 {cadence} 天自动提醒"
     return f"尚未建立复核节奏 · 确认后每 {cadence} 天自动提醒"
 
 
@@ -1151,7 +1152,7 @@ def project_management_scope_matches(project, scope):
             return True
         return project_health_key(project) == "attention" and bool(str((project or {}).get("reviewedAt") or "").strip())
     if scope == "review":
-        return project_review_status(project)[0] and project_control_state(project)[0] != "blocked"
+        return project_review_status(project)[0] and project_control_state(project)[0] == "review"
     if scope == "blocked":
         return project_control_state(project)[0] == "blocked"
     if scope == "paused":
@@ -3851,10 +3852,11 @@ class FocusCapacityDialog(QDialog):
 
 class PortfolioReviewDialog(QDialog):
     """A deliberate one-project-at-a-time review flow; never bulk-confirms state."""
-    def __init__(self, parent, projects):
+    def __init__(self, parent, projects, total_count=None):
         super().__init__(parent)
         self.window = parent
         self.pending = list(projects or [])
+        self.portfolio_total = max(len(self.pending), int(total_count or len(self.pending)))
         self.reviewed_count = 0
         self.setWindowTitle("项目复核")
         self.setObjectName("portfolioReviewDialog")
@@ -3871,7 +3873,7 @@ class PortfolioReviewDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel("核对目标、健康度和下一步；只有点击“确认现状”才会写入审计记录")
+        subtitle = QLabel("核对目标、健康度和下一步；每轮最多 5 项，只有确认后才建立复核基线")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
@@ -3914,7 +3916,10 @@ class PortfolioReviewDialog(QDialog):
         self.clear_card()
         remaining = len(self.pending)
         total = self.reviewed_count + remaining
-        self.counter.setText(f"{self.reviewed_count + 1} / {total}" if remaining else f"已完成 {self.reviewed_count}")
+        self.counter.setText(
+            f"{self.reviewed_count + 1} / {total} · 总待复核 {self.portfolio_total}"
+            if remaining else f"本轮完成 {self.reviewed_count}"
+        )
         self.open_button.setVisible(bool(remaining)); self.skip_button.setVisible(bool(remaining)); self.skip_button.setEnabled(remaining > 1)
         self.confirm_button.setText("确认现状" if remaining else "关闭")
         if not remaining:
@@ -3922,9 +3927,16 @@ class PortfolioReviewDialog(QDialog):
             done_icon.setPixmap(fluent_icon("\uE73E", color="#16803c", size=28).pixmap(QSize(28, 28))); done_icon.setStyleSheet("background: #e8f7ef; border-radius: 15px;")
             self.card_layout.addStretch(); self.card_layout.addWidget(done_icon, 0, Qt.AlignCenter)
             done = QLabel("本轮项目复核已完成"); done.setAlignment(Qt.AlignCenter); done.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); self.card_layout.addWidget(done)
-            detail = QLabel(f"已确认 {self.reviewed_count} 个项目；新的复核日期和周期已经写入决策记录")
+            remaining_total = max(0, self.portfolio_total - self.reviewed_count)
+            detail_text = (
+                f"本轮已确认 {self.reviewed_count} 个项目；仍有 {remaining_total} 个待复核，可稍后继续"
+                if remaining_total else
+                f"已确认 {self.reviewed_count} 个项目；复核日期和周期已经写入决策记录"
+            )
+            detail = QLabel(detail_text)
             detail.setAlignment(Qt.AlignCenter); detail.setWordWrap(True); detail.setStyleSheet("color: #66758a; font-size: 12px;"); self.card_layout.addWidget(detail)
-            self.card_layout.addStretch(); self.feedback.setText("主页和项目页的待复核数量已同步更新。")
+            feedback = "主页待复核数量已同步更新；继续处理时会自动进入下一批。" if remaining_total else "本轮复核基线已经全部建立。"
+            self.card_layout.addStretch(); self.feedback.setText(feedback)
             self.feedback.setStyleSheet("color: #087443; background: #e8f7ef; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
             return
 
@@ -3933,7 +3945,7 @@ class PortfolioReviewDialog(QDialog):
         review_reason = (
             f"距离上次复核已 {review_age} 天，已到 {review_cadence} 天复核周期"
             if review_age is not None else
-            "历史关注状态尚未经过当前复核"
+            "尚未建立首次复核基线"
         )
         name_row = QHBoxLayout(); name_row.setSpacing(9)
         name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
@@ -3969,7 +3981,12 @@ class PortfolioReviewDialog(QDialog):
             self.feedback.setText("当前保存的是历史“需关注”状态：若风险仍存在，可确认现状；若已恢复正常，请先打开项目面板修改健康度。")
             self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         else:
-            self.feedback.setText("确认后将按项目优先级重新计算下一次复核日期，不会修改目标、健康度或下一步。")
+            baseline = not str(project.get("reviewedAt") or "").strip()
+            self.feedback.setText(
+                "这是首次复核：确认后将建立管理基线，并按项目优先级启动自动复核周期。"
+                if baseline else
+                "确认后将按项目优先级重新计算下一次复核日期，不会修改目标、健康度或下一步。"
+            )
             self.feedback.setStyleSheet("color: #66758a; font-size: 11px;")
 
     def skip_current(self):
@@ -4880,12 +4897,27 @@ class MainWindow(QMainWindow):
         self.select_section("projects")
         self.render_nav(); self.render()
 
-    def show_portfolio_review_queue(self):
+    def portfolio_review_queue(self):
+        """Keep one project in one decision queue, preferring lifecycle calibration."""
         projects = portfolio_decision_groups(self.projects).get("review", [])
+        lifecycle_refs = set()
+        for item in self.lifecycle_calibration_queue():
+            lifecycle_refs.update(project_reference_ids(item.get("project") or {}))
+        return [
+            project for project in projects
+            if not (project_reference_ids(project) & lifecycle_refs)
+        ]
+
+    def show_portfolio_review_queue(self):
+        projects = self.portfolio_review_queue()
         if not projects:
             QMessageBox.information(self, "无需复核", "当前没有到期或尚未确认的项目。")
             return
-        PortfolioReviewDialog(self, projects).exec_()
+        PortfolioReviewDialog(
+            self,
+            projects[:PROJECT_REVIEW_BATCH_SIZE],
+            total_count=len(projects),
+        ).exec_()
 
     def show_focus_capacity(self):
         FocusCapacityDialog(self).exec_()
@@ -5006,6 +5038,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "portfolio_decision_cards"):
             return
         groups = portfolio_decision_groups(self.projects)
+        groups["review"] = self.portfolio_review_queue()
         prefixes = {"attention": "风险处置", "review": "等待确认", "needs_next": "等待决策"}
         capacity_state = portfolio_focus_capacity_state(self.projects, portfolio_focus_capacity())
         for scope, controls in self.portfolio_decision_cards.items():
@@ -5038,8 +5071,18 @@ class MainWindow(QMainWindow):
                 preview = "、".join(names[:2])
                 if len(names) > 2:
                     preview += f" 等 {len(names)} 项"
-                summary = f"{prefixes[scope]}：{preview}"
+                if scope == "review":
+                    baseline_count = sum(not str(project.get("reviewedAt") or "").strip() for project in projects)
+                    overdue_count = len(projects) - baseline_count
+                    review_prefix = f"首次 {baseline_count}"
+                    if overdue_count:
+                        review_prefix += f" · 到期 {overdue_count}"
+                    summary = f"{review_prefix}：{preview}"
+                else:
+                    summary = f"{prefixes[scope]}：{preview}"
                 if scope == "attention":
+                    details = [f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}" for project in projects]
+                elif scope == "review":
                     details = [f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}" for project in projects]
                 else:
                     details = [f"• {name}" for name in names]

@@ -318,11 +318,13 @@ class ManagementModuleTests(unittest.TestCase):
         self.assertEqual(applied, [])
         self.assertEqual(merged, project)
 
-    def test_legacy_attention_requires_review_without_flagging_healthy_legacy_projects(self):
+    def test_every_active_project_requires_a_truthful_baseline_review(self):
         attention = {"status": "active", "priority": "normal", "health": "attention"}
         healthy = {"status": "active", "priority": "normal", "health": "on_track"}
+        paused = {"status": "paused", "priority": "normal", "health": "on_track"}
         self.assertEqual(management.project_review_status(attention), (True, None, 7))
-        self.assertEqual(management.project_review_status(healthy), (False, None, 7))
+        self.assertEqual(management.project_review_status(healthy), (True, None, 7))
+        self.assertEqual(management.project_review_status(paused), (False, None, 7))
 
     def test_review_cadence_tracks_management_priority(self):
         now = datetime(2026, 8, 10, 12, 0, 0)

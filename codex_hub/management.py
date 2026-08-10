@@ -614,10 +614,10 @@ def merge_missing_project_insight(project, insight, allowed_fields=None):
 def project_review_status(project, now=None):
     """Return (is_due, age_days, cadence_days) for a deliberate project review.
 
-    Legacy healthy projects are not flooded into a migration queue.  A legacy
-    attention flag *is* reviewable because its age is unknown and it should not
-    masquerade as a current risk.  Once a project has been reviewed, cadence is
-    derived from management priority and continues automatically.
+    Every active project needs one deliberate baseline review before a cadence
+    can be truthful. Unreviewed projects enter a neutral review queue rather
+    than masquerading as current risk. Once reviewed, cadence is derived from
+    management priority and continues automatically.
     """
     project = project or {}
     priority = project.get("priority") if project.get("priority") in PROJECT_REVIEW_CADENCE_DAYS else "normal"
@@ -626,11 +626,11 @@ def project_review_status(project, now=None):
         return False, None, cadence
     reviewed_at = normalized_decision_value(project.get("reviewedAt"))
     if not reviewed_at:
-        return project.get("health") == "attention", None, cadence
+        return True, None, cadence
     try:
         reviewed = datetime.fromisoformat(reviewed_at)
     except ValueError:
-        return project.get("health") == "attention", None, cadence
+        return True, None, cadence
     current = now or datetime.now(tz=reviewed.tzinfo)
     if reviewed.tzinfo is not None and current.tzinfo is None:
         current = current.replace(tzinfo=reviewed.tzinfo)
