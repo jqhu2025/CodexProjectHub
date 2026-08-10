@@ -403,6 +403,38 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         self.assertTrue(saved["lastBlockerResolvedAt"])
         self.assertEqual(window.project_decisions[-1]["blockerLifecycle"]["action"], "resolved")
 
+    def test_codex_update_establishes_review_only_after_all_governance_gaps_are_filled(self):
+        project = {
+            "id": "runtime", "savedId": "stable", "name": "Release", "status": "active", "category": "Research",
+            "priority": "normal", "stage": "", "health": "on_track", "objective": "", "nextStep": "Validate", "blocker": "",
+        }
+        target = {**project, "id": "stable"}
+        window = SimpleNamespace(
+            categories=["全部", "Research"], project_layout={"categoryOrders": {}}, saved_projects=[target], project_decisions=[],
+            saved_record_for_project=lambda _project: target,
+            apply_project_completion_lifecycle=Mock(return_value=True),
+            refresh=Mock(), statusBar=lambda: Mock(), view_signature="old",
+        )
+
+        def record_decision(identity, before, after, source, occurred_at):
+            return APP.build_project_decision_entry(identity, before, after, source, occurred_at)
+
+        window.record_project_decision = Mock(side_effect=record_decision)
+        partial = {
+            "priority": "normal", "stage": "validation", "health": "on_track", "status": "active", "category": "Research",
+            "objective": "", "nextStep": "Validate", "blocker": "",
+        }
+        with patch.object(APP, "save_json"):
+            APP.MainWindow.update_project_management(window, project, partial, notify=False, source="codex")
+        self.assertNotIn("reviewedAt", project)
+        self.assertNotIn("reviewedAt", target)
+
+        complete = {**partial, "objective": "Ship a validated release"}
+        with patch.object(APP, "save_json"):
+            APP.MainWindow.update_project_management(window, project, complete, notify=False, source="codex")
+        self.assertTrue(project.get("reviewedAt"))
+        self.assertEqual(project["reviewedAt"], target["reviewedAt"])
+
     def test_completed_project_is_closed_as_one_coherent_decision(self):
         normalized, notes = APP.normalize_project_management_decision(
             {"status": "active"},
@@ -475,16 +507,19 @@ class ProjectManagementInteractionTests(unittest.TestCase):
     def test_control_state_prioritizes_blockers_missing_decisions_and_baseline_review(self):
         blocked = {"status": "active", "health": "on_track", "blocker": "Waiting for calibration", "objective": "Ship", "nextStep": "Test"}
         missing_next = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": ""}
-        healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        healthy = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        incomplete = {**healthy, "objective": "", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
         self.assertEqual(APP.project_control_state(blocked)[0], "blocked")
         self.assertIn("calibration", APP.project_control_state(blocked)[4])
         self.assertEqual(APP.project_control_state(missing_next)[0], "on_track")
         self.assertIn("尚未设置下一步", APP.project_control_state(missing_next)[4])
         self.assertEqual(APP.project_control_state(healthy)[0], "review")
         self.assertIn("首次复核基线", APP.project_control_state(healthy)[4])
+        self.assertEqual(APP.project_control_state(incomplete)[:2], ("review", "待补全"))
+        self.assertIn("项目目标", APP.project_control_state(incomplete)[4])
 
     def test_legacy_attention_becomes_review_instead_of_current_risk(self):
-        legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review"}
+        legacy_attention = {"status": "active", "stage": "execution", "health": "attention", "objective": "Ship", "nextStep": "Review"}
         fresh_attention = {**legacy_attention, "reviewedAt": datetime.now().isoformat(timespec="seconds")}
         overdue_attention = {**legacy_attention, "reviewedAt": "2000-01-01T00:00:00"}
         self.assertEqual(APP.project_control_state(legacy_attention)[:2], ("review", "待复核"))
@@ -547,6 +582,27 @@ class ProjectManagementInteractionTests(unittest.TestCase):
         dialog.assert_called_once_with(window, projects[:5], total_count=8)
         dialog.return_value.exec_.assert_called_once_with()
 
+    def test_incomplete_review_routes_to_codex_governance_before_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project = {
+                "id": "project", "status": "active", "path": folder,
+                "objective": "", "nextStep": "Validate", "stage": "execution", "health": "on_track",
+            }
+            window = SimpleNamespace(show_project_governance=Mock(), open_project_workspace=Mock())
+            dialog = SimpleNamespace(current_project=lambda: project, accept=Mock(), window=window)
+            APP.PortfolioReviewDialog.confirm_current(dialog)
+        dialog.accept.assert_called_once_with()
+        window.show_project_governance.assert_called_once_with([project])
+        window.open_project_workspace.assert_not_called()
+
+    def test_review_queue_prioritizes_incomplete_governance_records(self):
+        ready = {"id": "ready", "status": "active", "objective": "Ship", "nextStep": "Test", "stage": "execution", "health": "on_track"}
+        incomplete = {**ready, "id": "incomplete", "objective": ""}
+        window = SimpleNamespace(projects=[ready, incomplete], lifecycle_calibration_queue=Mock(return_value=[]))
+        with patch.object(APP, "portfolio_decision_groups", return_value={"review": [ready, incomplete]}):
+            queue = APP.MainWindow.portfolio_review_queue(window)
+        self.assertEqual(queue, [incomplete, ready])
+
     def test_review_queue_defers_to_the_more_specific_lifecycle_decision(self):
         normal = {"id": "normal", "status": "active"}
         quiet = {"id": "quiet", "status": "active"}
@@ -561,9 +617,9 @@ class ProjectManagementInteractionTests(unittest.TestCase):
     def test_management_scope_surfaces_attention_and_blocked_projects(self):
         blocked = {"status": "active", "blocker": "Dependency unavailable", "objective": "Ship", "nextStep": "Wait"}
         attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Review", "reviewedAt": datetime.now().isoformat(timespec="seconds")}
-        legacy_attention = {"status": "active", "health": "attention", "objective": "Ship", "nextStep": "Confirm"}
-        healthy = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
-        due_review = {"status": "active", "health": "on_track", "objective": "Ship", "nextStep": "Test", "reviewedAt": "2000-01-01T00:00:00"}
+        legacy_attention = {"status": "active", "stage": "execution", "health": "attention", "objective": "Ship", "nextStep": "Confirm"}
+        healthy = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test"}
+        due_review = {"status": "active", "stage": "execution", "health": "on_track", "objective": "Ship", "nextStep": "Test", "reviewedAt": "2000-01-01T00:00:00"}
         self.assertTrue(APP.project_management_scope_matches(blocked, "blocked"))
         self.assertTrue(APP.project_management_scope_matches(blocked, "attention"))
         self.assertTrue(APP.project_management_scope_matches(attention, "attention"))
@@ -718,7 +774,7 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
     def test_project_review_updates_recency_and_adds_an_audit_event(self):
         project = {
             "id": "current", "savedId": "stable", "name": "Release", "status": "active",
-            "priority": "normal", "stage": "validation", "health": "attention", "nextStep": "Verify",
+            "priority": "normal", "stage": "validation", "health": "attention", "objective": "Ship", "nextStep": "Verify",
         }
         target = {"id": "stable", "name": "Release"}
         status_bar = Mock()
@@ -737,6 +793,18 @@ class ProjectDecisionHistoryTests(unittest.TestCase):
         self.assertEqual(window.project_decisions[-1]["source"], "review")
         self.assertEqual(save.call_count, 2)
         window.refresh.assert_called_once_with(silent=True, scan=False)
+
+    def test_project_review_rejects_an_incomplete_management_record(self):
+        project = {
+            "id": "current", "status": "active", "stage": "validation", "health": "on_track",
+            "objective": "", "nextStep": "Verify",
+        }
+        status_bar = Mock()
+        window = SimpleNamespace(saved_record_for_project=Mock(), statusBar=lambda: status_bar)
+        result = APP.MainWindow.record_project_review(window, project)
+        self.assertFalse(result)
+        window.saved_record_for_project.assert_not_called()
+        status_bar.showMessage.assert_called_once()
 
     def test_keep_execution_direction_records_signature_and_audit_event(self):
         today = datetime.now().date().isoformat()

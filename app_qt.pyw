@@ -1094,6 +1094,13 @@ def project_health_key(project):
     return value if value in PROJECT_HEALTH else "on_track"
 
 
+def project_governance_gap_text(project):
+    return "、".join(
+        PROJECT_DECISION_FIELDS.get(field, field)
+        for field in project_governance_gaps(project)
+    )
+
+
 def project_control_state(project):
     """Return the decision-facing project state and its most useful explanation."""
     if project.get("status") == "completed":
@@ -1117,6 +1124,9 @@ def project_control_state(project):
     if not str(project.get("nextStep") or "").strip():
         reason = "上一项下一步已完成，请明确后续动作" if project.get("nextStepReviewNeeded") else "尚未设置下一步"
         return "on_track", "正常", "#087443", "#e7f7ef", reason
+    gap_text = project_governance_gap_text(project)
+    if gap_text:
+        return "review", "待补全", "#315f9b", "#edf4ff", f"复核前先补全：{gap_text}"
     if review_due:
         reason = (
             f"距离上次复核已 {review_age} 天，超过 {review_cadence} 天周期"
@@ -1152,7 +1162,7 @@ def project_management_scope_matches(project, scope):
             return True
         return project_health_key(project) == "attention" and bool(str((project or {}).get("reviewedAt") or "").strip())
     if scope == "review":
-        return project_review_status(project)[0] and project_control_state(project)[0] == "review"
+        return project_control_state(project)[0] == "review"
     if scope == "blocked":
         return project_control_state(project)[0] == "blocked"
     if scope == "paused":
@@ -3873,7 +3883,7 @@ class PortfolioReviewDialog(QDialog):
         icon.setStyleSheet("background: #eaf1ff; border: 1px solid #c9d9f6; border-radius: 11px;"); heading.addWidget(icon)
         title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("逐项确认项目现状"); title.setStyleSheet("color: #172033; font-size: 23px; font-weight: 720;"); title_box.addWidget(title)
-        subtitle = QLabel("核对目标、健康度和下一步；每轮最多 5 项，只有确认后才建立复核基线")
+        subtitle = QLabel("每轮最多 5 项；缺项先补全，资料完整后才能建立复核基线")
         subtitle.setStyleSheet("color: #66758a; font-size: 12px;"); title_box.addWidget(subtitle); heading.addLayout(title_box, 1)
         self.counter = QLabel(); self.counter.setAlignment(Qt.AlignCenter); self.counter.setFixedHeight(28)
         self.counter.setStyleSheet("color: #315f9b; background: #eaf2ff; border-radius: 8px; padding: 2px 10px; font-size: 11px; font-weight: 650;"); heading.addWidget(self.counter)
@@ -3941,25 +3951,43 @@ class PortfolioReviewDialog(QDialog):
             return
 
         project = self.current_project()
+        gaps = project_governance_gaps(project)
+        gap_text = project_governance_gap_text(project)
+        has_project_folder = Path(str(project.get("path") or "")).is_dir()
+        if gaps:
+            self.confirm_button.setText("Codex 补全缺项" if has_project_folder else "打开项目补全")
+            self.confirm_button.setIcon(fluent_icon("\uE945" if has_project_folder else "\uE72A", color="#ffffff", size=14))
+            self.confirm_button.setToolTip(
+                "只读分析项目目录，审核建议后写入并建立复核基线"
+                if has_project_folder else
+                "当前没有有效项目文件夹，请在项目面板中手动补齐"
+            )
+        else:
+            self.confirm_button.setText("确认现状")
+            self.confirm_button.setIcon(fluent_icon("\uE73E", color="#ffffff", size=14))
+            self.confirm_button.setToolTip("确认当前目标、阶段、健康度和下一步，并启动复核周期")
         _review_due, review_age, review_cadence = project_review_status(project)
-        review_reason = (
-            f"距离上次复核已 {review_age} 天，已到 {review_cadence} 天复核周期"
-            if review_age is not None else
-            "尚未建立首次复核基线"
-        )
+        if gaps:
+            review_reason = f"复核前先补全：{gap_text}"
+        else:
+            review_reason = (
+                f"距离上次复核已 {review_age} 天，已到 {review_cadence} 天复核周期"
+                if review_age is not None else
+                "尚未建立首次复核基线"
+            )
         name_row = QHBoxLayout(); name_row.setSpacing(9)
         name = QLabel(project.get("name") or "未命名项目"); name.setWordWrap(True); name.setStyleSheet("color: #172033; font-size: 20px; font-weight: 720;"); name_row.addWidget(name, 1)
         priority = QLabel(PROJECT_PRIORITY.get(project_priority_key(project), "常规推进")); priority.setAlignment(Qt.AlignCenter)
         priority.setStyleSheet("color: #1d4ed8; background: #edf3ff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 650;"); name_row.addWidget(priority)
         self.card_layout.addLayout(name_row)
-        reason = QLabel(f"待复核原因 · {review_reason}"); reason.setWordWrap(True)
+        reason = QLabel(f"{'管理资料未就绪' if gaps else '待复核原因'} · {review_reason}"); reason.setWordWrap(True)
         reason.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 8px 10px; font-size: 11px; font-weight: 600;"); self.card_layout.addWidget(reason)
 
         metrics = QHBoxLayout(); metrics.setSpacing(9)
         metric_values = (
-            ("当前阶段", PROJECT_STAGE.get(project_stage_key(project), "执行")),
-            ("健康度", PROJECT_HEALTH.get(project_health_key(project), "正常")),
-            ("复核节奏", project_review_summary(project)),
+            ("当前阶段", PROJECT_STAGE.get(project.get("stage"), "尚未设置")),
+            ("健康度", PROJECT_HEALTH.get(project.get("health"), "尚未设置")),
+            ("复核节奏", "待资料完整后启动" if gaps else project_review_summary(project)),
         )
         for caption, value in metric_values:
             metric = QFrame(); metric.setObjectName("reviewMetric"); metric.setStyleSheet("QFrame#reviewMetric { background: #f7f9fc; border: 1px solid #e0e7ef; border-radius: 9px; }")
@@ -3977,7 +4005,14 @@ class PortfolioReviewDialog(QDialog):
             text.setStyleSheet("color: #34445c; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 11px; font-size: 12px;"); self.card_layout.addWidget(text)
 
         legacy_attention = project_health_key(project) == "attention" and not str(project.get("reviewedAt") or "").strip()
-        if legacy_attention:
+        if gaps:
+            self.feedback.setText(
+                "Codex 将只读检查项目目录并给出缺项建议；你审核并应用后，系统才会建立复核基线。"
+                if has_project_folder else
+                "当前未关联有效项目文件夹，请打开项目面板手动补齐；资料不完整时不会写入复核基线。"
+            )
+            self.feedback.setStyleSheet("color: #315f9b; background: #edf4ff; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
+        elif legacy_attention:
             self.feedback.setText("当前保存的是历史“需关注”状态：若风险仍存在，可确认现状；若已恢复正常，请先打开项目面板修改健康度。")
             self.feedback.setStyleSheet("color: #8a5a00; background: #fff7e6; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
         else:
@@ -4006,6 +4041,13 @@ class PortfolioReviewDialog(QDialog):
         project = self.current_project()
         if project is None:
             self.accept(); return
+        if project_governance_gaps(project):
+            self.accept()
+            if Path(str(project.get("path") or "")).is_dir():
+                self.window.show_project_governance([project])
+            else:
+                self.window.open_project_workspace(project)
+            return
         if not self.window.record_project_review(project):
             self.feedback.setText("没有成功写入复核记录，请保留当前项目并稍后重试。")
             self.feedback.setStyleSheet("color: #b42318; background: #fff0ee; border-radius: 8px; padding: 7px 9px; font-size: 11px;")
@@ -4903,10 +4945,11 @@ class MainWindow(QMainWindow):
         lifecycle_refs = set()
         for item in self.lifecycle_calibration_queue():
             lifecycle_refs.update(project_reference_ids(item.get("project") or {}))
-        return [
+        filtered = [
             project for project in projects
             if not (project_reference_ids(project) & lifecycle_refs)
         ]
+        return sorted(filtered, key=lambda project: 0 if project_governance_gaps(project) else 1)
 
     def show_portfolio_review_queue(self):
         projects = self.portfolio_review_queue()
@@ -5072,18 +5115,27 @@ class MainWindow(QMainWindow):
                 if len(names) > 2:
                     preview += f" 等 {len(names)} 项"
                 if scope == "review":
-                    baseline_count = sum(not str(project.get("reviewedAt") or "").strip() for project in projects)
-                    overdue_count = len(projects) - baseline_count
-                    review_prefix = f"首次 {baseline_count}"
+                    governance_count = sum(bool(project_governance_gaps(project)) for project in projects)
+                    ready_projects = [project for project in projects if not project_governance_gaps(project)]
+                    baseline_count = sum(not str(project.get("reviewedAt") or "").strip() for project in ready_projects)
+                    overdue_count = len(ready_projects) - baseline_count
+                    parts = []
+                    if governance_count:
+                        parts.append(f"补全 {governance_count}")
+                    if baseline_count:
+                        parts.append(f"首次 {baseline_count}")
                     if overdue_count:
-                        review_prefix += f" · 到期 {overdue_count}"
-                    summary = f"{review_prefix}：{preview}"
+                        parts.append(f"到期 {overdue_count}")
+                    summary = f"{' · '.join(parts)}：{preview}"
                 else:
                     summary = f"{prefixes[scope]}：{preview}"
                 if scope == "attention":
                     details = [f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}" for project in projects]
                 elif scope == "review":
-                    details = [f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}" for project in projects]
+                    details = [
+                        f"• {project.get('name') or '未命名项目'}：{project_control_state(project)[4]}"
+                        for project in projects
+                    ]
                 else:
                     details = [f"• {name}" for name in names]
                 tooltip = f"{prefixes[scope]}\n" + "\n".join(details)
@@ -5570,6 +5622,10 @@ class MainWindow(QMainWindow):
 
     def record_project_review(self, project, audit=True, occurred_at=None):
         """Confirm current project state without inventing a field change."""
+        gap_text = project_governance_gap_text(project)
+        if gap_text:
+            self.statusBar().showMessage(f"项目资料尚未完整，请先补齐：{gap_text}", 4200)
+            return False
         reviewed_at = occurred_at or datetime.now().isoformat(timespec="seconds")
         target = self.saved_record_for_project(project)
         target["reviewedAt"] = reviewed_at
@@ -6222,7 +6278,11 @@ class MainWindow(QMainWindow):
                 project.pop(key, None)
         decision_source = source if source in PROJECT_DECISION_SOURCES else "manual"
         entry = self.record_project_decision(project, before, target, decision_source, occurred_at)
-        if entry is not None and decision_source in {"manual", "editor", "codex", "created"}:
+        if (
+            entry is not None
+            and decision_source in {"manual", "editor", "codex", "created"}
+            and not project_governance_gaps(target)
+        ):
             target["reviewedAt"] = occurred_at
             project["reviewedAt"] = occurred_at
         save_json(PROJECTS_FILE, self.saved_projects)
