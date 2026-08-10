@@ -1669,6 +1669,62 @@ def compact_summary_text(text, limit=150):
     return value[: max(1, limit - 1)].rstrip("，,；;。 ") + "…"
 
 
+def daily_summary_suggestion_draft(suggestion, projects, summary_date=""):
+    """Build an editable task draft and link only one unambiguous project."""
+    text = " ".join(str(suggestion or "").split())
+    folded = text.casefold()
+    candidates = [
+        project for project in projects or []
+        if project.get("status", "active") == "active"
+        and str(project.get("name") or "").strip()
+        and str(project.get("name") or "").strip().casefold() in folded
+    ]
+    prefix_candidates = [
+        project for project in candidates
+        if folded.startswith(str(project.get("name") or "").strip().casefold())
+    ]
+    project = None
+    if prefix_candidates:
+        project = max(prefix_candidates, key=lambda item: len(str(item.get("name") or "")))
+    elif len(candidates) == 1:
+        project = candidates[0]
+    title = text
+    if project is not None:
+        name = str(project.get("name") or "").strip()
+        if folded.startswith(name.casefold()):
+            remainder = text[len(name):].lstrip(" \t：:-—·|›")
+            if remainder:
+                title = remainder
+    source_date = str(summary_date or "").strip()
+    source_label = f"{source_date} 每日总结" if source_date else "每日总结"
+    draft = {
+        "title": title,
+        "status": "planned",
+        "notes": f"来源：{source_label} · 下一步进化建议\n原建议：{text}",
+        "origin": "daily_summary",
+        "sourceSummaryDate": source_date,
+        "sourceSuggestion": text,
+    }
+    return draft, project
+
+
+def find_daily_summary_suggestion_task(tasks, summary_date, suggestion):
+    """Prevent one review suggestion from silently creating duplicate work."""
+    source_date = str(summary_date or "").strip()
+    expected = normalized_action_text(suggestion)
+    return next(
+        (
+            task for task in tasks or []
+            if task.get("origin") == "daily_summary"
+            and str(task.get("sourceSummaryDate") or "").strip() == source_date
+            and normalized_action_text(task.get("sourceSuggestion")) == expected
+            and not task_is_archived(task)
+            and not task_is_superseded_daily_record(task)
+        ),
+        None,
+    )
+
+
 def relative_time(activity):
     point = event_time(activity) if activity else None
     if not point:
@@ -2825,11 +2881,21 @@ class ArchivedProjectsDialog(QDialog):
             self.render_rows()
 
 
+def task_editor_project_choices(projects, task=None):
+    """Hide completed projects from new work while preserving historical task links."""
+    existing_reference = str((task or {}).get("projectId") or "")
+    return [
+        project for project in projects or []
+        if project.get("status", "active") != "completed"
+        or existing_reference in project_reference_ids(project)
+    ]
+
+
 class TaskEditor(QDialog):
-    def __init__(self, parent, projects, task=None, default_date=None, default_status=None, default_project_id=None):
+    def __init__(self, parent, projects, task=None, default_date=None, default_status=None, default_project_id=None, draft=None):
         super().__init__(parent)
-        self.projects = projects
-        self.task = task or {}
+        self.projects = task_editor_project_choices(projects, task)
+        self.task = dict(task or draft or {})
         self.codex_requested = False
         self.setWindowTitle("编辑每日任务" if task else "新建每日任务")
         self.setObjectName("taskEditor"); self.setMinimumWidth(660)
@@ -2856,12 +2922,12 @@ class TaskEditor(QDialog):
         relation.setStyleSheet("QFrame#taskRelation { background: #f7f9fc; border: 1px solid #e2e7ef; border-radius: 11px; } QFrame#taskRelation QLabel { background: transparent; border: none; }")
         relation_layout = QHBoxLayout(relation); relation_layout.setContentsMargins(14, 12, 14, 13); relation_layout.setSpacing(12)
         categories = [value for value in getattr(parent, "categories", []) if value != "全部"]
-        for project in projects:
+        for project in self.projects:
             category = project.get("category") or "未分类"
             if category not in categories: categories.append(category)
         current_project_id = self.task.get("projectId") or default_project_id
         current_project = next(
-            (item for item in projects if str(current_project_id or "") in project_reference_ids(item)),
+            (item for item in self.projects if str(current_project_id or "") in project_reference_ids(item)),
             None,
         )
         if current_project:
@@ -3635,6 +3701,7 @@ class DailySummaryDialog(QDialog):
         super().__init__(parent)
         self.window = parent
         self.summary = summary
+        self.suggestion_buttons = []
         self.setWindowTitle("昨日工作总结")
         self.setObjectName("dailySummaryDialog")
         self.setMinimumSize(780, 560)
@@ -3682,7 +3749,12 @@ class DailySummaryDialog(QDialog):
                     row = QHBoxLayout(); row.setSpacing(9)
                     index = QLabel(str(number)); index.setAlignment(Qt.AlignCenter); index.setFixedSize(24, 24)
                     index.setStyleSheet(f"color: {color}; background: #ffffff; border: 1px solid #dbe3ee; border-radius: 7px; font-size: 11px; font-weight: 700;"); row.addWidget(index)
-                    text = QLabel(item); text.setWordWrap(True); text.setStyleSheet("color: #42526a; font-size: 12px;"); row.addWidget(text, 1); card_layout.addLayout(row)
+                    text = QLabel(item); text.setWordWrap(True); text.setStyleSheet("color: #42526a; font-size: 12px;"); row.addWidget(text, 1)
+                    if key == "nextFocus":
+                        plan = QPushButton(); plan.setFixedSize(116, 32); plan.setAccessibleName(f"把建议加入今日计划：{item}")
+                        plan.clicked.connect(lambda _checked=False, value=item, button=plan: self.plan_suggestion(value, button))
+                        self.update_suggestion_button(plan, item); self.suggestion_buttons.append(plan); row.addWidget(plan)
+                    card_layout.addLayout(row)
             content_layout.addWidget(card)
         content_layout.addStretch(); scroll.setWidget(content); root.addWidget(scroll, 1)
 
@@ -3694,6 +3766,25 @@ class DailySummaryDialog(QDialog):
     def regenerate(self):
         self.accept()
         self.window.start_daily_summary(force=True)
+
+    def update_suggestion_button(self, button, suggestion):
+        task = find_daily_summary_suggestion_task(
+            getattr(self.window, "today_tasks", []), self.summary.get("date"), suggestion
+        )
+        if task is not None:
+            status = TASK_STATUS.get(task.get("status", "planned"), "计划")
+            button.setText(f"已加入 · {status}"); button.setEnabled(False)
+            button.setToolTip(f"已在 {task.get('date') or '任务记录'} 中建立；不会重复创建")
+            button.setStyleSheet("QPushButton:disabled { color: #087443; background: #e7f7ef; border: 1px solid #c5e5d3; border-radius: 8px; font-size: 10px; font-weight: 680; }")
+        else:
+            button.setText("＋ 加入今日计划"); button.setEnabled(True)
+            button.setToolTip("打开任务编辑器确认项目、Codex 对话和任务文字后再保存")
+            button.setStyleSheet("QPushButton { color: #6d3fc0; background: #ffffff; border: 1px solid #d7c6f3; border-radius: 8px; font-size: 10px; font-weight: 680; } QPushButton:hover, QPushButton:focus { background: #f1eaff; border-color: #a987df; }")
+
+    def plan_suggestion(self, suggestion, button):
+        task = self.window.plan_daily_summary_suggestion(self.summary, suggestion)
+        if task is not None:
+            self.update_suggestion_button(button, suggestion)
 
 
 class ProjectDecisionHistoryDialog(QDialog):
@@ -5944,6 +6035,32 @@ class MainWindow(QMainWindow):
         target_date = target_date or self.daily_summary_target_date()
         return next((item for item in self.daily_summaries if item.get("date") == target_date), None)
 
+    def plan_daily_summary_suggestion(self, summary, suggestion):
+        summary_date = str((summary or {}).get("date") or "").strip()
+        existing = find_daily_summary_suggestion_task(self.today_tasks, summary_date, suggestion)
+        if existing is not None:
+            task_date = QDate.fromString(str(existing.get("date") or ""), Qt.ISODate)
+            if task_date.isValid() and hasattr(self, "board_date_field"):
+                self.board_date_field.setDate(task_date)
+            self.render_today_tasks()
+            self.statusBar().showMessage("这条总结建议已经进入任务记录，已为你定位", 3400)
+            return existing
+        draft, project = daily_summary_suggestion_draft(suggestion, self.projects, summary_date)
+        if not draft.get("title"):
+            self.statusBar().showMessage("总结建议内容为空，无法建立任务", 3000)
+            return None
+        draft["date"] = QDate.currentDate().toString(Qt.ISODate)
+        project_id = project.get("id") if project is not None else None
+        task = self.edit_today_task(None, "planned", project_id, draft=draft)
+        if task is not None:
+            linked_project = next(
+                (candidate for candidate in self.projects if task_matches_project(task, candidate)),
+                None,
+            )
+            link_text = f"并关联到“{linked_project.get('name')}”" if linked_project is not None else "；当前未关联项目"
+            self.statusBar().showMessage(f"已从昨日总结建立今日计划{link_text}", 4000)
+        return task
+
     def render_daily_summary(self):
         if not hasattr(self, "daily_summary_meta"):
             return
@@ -6532,12 +6649,13 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("完成成果已记录，并纳入项目交接与每日总结", 3800)
         return True
 
-    def edit_today_task(self, task=None, default_status=None, default_project_id=None):
+    def edit_today_task(self, task=None, default_status=None, default_project_id=None, draft=None):
         if task_is_superseded_daily_record(task):
             self.open_current_task_record(task)
             return
         default_date = self.board_date_field.date().toString(Qt.ISODate) if hasattr(self, "board_date_field") else QDate.currentDate().toString(Qt.ISODate)
-        dialog = TaskEditor(self, self.projects, task, default_date, default_status, default_project_id)
+        draft = dict(draft or {})
+        dialog = TaskEditor(self, self.projects, task, default_date, default_status, default_project_id, draft=draft)
         if dialog.exec_() != QDialog.Accepted:
             return
         data = dialog.value()
@@ -6551,6 +6669,9 @@ class MainWindow(QMainWindow):
         created = task is None
         if created:
             task = {"id": str(uuid.uuid4()), "createdAt": now}
+            for key in ("origin", "sourceSummaryDate", "sourceSuggestion"):
+                if draft.get(key):
+                    task[key] = draft[key]
             self.today_tasks.append(task)
         task.update(data); task["updatedAt"] = now
         current_status = task.get("status", "planned")
@@ -6559,7 +6680,8 @@ class MainWindow(QMainWindow):
             task.pop("boardOrder", None)
             reorder_task_board(self.today_tasks, task.get("id"), current_status, None)
         if created:
-            record_task_status_event(task, None, task.get("status", "planned"), now, "manual")
+            source = "summary" if task.get("origin") == "daily_summary" else "manual"
+            record_task_status_event(task, None, task.get("status", "planned"), now, source)
         else:
             record_task_status_event(task, previous_status, task.get("status", "planned"), now, "editor")
         current_status = task.get("status", "planned")
@@ -6590,6 +6712,7 @@ class MainWindow(QMainWindow):
         elif not completed_handoff and not reopened_handoff:
             message = "任务与完成成果已保存" if outcome_changed and current_status == "done" else "今日任务已保存"
             self.statusBar().showMessage(message, 3000)
+        return task
 
     def set_task_status(self, task_id, status, source="manual", allow_undo=True):
         task = next((item for item in self.today_tasks if item.get("id") == task_id), None)

@@ -84,7 +84,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Undo a recent manual status move from the status bar; reopening a completed project-next-action task restores the project handoff unless a newer next action already exists.
 - Automatically move a linked task to **In Progress** when Codex starts working on its conversation.
 - Keep a daily activity record.
-- Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, or daily rollover—and feed that evidence into daily reviews.
+- Record every real task-state transition with its source—manual selection, Kanban drag, task editing, Codex auto-start, project handoff, review suggestion, or daily rollover—and feed that evidence into daily reviews.
 - Record a concise, verifiable completion outcome after a task is finished. Outcomes keep their own revision history, appear compactly on completed cards, feed Codex daily reviews as stronger evidence than planning notes, and follow project-next-action handoffs back into the project workbench.
 - Preserve a project identity snapshot on every linked task. Current links display the latest project name; removed or changed links retain the name recorded with the task and are explicitly marked as historical instead of silently becoming "Unlinked". Resolvable legacy tasks are backfilled without altering their activity timestamps, while ambiguous records are never guessed and remain available for manual relinking.
 - Persist the stable local project identity when tasks are created or edited, rather than a replaceable Codex sidebar identifier. If an older link still becomes orphaned, a compact data-integrity control can repair several tasks in one review; a unique current Codex-conversation match is recovered automatically, ambiguous links always require human confirmation, archived projects remain valid historical targets, and every repair gets its own audit event without changing task status or activity time.
@@ -95,6 +95,7 @@ Archiving a project removes it from the active portfolio without deleting its ma
 - Automatically summarize the previous day's tasks through a user-configured fixed Codex conversation.
 - Include audited project reviews, direction reconciliations, closeouts, and real objective/stage/health/next-action changes in the daily evidence packet. Management decisions are counted separately from tasks and conversations; only a human-confirmed project closeout is accepted as project-level completion evidence.
 - Keep the home review compact and open the full completed / in-progress / next-focus breakdown on click.
+- Convert a Codex-generated next-focus suggestion into today's plan without blind automation: each suggestion opens the normal task editor for confirmation, preselects a project only when the name match is unambiguous, records the source summary date and original suggestion, and prevents the same review item from creating duplicate tasks even if its task title is later edited.
 - Show immediate progress and failure feedback when a review is regenerated, then write the structured result back into the workspace.
 
 ### Codex integration

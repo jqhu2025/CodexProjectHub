@@ -1593,6 +1593,102 @@ class TaskStatusHistoryTests(unittest.TestCase):
 
 
 class DailySummaryTests(unittest.TestCase):
+    def test_new_task_choices_exclude_completed_projects_but_existing_links_survive(self):
+        projects = [
+            {"id": "active", "savedId": "active-stable", "status": "active"},
+            {"id": "closed", "savedId": "closed-stable", "status": "completed"},
+        ]
+        self.assertEqual(
+            [project["id"] for project in APP.task_editor_project_choices(projects)],
+            ["active"],
+        )
+        self.assertEqual(
+            [project["id"] for project in APP.task_editor_project_choices(projects, {"projectId": "closed-stable"})],
+            ["active", "closed"],
+        )
+
+    def test_next_focus_suggestion_builds_an_editable_provenance_aware_draft(self):
+        projects = [
+            {"id": "short", "name": "RamanVerse", "status": "active"},
+            {"id": "full", "name": "RamanVerse Software", "status": "active"},
+            {"id": "closed", "name": "Archived Release", "status": "completed"},
+        ]
+        draft, project = APP.daily_summary_suggestion_draft(
+            "RamanVerse Software：Run the release validation suite", projects, "2026-08-08"
+        )
+        self.assertEqual(project["id"], "full")
+        self.assertEqual(draft["title"], "Run the release validation suite")
+        self.assertEqual(draft["origin"], "daily_summary")
+        self.assertEqual(draft["sourceSummaryDate"], "2026-08-08")
+        self.assertIn("原建议", draft["notes"])
+
+        ambiguous, project = APP.daily_summary_suggestion_draft(
+            "Compare RamanVerse with RamanVerse Software", projects, "2026-08-08"
+        )
+        self.assertIsNone(project)
+        self.assertEqual(ambiguous["title"], "Compare RamanVerse with RamanVerse Software")
+        closed_draft, closed_project = APP.daily_summary_suggestion_draft(
+            "Archived Release：Start a follow-up", projects, "2026-08-08"
+        )
+        self.assertIsNone(closed_project)
+        self.assertEqual(closed_draft["title"], "Archived Release：Start a follow-up")
+
+    def test_summary_suggestion_duplicate_guard_survives_title_edits_and_ignores_archive_history(self):
+        current = {
+            "id": "current", "origin": "daily_summary", "sourceSummaryDate": "2026-08-08",
+            "sourceSuggestion": "Run validation", "title": "Edited task title", "status": "done",
+        }
+        archived = {
+            "id": "archived", "origin": "daily_summary", "sourceSummaryDate": "2026-08-08",
+            "sourceSuggestion": "Archived idea", "archivedAt": "2026-08-10T10:00:00",
+        }
+        self.assertIs(APP.find_daily_summary_suggestion_task([current], "2026-08-08", "run validation"), current)
+        self.assertIsNone(APP.find_daily_summary_suggestion_task([archived], "2026-08-08", "Archived idea"))
+
+    def test_summary_suggestion_opens_a_confirmable_today_task_draft(self):
+        project = {"id": "project", "name": "Model Validation"}
+        created = {"id": "task", "projectId": "project"}
+        status_bar = Mock()
+        window = SimpleNamespace(
+            today_tasks=[], projects=[project], edit_today_task=Mock(return_value=created),
+            statusBar=lambda: status_bar, render_today_tasks=Mock(),
+        )
+        summary = {"date": "2026-08-08"}
+        result = APP.MainWindow.plan_daily_summary_suggestion(
+            window, summary, "Model Validation：Compare the held-out datasets"
+        )
+        self.assertIs(result, created)
+        call = window.edit_today_task.call_args
+        self.assertEqual(call.args[:3], (None, "planned", "project"))
+        self.assertEqual(call.kwargs["draft"]["origin"], "daily_summary")
+        self.assertEqual(call.kwargs["draft"]["date"], APP.QDate.currentDate().toString(APP.Qt.ISODate))
+        self.assertIn("Model Validation", status_bar.showMessage.call_args.args[0])
+
+    def test_created_summary_task_keeps_provenance_and_audited_source(self):
+        dialog = Mock()
+        dialog.exec_.return_value = APP.QDialog.Accepted
+        dialog.value.return_value = {
+            "title": "Run validation", "status": "planned",
+            "date": "2026-08-10", "notes": "Review suggestion", "completionNote": "",
+        }
+        dialog.codex_requested = False
+        status_bar = Mock()
+        window = SimpleNamespace(
+            projects=[], today_tasks=[], board_date_field=Mock(),
+            sync_project_workload=Mock(), render_today_tasks=Mock(), render=Mock(),
+            statusBar=lambda: status_bar, view_signature="old",
+        )
+        draft = {
+            "origin": "daily_summary", "sourceSummaryDate": "2026-08-08",
+            "sourceSuggestion": "Run validation",
+        }
+        with patch.object(APP, "TaskEditor", return_value=dialog), patch.object(APP, "save_json"), patch.object(APP, "record_task_status_event") as event:
+            task = APP.MainWindow.edit_today_task(window, draft=draft)
+        self.assertEqual(task["origin"], "daily_summary")
+        self.assertEqual(task["sourceSummaryDate"], "2026-08-08")
+        self.assertEqual(task["sourceSuggestion"], "Run validation")
+        self.assertEqual(event.call_args.args[-1], "summary")
+
     def test_payload_preserves_a_historical_project_snapshot_when_the_live_link_is_gone(self):
         tasks = [{
             "id": "task-1", "title": "Publish report", "date": "2026-08-08", "status": "done",

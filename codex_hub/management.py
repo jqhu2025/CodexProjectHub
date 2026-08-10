@@ -20,6 +20,7 @@ TASK_EVENT_SOURCES = {
     "editor": "任务编辑",
     "codex": "Codex 自动",
     "project": "项目下一步",
+    "summary": "总结建议",
     "rollover": "自动延续",
     "undo": "撤销操作",
     "legacy": "历史记录",
