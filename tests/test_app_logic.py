@@ -55,6 +55,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertIsNotNone(page.findChild(APP.QWidget, "taskBoard"))
         self.assertIsNotNone(page.findChild(APP.QFrame, "dailySummaryPanel"))
         self.assertEqual(window.home_scroll.horizontalScrollBarPolicy(), APP.Qt.ScrollBarAlwaysOff)
+        self.assertIsInstance(window.daily_summary_overview, APP.ElidedLabel)
+        self.assertEqual(window.daily_summary_overview.sizePolicy().horizontalPolicy(), APP.QSizePolicy.Ignored)
         self.assertIsNone(page.findChild(APP.QFrame, "portfolioDecisionQueue"))
         self.assertIsNone(page.findChild(APP.QFrame, "portfolioPriorityPanel"))
         self.assertIsNone(page.findChild(APP.QFrame, "activityPanel"))
@@ -95,6 +97,8 @@ class ReviewDialogStructureTests(unittest.TestCase):
         self.assertNotIn("手动状态", visible_text)
         self.assertNotIn("延续任务", visible_text)
         self.assertNotIn("项目下一步", visible_text)
+        self.assertGreaterEqual(card.minimumHeight(), 130)
+        self.assertEqual(card.sizePolicy().verticalPolicy(), APP.QSizePolicy.Minimum)
         card.close()
 
     def test_legacy_attention_review_exposes_two_explicit_health_decisions(self):

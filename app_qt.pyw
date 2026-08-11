@@ -3648,7 +3648,8 @@ class TodayTaskCard(QFrame):
             identity = f"{identity}  ·  {conversation_title}"
         meta = ElidedLabel(identity); meta.setToolTip(identity); meta.setStyleSheet("color: #66758a; font-size: 11px; border: none;"); meta_row.addWidget(meta, 1)
         if conversation_state == "running":
-            live = QLabel("● Codex 运行中"); live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 3px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
+            live = QLabel("● Codex 运行中"); live.setFixedHeight(24); live.setAlignment(Qt.AlignCenter)
+            live.setStyleSheet("color: #087443; background: #e3f6ec; border: 1px solid #b6e1c9; border-radius: 8px; padding: 2px 7px; font-size: 10px; font-weight: 700;"); meta_row.addWidget(live)
         root.addLayout(meta_row)
         if task.get("notes"):
             notes = ElidedLabel(task["notes"].replace("\n", " ")); notes.setStyleSheet("color: #526071; font-size: 11px; border: none;"); root.addWidget(notes)
@@ -3707,6 +3708,12 @@ class TodayTaskCard(QFrame):
         delete_action.triggered.connect(lambda: window.delete_today_task(task))
         more.setMenu(menu); more.setPopupMode(QToolButton.InstantPopup); actions.addWidget(more)
         root.addLayout(actions)
+        # Dense columns may contain many cards.  Keep every card at its real
+        # content height so Qt grows the scrollable board instead of squeezing
+        # labels and action buttons into overlapping rows.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        base_height = 130 if task.get("notes") else 110
+        self.setMinimumHeight(max(base_height, root.sizeHint().height()))
 
 
 class TaskAuditDialog(QDialog):
@@ -6777,7 +6784,7 @@ class MainWindow(QMainWindow):
         self.daily_summary_state.setStyleSheet("color: #526071; background: #eef2f6; border-radius: 8px; padding: 2px 9px; font-size: 10px; font-weight: 650;"); summary_head.addWidget(self.daily_summary_state)
         summary_chevron = QLabel(); summary_chevron.setAttribute(Qt.WA_TransparentForMouseEvents); summary_chevron.setFixedSize(18, 18); summary_chevron.setPixmap(fluent_icon("\uE76C", color="#64748b", size=13).pixmap(QSize(13, 13))); summary_chevron.setAlignment(Qt.AlignCenter); summary_head.addWidget(summary_chevron)
         summary_layout.addLayout(summary_head)
-        self.daily_summary_overview = QLabel("软件将在每天首次打开时，用固定 Codex 任务总结前一天的工作记录。")
+        self.daily_summary_overview = ElidedLabel("软件将在每天首次打开时，用固定 Codex 任务总结前一天的工作记录。")
         self.daily_summary_overview.setAttribute(Qt.WA_TransparentForMouseEvents); self.daily_summary_overview.setWordWrap(False); self.daily_summary_overview.setMaximumHeight(22); self.daily_summary_overview.setStyleSheet("color: #42526a; font-size: 12px;"); summary_layout.addWidget(self.daily_summary_overview)
         self.daily_summary_meta = QLabel("点击查看完整回顾"); self.daily_summary_meta.hide()
         layout.addWidget(self.daily_summary_panel)
@@ -8257,6 +8264,7 @@ class MainWindow(QMainWindow):
     def render_today_tasks(self):
         if not hasattr(self, "task_board_layout"):
             return
+        self.task_board.setMinimumHeight(0)
         while self.task_board_layout.count():
             item = self.task_board_layout.takeAt(0)
             if item.widget(): item.widget().hide(); item.widget().deleteLater()
@@ -8278,6 +8286,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "task_archive_action"):
             archived_count = len(archived_task_records(self.today_tasks))
             self.task_archive_action.setText(f"任务回收站（{archived_count}）" if archived_count else "任务回收站")
+        board_columns = []
         for status, label in TASK_STATUS.items():
             accent = TASK_COLORS[status]
             surface = {"planned": "#faf8ff", "doing": "#f7faff", "done": "#f7fcf9"}.get(status, "#f8fafc")
@@ -8301,7 +8310,12 @@ class MainWindow(QMainWindow):
                 empty = QLabel("暂无任务"); empty.setAlignment(Qt.AlignCenter); empty.setStyleSheet("color: #7a8798; background: #ffffff; font-size: 11px; border: 1px dashed #cbd5e1; border-radius: 9px; padding: 20px 12px;"); column_layout.addWidget(empty)
             for task in status_tasks:
                 column_layout.addWidget(TodayTaskCard(task, self))
-            column_layout.addStretch(); self.task_board_layout.addWidget(column, 1, Qt.AlignTop)
+            column_layout.addStretch(); self.task_board_layout.addWidget(column, 1, Qt.AlignTop); board_columns.append(column)
+        required_height = max(
+            (max(column.minimumHeight(), column.minimumSizeHint().height()) for column in board_columns),
+            default=236,
+        )
+        self.task_board.setMinimumHeight(required_height)
         self.render_today_activity(tasks)
 
     def render_today_activity(self, tasks):
